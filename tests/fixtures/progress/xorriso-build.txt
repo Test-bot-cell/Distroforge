@@ -1,0 +1,7 @@
+# Real xorriso -as mkisofs output (xorriso 1.5.6), captured 2026-05-30 over a pipe.
+# xorriso reports file COUNTS, never "% done", so the ISO-rebuild phase yields no
+# parseable fraction on this toolchain -- xorriso_progress returns None for every
+# line and the weight band simply completes at the step boundary.
+xorriso : UPDATE :       6 files added in 1 seconds
+ISO image produced: 12471 sectors
+Written to medium : 12471 sectors at LBA 0

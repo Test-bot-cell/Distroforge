@@ -1,0 +1,53 @@
+[profiles.desktop]
+label = "General desktop"
+description = "A balanced Ubuntu desktop image with common productivity defaults."
+install = ["ubuntu-desktop", "gdebi", "gnome-tweaks"]
+remove = []
+
+[profiles.minimal]
+label = "Minimal desktop"
+description = "A smaller graphical image for labs, kiosks and virtual machines."
+install = ["ubuntu-desktop-minimal"]
+remove = ["libreoffice*", "thunderbird", "gnome-games"]
+
+[profiles.developer]
+label = "Developer workstation"
+description = "Developer defaults with build tooling, Git and Python."
+install = ["build-essential", "git", "curl", "python3", "python3-venv", "pipx"]
+remove = []
+
+[profiles.gaming]
+label = "Gaming"
+description = "Desktop gaming baseline with graphics, controller and compatibility tooling."
+install = ["steam-installer", "gamemode", "mangohud", "mesa-utils", "vulkan-tools"]
+remove = []
+
+[profiles.education]
+label = "Education"
+description = "Classroom-friendly workstation with learning tools and restrained defaults."
+install = ["libreoffice", "gcompris-qt", "kolourpaint", "vlc"]
+remove = ["thunderbird"]
+
+[profiles.enterprise]
+label = "Enterprise"
+description = "Managed workstation baseline with remote access, audit and support tooling."
+install = ["openssh-client", "sssd", "realmd", "oddjob", "oddjob-mkhomedir", "auditd"]
+remove = ["gnome-games"]
+
+[profiles.privacy]
+label = "Privacy and security"
+description = "Privacy-oriented desktop baseline with firewall and encrypted workflow helpers."
+install = ["ufw", "seahorse", "keepassxc", "gnupg", "onionshare"]
+remove = ["popularity-contest"]
+
+[profiles.lightweight]
+label = "Lightweight"
+description = "Lean graphical image for older machines and small virtual machines."
+install = ["xubuntu-core", "lightdm", "network-manager"]
+remove = ["libreoffice*", "thunderbird", "gnome-games", "ubuntu-desktop"]
+
+[profiles.kiosk]
+label = "Kiosk"
+description = "Locked-down browser-oriented remix starting point."
+install = ["chromium-browser", "unclutter", "openssh-client"]
+remove = ["thunderbird", "libreoffice*", "gnome-games"]

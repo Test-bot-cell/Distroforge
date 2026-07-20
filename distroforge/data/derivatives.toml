@@ -1,0 +1,106 @@
+[derivatives.mint-ubuntu]
+label = "Linux Mint style (Ubuntu base)"
+description = "Ubuntu-based Mint-like derivative profile with Mint repositories, identity packages and Ubiquity-style installer intent."
+base_family = "ubuntu"
+base_release = "24.04"
+base_codename = "noble"
+mint_release = "zena"
+installer = "ubiquity"
+live_session = "mint-live-session"
+hardware_channel = "lts"
+repositories = [
+  "deb [signed-by=/usr/share/keyrings/linuxmint-keyring.gpg] https://packages.linuxmint.com zena main upstream import backport romeo",
+]
+keyring_packages = ["linuxmint-keyring"]
+identity_packages = [
+  "mintsystem",
+  "mint-live-session",
+  "mint-artwork",
+  "mint-themes",
+  "grub2-theme-mint",
+]
+desktop_packages = [
+  "cinnamon-core",
+  "cinnamon-desktop-environment",
+  "nemo",
+  "xapps-common",
+]
+installer_packages = ["ubiquity", "ubiquity-frontend-gtk"]
+remove_packages = ["ubuntu-desktop", "ubuntu-session"]
+branding_name = "Mint-style DistroForge"
+branding_vendor = "DistroForge"
+branding_os_id = "distroforge-mint"
+branding_id_like = "linuxmint ubuntu debian"
+grub_theme = "/usr/share/grub/themes/linuxmint/theme.txt"
+
+[derivatives.lmde]
+label = "LMDE style (Debian base)"
+description = "Debian-based Mint-like derivative profile with Mint repositories and live-installer intent."
+base_family = "debian"
+base_release = "13"
+base_codename = "trixie"
+mint_release = "gigi"
+installer = "live-installer"
+live_session = "mint-live-session"
+hardware_channel = "lts"
+repositories = [
+  "deb [signed-by=/usr/share/keyrings/linuxmint-keyring.gpg] https://packages.linuxmint.com gigi main upstream import backport romeo",
+]
+keyring_packages = ["linuxmint-keyring"]
+identity_packages = [
+  "debian-system-adjustments",
+  "mintsystem",
+  "mint-live-session",
+  "mint-artwork",
+  "mint-themes",
+  "grub2-theme-mint",
+]
+desktop_packages = [
+  "cinnamon-core",
+  "cinnamon-desktop-environment",
+  "nemo",
+  "xapps-common",
+]
+installer_packages = ["live-installer"]
+remove_packages = []
+branding_name = "LMDE-style DistroForge"
+branding_vendor = "DistroForge"
+branding_os_id = "distroforge-lmde"
+branding_id_like = "linuxmint debian"
+grub_theme = "/usr/share/grub/themes/linuxmint/theme.txt"
+
+[derivatives.mint-edge]
+label = "Linux Mint Edge style"
+description = "Mint-like Ubuntu derivative with HWE/edge hardware enablement intent for newer machines."
+base_family = "ubuntu"
+base_release = "24.04"
+base_codename = "noble"
+mint_release = "zena"
+installer = "ubiquity"
+live_session = "mint-live-session"
+hardware_channel = "edge"
+repositories = [
+  "deb [signed-by=/usr/share/keyrings/linuxmint-keyring.gpg] https://packages.linuxmint.com zena main upstream import backport romeo",
+]
+keyring_packages = ["linuxmint-keyring"]
+identity_packages = [
+  "mintsystem",
+  "mint-live-session",
+  "mint-artwork",
+  "mint-themes",
+  "grub2-theme-mint",
+]
+desktop_packages = [
+  "cinnamon-core",
+  "cinnamon-desktop-environment",
+  "nemo",
+  "xapps-common",
+]
+installer_packages = ["ubiquity", "ubiquity-frontend-gtk"]
+hardware_packages = ["linux-generic-hwe-24.04", "linux-firmware", "mesa-utils", "vulkan-tools"]
+remove_packages = ["ubuntu-desktop", "ubuntu-session"]
+branding_name = "Mint Edge-style DistroForge"
+branding_vendor = "DistroForge"
+branding_os_id = "distroforge-mint-edge"
+branding_id_like = "linuxmint ubuntu debian"
+grub_theme = "/usr/share/grub/themes/linuxmint/theme.txt"

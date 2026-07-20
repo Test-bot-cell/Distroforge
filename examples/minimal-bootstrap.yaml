@@ -1,0 +1,13 @@
+source_mode: bootstrap
+packages:
+  - git
+  - curl
+customization:
+  desktop: ubuntu_minimal
+  locale: en_US.UTF-8
+  timezone: Europe/Paris
+sanitize:
+  apt_lists: true
+qa:
+  scenarios:
+    - live-bios

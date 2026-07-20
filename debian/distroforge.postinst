@@ -1,0 +1,78 @@
+#!/bin/sh
+
+set -eu
+
+_user_favorite_apps_file() {
+    user="$1"
+    uid="$2"
+    desktop_file="distroforge.desktop"
+    bus_path="/run/user/$uid/bus"
+
+    if [ ! -S "$bus_path" ] || [ ! -x /usr/bin/gsettings ] || [ ! -x /usr/bin/python3 ]; then
+        return 0
+    fi
+
+    if ! runuser -u "$user" -- env \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus_path" \
+        XDG_RUNTIME_DIR="/run/user/$uid" \
+        XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" \
+        python3 -c 'import ast, subprocess; \
+desktop_entry="distroforge.desktop"; \
+get_cmd=["gsettings","get","org.gnome.shell","favorite-apps"]; \
+set_cmd=["gsettings","set","org.gnome.shell","favorite-apps"]; \
+try: \
+    raw=subprocess.check_output(get_cmd, text=True, stderr=subprocess.STDOUT).strip(); \
+except Exception: \
+    raise SystemExit(0); \
+try: \
+    entries=ast.literal_eval(raw); \
+except Exception: \
+    raise SystemExit(0); \
+if not isinstance(entries, (list, tuple)): \
+    raise SystemExit(0); \
+entries=[str(item) for item in entries if isinstance(item, str)]; \
+if desktop_entry in entries: \
+    raise SystemExit(0); \
+entries.append(desktop_entry); \
+subprocess.check_call(set_cmd + [str(entries)])' \
+    >/dev/null 2>&1; then
+        return 0
+    fi
+}
+
+_postinst_configure_users() {
+    target_users=""
+
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        target_users="${SUDO_USER}"
+    elif [ -n "${PKEXEC_UID:-}" ]; then
+        target_users="$(getent passwd "$PKEXEC_UID" 2>/dev/null | awk -F: '{print $1}')"
+    else
+        target_users="$(awk -F: '$3 >= 1000 && $3 < 65000 && $7 !~ /nologin/ && $6 ~ "^/home/" { print $1 }' /etc/passwd)"
+    fi
+
+    for user in $target_users; do
+        [ "$user" = "root" ] && continue
+        user_home="$(getent passwd "$user" | awk -F: '{print $6}')"
+        [ -n "$user_home" ] && [ -d "$user_home" ] || continue
+
+        user_uid="$(getent passwd "$user" | awk -F: '{print $3}')"
+        [ -n "$user_uid" ] || continue
+        [ -d "/run/user/$user_uid" ] || continue
+
+        _user_favorite_apps_file "$user" "$user_uid" || true
+    done
+}
+
+case "$1" in
+    configure)
+        _postinst_configure_users
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # keep the post-install hooks intentionally minimal during rollback paths
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

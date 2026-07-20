@@ -1,0 +1,5 @@
+Tests: smoke
+Depends:
+ @,
+ python3-pytest,
+Restrictions: allow-stderr

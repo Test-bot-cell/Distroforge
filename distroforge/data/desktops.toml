@@ -1,0 +1,62 @@
+[desktops.ubuntu]
+label = "Ubuntu GNOME"
+packages = ["ubuntu-desktop"]
+packages_by_family.debian = ["task-gnome-desktop"]
+display_manager = "gdm3"
+session = "ubuntu"
+
+[desktops.ubuntu_minimal]
+label = "Ubuntu GNOME Minimal"
+packages = ["ubuntu-desktop-minimal"]
+packages_by_family.debian = ["gnome-core"]
+display_manager = "gdm3"
+session = "ubuntu"
+
+[desktops.kubuntu]
+label = "Kubuntu Plasma"
+packages = ["kubuntu-desktop"]
+packages_by_family.debian = ["task-kde-desktop"]
+display_manager = "sddm"
+session = "plasma"
+
+[desktops.xubuntu]
+label = "Xubuntu XFCE"
+packages = ["xubuntu-desktop"]
+packages_by_family.debian = ["task-xfce-desktop"]
+display_manager = "lightdm"
+session = "xubuntu"
+
+[desktops.lubuntu]
+label = "Lubuntu LXQt"
+packages = ["lubuntu-desktop"]
+packages_by_family.debian = ["task-lxqt-desktop"]
+display_manager = "sddm"
+session = "Lubuntu"
+
+[desktops.mate]
+label = "Ubuntu MATE"
+packages = ["ubuntu-mate-desktop"]
+packages_by_family.debian = ["task-mate-desktop"]
+display_manager = "lightdm"
+session = "mate"
+
+[desktops.budgie]
+label = "Ubuntu Budgie"
+packages = ["ubuntu-budgie-desktop"]
+packages_by_family.debian = ["budgie-desktop"]
+display_manager = "lightdm"
+session = "budgie-desktop"
+
+[desktops.cinnamon]
+label = "Ubuntu Cinnamon"
+packages = ["ubuntucinnamon-desktop"]
+packages_by_family.debian = ["task-cinnamon-desktop"]
+display_manager = "lightdm"
+session = "cinnamon"
+
+[desktops.unity]
+label = "Ubuntu Unity"
+packages = ["ubuntu-unity-desktop"]
+packages_by_family.debian = ["unity-session", "lightdm"]
+display_manager = "lightdm"
+session = "unity"

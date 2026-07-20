@@ -1,0 +1,7 @@
+# Real unsquashfs output (squashfs-tools 4.7.5), captured 2026-05-30 over a pipe.
+# Like mksquashfs, only the final bar frame is emitted over a pipe; the surrounding
+# lines carry no parseable fraction.
+6 inodes (192 blocks) to write
+[===============================================================|] 198/198 100%
+created 6 files
+created 1 directory

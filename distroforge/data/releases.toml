@@ -1,0 +1,64 @@
+[releases."24.04"]
+family = "ubuntu"
+codename = "noble"
+label = "Ubuntu 24.04 LTS"
+series = "lts"
+supported = true
+installer = "subiquity"
+livefs = "casper"
+archive_url = "https://archive.ubuntu.com/ubuntu"
+security_url = "https://security.ubuntu.com/ubuntu"
+components = ["main", "restricted", "universe", "multiverse"]
+compression = "xz"
+
+[releases."25.10"]
+family = "ubuntu"
+codename = "questing"
+label = "Ubuntu 25.10"
+series = "interim"
+supported = true
+installer = "subiquity"
+livefs = "casper"
+archive_url = "https://archive.ubuntu.com/ubuntu"
+security_url = "https://security.ubuntu.com/ubuntu"
+components = ["main", "restricted", "universe", "multiverse"]
+compression = "xz"
+
+[releases."26.04"]
+family = "ubuntu"
+codename = "resolute"
+label = "Ubuntu 26.04 LTS"
+series = "lts"
+supported = true
+installer = "subiquity"
+livefs = "casper"
+archive_url = "https://archive.ubuntu.com/ubuntu"
+security_url = "https://security.ubuntu.com/ubuntu"
+components = ["main", "restricted", "universe", "multiverse"]
+compression = "xz"
+
+[releases."26.10"]
+family = "ubuntu"
+codename = "next"
+label = "Ubuntu 26.10"
+series = "interim"
+supported = false
+installer = "subiquity"
+livefs = "casper"
+archive_url = "https://archive.ubuntu.com/ubuntu"
+security_url = "https://security.ubuntu.com/ubuntu"
+components = ["main", "restricted", "universe", "multiverse"]
+compression = "xz"
+
+[releases."debian-13.5"]
+family = "debian"
+codename = "trixie"
+label = "Debian 13.5 Trixie"
+series = "stable"
+supported = true
+installer = "debian-installer"
+livefs = "live"
+archive_url = "https://deb.debian.org/debian"
+security_url = "https://security.debian.org/debian-security"
+components = ["main", "contrib", "non-free-firmware", "non-free"]
+compression = "xz"

@@ -1,0 +1,21 @@
+# Real `xorriso -indev <iso> -report_el_torito as_mkisofs` stdout (xorriso 1.5.6),
+# captured read-only on 2026-05-30 from a DistroForge-built demo ISO
+# (/tmp/distroforge-demo/dist/distroforge-demo.iso, ISO 9660, "bootable").
+#
+# This record is BIOS-only (grub i386-pc El Torito, no EFI alt-boot entry): it is the
+# real shape DistroForge currently round-trips, and it documents the very gap that the
+# source-record delegation closes -- a stock Ubuntu UEFI ISO would additionally emit
+# -eltorito-alt-boot / -e / -append_partition / -appended_part_as_gpt tokens, which the
+# parser forwards verbatim (see the UEFI-shaped unit input in test_iso_boot_record.py).
+# It is NOT a stock Ubuntu capture; re-capture from a real target ISO when one is on hand.
+-V 'distroforge-demo'
+--modification-date='2026052900075400'
+-partition_cyl_align off
+-partition_offset 16
+-G --interval:local_fs:0s-15s:zero_mbrpt:'/tmp/distroforge-demo/dist/distroforge-demo.iso'
+-iso_mbr_part_type 0xcd
+-c '/boot.catalog'
+-b '/boot/grub/i386-pc/eltorito.img'
+-no-emul-boot
+-boot-load-size 4
+-boot-info-table

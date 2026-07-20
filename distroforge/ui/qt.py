@@ -1,0 +1,71 @@
+# ruff: noqa: F401
+from __future__ import annotations
+
+try:
+    from PySide6.QtCore import QSize, Qt, QTimer
+    from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+    from PySide6.QtWidgets import (
+        QApplication,
+        QCheckBox,
+        QComboBox,
+        QCompleter,
+        QDialog,
+        QDialogButtonBox,
+        QFileDialog,
+        QFormLayout,
+        QFrame,
+        QGridLayout,
+        QHBoxLayout,
+        QInputDialog,
+        QLabel,
+        QLineEdit,
+        QListWidget,
+        QListWidgetItem,
+        QMainWindow,
+        QMessageBox,
+        QPlainTextEdit,
+        QProgressBar,
+        QPushButton,
+        QScrollArea,
+        QSizePolicy,
+        QSplitter,
+        QStackedWidget,
+        QStyle,
+        QToolBar,
+        QVBoxLayout,
+        QWidget,
+    )
+except ImportError:
+    from PyQt6.QtCore import QSize, Qt, QTimer
+    from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QCheckBox,
+        QComboBox,
+        QCompleter,
+        QDialog,
+        QDialogButtonBox,
+        QFileDialog,
+        QFormLayout,
+        QFrame,
+        QGridLayout,
+        QHBoxLayout,
+        QInputDialog,
+        QLabel,
+        QLineEdit,
+        QListWidget,
+        QListWidgetItem,
+        QMainWindow,
+        QMessageBox,
+        QPlainTextEdit,
+        QProgressBar,
+        QPushButton,
+        QScrollArea,
+        QSizePolicy,
+        QSplitter,
+        QStackedWidget,
+        QStyle,
+        QToolBar,
+        QVBoxLayout,
+        QWidget,
+    )

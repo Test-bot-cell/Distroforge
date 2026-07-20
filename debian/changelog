@@ -1,0 +1,469 @@
+distroforge (0.3.5-1) resolute; urgency=medium
+
+  * Finalize desktop-selection contract: selected DE packages now drive both install
+    and explicit removals, with unknown DE values handled safely.
+  * Enrich desktop sanitize feedback and persist pre/post project metadata deltas.
+  * Align package preview, preflight and build planner with the same DE conflict
+    model, then include clear deconfliction notices in report and messaging.
+  * Replace deprecated package icon behavior by wiring the active SVG launch asset
+    from the project-provided source artwork during build/install.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 04 Jun 2026 16:00:00 +0200
+
+distroforge (0.3.4-5) resolute; urgency=medium
+
+  * Replace the packaged launcher icon with the official GNOME SVG asset from
+    user-provided artwork for a consistent dock/logo appearance in GNOME.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 03 Jun 2026 23:55:00 +0200
+
+distroforge (0.3.4-4) resolute; urgency=medium
+
+  * Add a post-install hook that tries to pin DistroForge in GNOME favorites for
+    desktop sessions where a live D-Bus session and gsettings are available, while
+    staying fully no-op in non-GNOME/build environments.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 03 Jun 2026 20:58:00 +0200
+
+distroforge (0.3.4-3) resolute; urgency=medium
+
+  * Sanitize legacy desktop-meta packages at project load time so stale entries
+    are dropped from project metadata, then persisted back to project.json with a
+    clear user-facing notice.
+  * Print the sanitized desktop package notice from the CLI plan and dry-run
+    report startup paths, and surface the same message when opening a project in
+    the GUI.
+  * Add explicit regression coverage for plan and dry-run report messaging, plus
+    an updated migration note in the documentation.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 03 Jun 2026 20:30:00 +0200
+
+distroforge (0.3.4-2) resolute; urgency=medium
+
+  * Replace the hicolor application icon with the GNOME-style DistroForge
+    launcher artwork while keeping the existing desktop entry contract:
+    Name=DistroForge, Exec=distroforge-gui and Icon=distroforge.
+  * Add the source acceptance matrix as a pre-package gate. It exercises the
+    maintainer CLI workflows, offscreen GUI routing, packaging policy,
+    hermetic build planning and ForgeAdvisor's offline backend without sudo,
+    pkexec, network access, QEMU execution, ISO execution or OpenAI/cloud
+    dependencies.
+  * Tighten the Debian policy release path by keeping desktop-file validation,
+    package policy checks and Lintian/manpage rendering in the 0.3.4-2 build
+    verification loop.
+  * Declare the ISO, QEMU, bootstrap and zstd tools used by the build-time
+    acceptance matrix so the package rebuilds inside a clean resolute sbuild
+    chroot without inheriting host tooling.
+  * Add an optional systemd-nspawn backend for the maintainer terminal while
+    keeping the classic chroot backend as the build default.
+  * Expose maintainer chroot backend availability through the CLI and let the
+    hermetic release bundle infer its package version from debian/changelog.
+  * Harden the hermetic bundle evidence contract, surface chroot backend status
+    in the maintainer cockpit and require that autopkgtest smoke covers the
+    backend introspection command.
+  * Add a source-only maintainer evidence dashboard that works for both project
+    roots and the DistroForge source tree, plus a thinner artifacts CLI dispatch
+    path for release and evidence commands.
+  * Prioritize evidence dashboard output with next actions, add evidence
+    contract validation and split evidence CLI commands into their own domain
+    module.
+  * Add a Debian/Ubuntu maintainer toolchain doctor profile, surface it in the
+    Maintainer GUI and feed its result plus latest package/buildinfo artifacts
+    into evidence-status and Maintainer Copilot package reviews.
+  * Add an autopkgtest doctor that separates broken local testbeds from real
+    package smoke failures, feeds the saved report into package evidence and
+    exposes the planned diagnosis in the Artifacts GUI.
+  * Let autopkgtest-doctor auto-select visible schroot/sbuild testbeds, add
+    passed-run package evidence, and bundle saved AUTOPKGTEST-DOCTOR.json
+    reports as release verification evidence.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Tue, 02 Jun 2026 20:25:00 +0200
+
+distroforge (0.3.4-1) unstable; urgency=medium
+
+  * Fix the maintainer chroot terminal, which echoed nothing and reacted to
+    nothing. When the chroot shell exits it closes the slave end of the PTY,
+    and a PTY master then signals end-of-stream by raising EIO instead of
+    returning EOF. The poll loop only handled the would-block case, so once
+    the shell had exited every poll tick raised through read() and the
+    session's own cleanup never ran: the status stayed on "Running" and the
+    /dev /dev/pts /proc /sys /run bind mounts leaked. read() now treats EIO as
+    end-of-stream, so the loop drains the child's final output, reports its
+    exit code, and releases the runtime mounts instead of leaking them.
+  * Add a Start button at the leading edge of the header bar that returns to
+    the project start page from any other surface, following the GNOME HIG
+    convention of a back/home affordance at the start of the header. It is the
+    always-visible, recognition-over-recall counterpart to the keyboard
+    "Open tool…" command palette, shown on every surface except the start
+    page itself.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 01 Jun 2026 19:09:32 +0200
+
+distroforge (0.3.3-1) unstable; urgency=medium
+
+  * Keep the GUI fully responsive under the wider Adwaita Sans metrics: every
+    dynamic single-line label now elides to an ellipsis with the full text in
+    a tooltip, and the dashboard stat tiles carry a width floor, so a value
+    such as "Ubuntu 26.04 skeleton" can no longer overflow or clip inside its
+    panel at any window width. A responsive test sweeps every page across a
+    range of widths and fails on any label drawn wider than its own frame.
+  * Give DistroForge an autonomous, GNOME-native colour identity. A new
+    palette module transcribes the GNOME Human Interface Guidelines palette
+    verbatim and maps a single semantic set on top of it -- primary and
+    secondary accent plus success, warning, error and info -- all sourced from
+    those named colours. The accent is GNOME Blue, replacing the former
+    per-desktop accent (which defaulted to the Ubuntu orange) and the ad-hoc
+    status hues, so the product reads as its own GNOME-native tool rather than
+    a Canonical / Vanilla-framework derivative. The GUI still follows the
+    host's light/dark scheme; only the surfaces and signals now come from one
+    palette.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 01 Jun 2026 00:49:03 +0200
+
+distroforge (0.3.2-1) unstable; urgency=medium
+
+  * Render the Adwaita symbolic icons that 0.3.1 introduced: the toolbar and
+    action buttons now resolve every glyph through the same Adwaita symbolic
+    theme as the build-phase list, instead of Qt's built-in widget pixmaps,
+    so the whole window draws from one GNOME-native icon source.
+  * Recommend qt6-svg-plugins: the Adwaita symbolic icons are SVG, and this
+    package supplies the Qt SVG icon engine that draws them. Without it Qt
+    cannot render the theme glyphs and silently falls back to its built-in
+    set, which is why the new icons were invisible. As a Recommends the GUI
+    still degrades gracefully when it is absent.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 31 May 2026 23:21:35 +0200
+
+distroforge (0.3.1-1) unstable; urgency=medium
+
+  * Restyle the Qt GUI to a sober, GNOME-native look following the GNOME
+    Human Interface Guidelines: explicit Adwaita light/dark surface tokens
+    replace the host Qt palette's grays, so the page no longer floats white
+    cards on a gray frame. Borders become faint Adwaita hairlines, secondary
+    buttons go flat with the accent reserved for primary and active states,
+    and the surfaces switch between Adwaita light and dark according to the
+    host preference. The layout, the per-desktop accent and the status hues
+    are unchanged.
+  * Back the forced Adwaita Sans typography with a real dependency: the
+    package now recommends fonts-adwaita-sans, so the family the stylesheet
+    names actually renders instead of silently falling back. Functional
+    icons resolve through the Adwaita symbolic set, recommended via
+    adwaita-icon-theme.
+  * Clarify that the GUI is PyQt6, not GTK: it neither links nor requires
+    libadwaita. The Adwaita colours are baked-in hex values and the font and
+    icon theme are Recommends, not Depends, so the GUI degrades gracefully
+    when absent.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 31 May 2026 22:49:35 +0200
+
+distroforge (0.3.0-1) unstable; urgency=medium
+
+  * Add ForgeAdvisor, an advisory-only build assistant that perceives, explains
+    and proposes but never mutates the build, recipe or ISO on its own: every
+    change still crosses the same explicit-action wall (a GUI Apply or a CLI
+    verb the user runs) as the rest of the product. It works in four rings —
+    silent perception, free explanation, previewable proposals, and execution
+    only via that wall — and is governed by the four founding pillars rather
+    than added as a fifth. New CLI verbs (forgeadvisor explain-log /
+    review-build / propose-fixes / doctor-ai) each mirror a GUI surface on the
+    Maintainer page, keeping CLI/GUI parity.
+  * Ground the advisor in a host-owned build-memory corpus that records every
+    build attempt — success or failure — with its options, signatures and log
+    features, so guidance cites real history ("3 of your last 5 builds failed
+    at squashfs") rather than hallucinating. A pluggable, local-first reasoning
+    backend degrades to a fully offline grounded-heuristic mode: with no backend
+    it still perceives, classifies and cites the corpus, never blocking and
+    never requiring the network. No model weights ship in the core package.
+  * Unify failure diagnosis on one canonical taxonomy (core/build_diagnosis.py):
+    the beginner-iso --explain-last-failure explainer and ForgeAdvisor both
+    delegate to it, so a failure class means exactly one thing wherever it is
+    shown or counted.
+  * Reframe the GUI around a journey spine: a workflow-level gate persisted
+    across sessions, a spine home, reframed step panels, a goal hub and a
+    command palette that exposes every action, favouring recognition over
+    recall without renaming or removing any capability.
+  * Add two further contract documents — UX cognitive-ergonomics and
+    velocity/responsiveness — and back the advisory agent with an inviolable
+    governance contract; each is phrase-locked and verified by tests so the
+    behaviour cannot silently drift.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 31 May 2026 19:40:15 +0200
+
+distroforge (0.2.3-1) unstable; urgency=medium
+
+  * Resolve the "devel"/"rolling" release track to the target release codename
+    instead of the literal "devel" suite, which is only a debootstrap script
+    alias: it 404s on the Ubuntu/Debian archive and made apt abort an in-chroot
+    install with 'The value "devel" is invalid for APT::Default-Release as such
+    a release is not available in the sources'. An explicit --devel-suite
+    codename override is still honoured.
+  * Make the Qt desktop layout fully responsive so essential controls are never
+    clipped off the right edge on GNOME or any other desktop environment: action
+    and field rows now flow their columns from the width actually available and
+    report a single-column minimum, so an enclosing scroll area always shrinks a
+    page to the viewport instead of latching wide; a horizontal scrollbar
+    appears only as a last resort.
+  * Regroup the heaviest pages (Start, Build & Release, Artifacts, Maintainer,
+    Presets) into small captioned action clusters so dense toolbars stay
+    scannable, without renaming any action or section.
+  * Add explanatory tooltips to jargon-heavy fields (MOK key/cert, OVMF
+    code/vars, QMP socket, proposed pin, hermetic backend, livefs work dir)
+    and leave the development-suite field empty with a "(release codename)"
+    placeholder, since it resolves to the target release codename rather than
+    the literal "devel" suite.
+  * Refresh the launcher icon with a new mascot: an Ubuntu-orange flame inside
+    the Linux penguin on a light rounded tile, replacing the previous
+    flame-only glyph. It still ships as the same hicolor scalable "distroforge"
+    theme icon used by the desktop entry and GUI window.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 31 May 2026 11:30:00 +0200
+
+distroforge (0.2.2-1) unstable; urgency=medium
+
+  * Record the CVE-scan "vuln-report" verdict as a virtual runner event instead
+    of executing it, so an enabled vulnerability scan no longer aborts a real
+    build with "[Errno 2] No such file or directory: 'vuln-report'".
+  * Register the cross-architecture "qemu-user-static-required" assertion and
+    the EFI-only "bootstrap-bios-skip" marker as virtual events too, fixing the
+    same class of crash on foreign-arch and BIOS-less bootstrap builds.
+  * Refresh the application launcher icon shipped in the hicolor scalable theme
+    and associate the GUI window with its desktop entry so the new icon also
+    appears in the shell window list.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sat, 30 May 2026 22:40:00 +0200
+
+distroforge (0.2.1-1) unstable; urgency=medium
+
+  * Auto-install drivers with "ubuntu-drivers install" instead of the removed
+    "autoinstall" subcommand, so the optional driver step no longer aborts a
+    26.04 build with "No such command 'autoinstall'"; ubuntu-drivers-common
+    dropped autoinstall in favour of install as the documented successor.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sat, 30 May 2026 20:15:00 +0200
+
+distroforge (0.2.0-1) unstable; urgency=medium
+
+  * Reproduce the source ISO's own El Torito boot record on rebuild by
+    delegating to "xorriso -report_el_torito as_mkisofs", with a safe
+    fallback to boot-layout detection, so UEFI appended-partition ESP boot
+    survives a remix instead of being silently dropped.
+  * Document the strict Debian-policy and Canonical best-practices golden
+    rule as a single source of truth in docs/debian-canonical-compliance.md
+    and point README.md and docs/architecture.md at it.
+  * Keep the boot-record and progress regression tests fully deterministic,
+    offline and rootless.
+  * Mark test-only build dependencies <!nocheck> and skip the build-time
+    test suite under nocheck in either DEB_BUILD_OPTIONS or
+    DEB_BUILD_PROFILES.
+  * Stop shipping the redundant icon-set LICENSE inside the binary package;
+    the icons are MIT and already covered by debian/copyright.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sat, 30 May 2026 19:03:39 +0200
+
+distroforge (0.1.0-18) unstable; urgency=medium
+
+  * Add a maintainer Debian package build report that wraps dpkg-buildpackage,
+    records package artifacts with SHA256 digests and runs available package
+    review checks.
+  * Make rollback snapshots prepare their directory, stage archives atomically
+    and publish only after successful tar completion.
+  * Route snapshot create/restore tar operations through the configured
+    privilege helper for protected rootfs content.
+  * Document the DistroForge platform architecture contract and snapshot UX.
+  * Extract build argument registration from the CLI monolith into the build
+    command adapter and add platform guardrails against monolith growth.
+  * Move GUI build guidance copy into a dedicated module covering user levels,
+    privilege behavior and rollback snapshot safety.
+  * Move build diff and compatibility report writing out of BuildOrchestrator
+    into a host report artifact service.
+  * Add a maintainer publish bundle that gathers ISO release evidence and
+    writes an explicit release-gate verdict for review.
+  * Add release manifest generation and safe-by-default GPG signing plans for
+    maintainer publish bundles.
+  * Add maintainer release notes and changelog generation from publish bundle
+    evidence.
+  * Add release bundle verification with manifest, checksum, gate and signature
+    review checks.
+  * Add a maintainer release pipeline command that bundles, signs, documents and
+    verifies publication evidence in one run.
+  * Add normalized boot proof planning/execution reports and require ready proof
+    before the release gate accepts boot evidence.
+  * Add a build option contract registry covering CLI flags, UX levels, GUI
+    surfaces, GUI tokens, defaults and documented exceptions.
+  * Extract the Build & Release page layout from the main GUI shell into a
+    dedicated build page module.
+  * Extract GUI plan/build execution dispatch into a build controller covering
+    preflight, progress, dry-run output and snapshot recovery.
+  * Extract GUI widget to BuildOptions mapping into a dedicated UI mapper and
+    make parity audits inspect split GUI modules.
+  * Extract GUI-to-CLI preview rendering into a dedicated UI adapter.
+  * Add an executable product workflow map and readiness diagnostics for feature
+    opportunity, risk context and supporting proof.
+  * Align experience mode labels with the product levels: beginner, power user,
+    maintainer and developer.
+  * Add next-action recommendations to readiness output and surface the product
+    workflow map in the GUI Command Center.
+  * Harden YAML preset/example and bundled TOML catalog policy checks for Debian
+    packaging review.
+  * Expand Debian clean coverage for generated package artifacts so the normal
+    test suite can run on a clean source tree without build-context skips.
+  * Upgrade the Debian autopkgtest smoke to validate installed CLI, TOML package
+    data and YAML examples, and make packaging policy block weak smoke tests.
+  * Add a guided distro build journey for beginner, power-user, maintainer and
+    developer paths across CLI and GUI Command Center surfaces.
+  * Make build journey steps actionable through shared CLI and GUI apply/open
+    actions that seed project state or write reviewable build definitions.
+  * Promote the guided build journey to the Start page while keeping Command
+    Center as the deeper CLI/GUI parity and capability audit surface.
+  * Add beginner ISO Start/CLI prepare and execute actions that apply safe
+    defaults, write build definitions, generate dry-run evidence, run the
+    BuildOrchestrator when requested and report the release gate status.
+  * Add beginner ISO host readiness doctor/install flow so missing build tools
+    produce an explicit apt command or confirmed GUI installation job.
+  * Add beginner ISO failure explanation from the last command log with local
+    deterministic recovery advice.
+  * Add beginner ISO release artifact repair for derivable publication files
+    without inventing boot proof.
+  * Add beginner ISO boot proof planning/running and require executed boot proof
+    reports in the release gate.
+  * Add a guarded power-user ISO path with deb822 mirrors, autoinstall, drivers,
+    explicit service intent, rollback snapshots and release evidence.
+  * Replace the Start journey text block with responsive Qt step cards carrying
+    status, goal, GUI/CLI targets and per-step open/apply actions.
+  * Add shared journey step checks so Start cards and CLI `journey --check` show
+    contextual pass/warning/error findings for each distro build stage.
+  * Add a maintainer release gate covering ISO presence, SHA256SUMS
+    verification, source trust, boot proof, release evidence and Debian
+    packaging policy.
+  * Wire the release gate into the maintainer Journey as the final publish
+    blocker.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 23:30:00 +0200
+
+distroforge (0.1.0-17) unstable; urgency=medium
+
+  * Introduce shared privileged filesystem operations for rootfs and ISO writes.
+  * Route APT sources, mirrors, release track, branding, customization, network,
+    kiosk, OEM, autoinstall, seeds, Casper metadata and chroot hook staging through
+    the shared file operation layer.
+  * Surface rootfs privilege behavior in the GUI build controls.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 23:05:00 +0200
+
+distroforge (0.1.0-16) unstable; urgency=medium
+
+  * Restrict debranding path renames to visible branding and metadata paths.
+  * Avoid renaming kernel module paths such as ubuntu-host.ko.zst during debranding.
+  * Use the privilege helper for protected branding path renames.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 22:20:00 +0200
+
+distroforge (0.1.0-15) unstable; urgency=medium
+
+  * Write protected debranding text replacements through the configured privilege helper.
+  * Avoid direct Python writes to locked rootfs identity files such as etc/os-release.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 21:50:00 +0200
+
+distroforge (0.1.0-14) unstable; urgency=medium
+
+  * Use sudo askpass for GUI builds without a terminal when available.
+  * Preflight-block sudo GUI builds that cannot authenticate before root commands start.
+  * Recommend ssh-askpass-gnome for graphical sudo prompts.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 21:35:00 +0200
+
+distroforge (0.1.0-13) unstable; urgency=medium
+
+  * Make GUI builds use sudo by default and keep pkexec as an advanced opt-in.
+  * Warn in dry-run reports when pkexec is selected for long privileged builds.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 21:20:00 +0200
+
+distroforge (0.1.0-12) unstable; urgency=medium
+
+  * Add ForgeAdvisor local-first advisory commands for log and build reviews.
+  * Expose ForgeAdvisor in the maintainer GUI with CLI/GUI parity docs.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 21:05:00 +0200
+
+distroforge (0.1.0-11) unstable; urgency=medium
+
+  * Make dry-run reports detect project, host, workspace, rootfs, policy and trust findings.
+  * Add command summaries so simulated runs expose privileged, virtual and write actions.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Thu, 28 May 2026 00:20:00 +0200
+
+distroforge (0.1.0-10) unstable; urgency=medium
+
+  * Resolve pkexec-wrapped helper commands to absolute program paths.
+  * Add actionable diagnostics for cancelled or failed pkexec authorization.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 23:20:00 +0200
+
+distroforge (0.1.0-9) unstable; urgency=medium
+
+  * Reuse an existing valid bootstrap rootfs instead of rerunning debootstrap.
+  * Report incomplete non-empty rootfs workdirs with an actionable cleanup message.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 23:05:00 +0200
+
+distroforge (0.1.0-8) unstable; urgency=medium
+
+  * Copy locked bootstrap kernel/initrd artifacts with the configured privilege helper.
+  * Emit actionable permission errors when boot artifacts cannot be read without sudo.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 22:50:00 +0200
+
+distroforge (0.1.0-7) unstable; urgency=medium
+
+  * Treat internal reporting commands as virtual runner events during execution.
+  * Write a real compatibility-report.txt artifact instead of executing a fake binary.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 22:30:00 +0200
+
+distroforge (0.1.0-6) unstable; urgency=medium
+
+  * Depend on debootstrap so default skeleton source starters work after install.
+  * Keep mmdebstrap as an optional advanced bootstrap and hermetic-build backend.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 22:15:00 +0200
+
+distroforge (0.1.0-5) unstable; urgency=medium
+
+  * Add .changes-aware buildinfo and packaging policy reports.
+  * Add GUI Changes selector for packaging policy parity.
+  * Refresh README and release docs to avoid stale package version examples.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 21:55:00 +0200
+
+distroforge (0.1.0-4) unstable; urgency=medium
+
+  * Add buildinfo, packaging policy and hermetic build planning reports.
+  * Extend Debian package CI planning with lintian/autopkgtest checks.
+  * Split recent CLI handlers and GUI pages into focused modules.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 21:25:00 +0200
+
+distroforge (0.1.0-3) unstable; urgency=medium
+
+  * Add maintainer-grade artifact and release readiness workflows.
+  * Add derivative validation, create-project flow and Dockerfile hint parsing.
+  * Expand livefs ISO workspace skeleton and QEMU smoke planning.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 21:05:00 +0200
+
+distroforge (0.1.0-2) unstable; urgency=medium
+
+  * Add capture/livefs/derivative profile workflows.
+  * Keep CLI/GUI parity and documentation contracts current.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 27 May 2026 20:45:00 +0200
+
+distroforge (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging.
+  * Build with dh-sequence-python3 and pybuild-plugin-pyproject.
+  * Install CLI, Typer facade and GUI launcher entry points from pyproject.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Tue, 26 May 2026 00:00:00 +0200

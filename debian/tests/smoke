@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+distroforge --help >/tmp/distroforge-help.txt
+grep -q "usage: distroforge" /tmp/distroforge-help.txt
+
+distroforge releases >/tmp/distroforge-releases.txt
+grep -q "26.04" /tmp/distroforge-releases.txt
+
+distroforge doctor --python >/tmp/distroforge-python-doctor.txt
+grep -q "pydantic" /tmp/distroforge-python-doctor.txt
+
+distroforge host >/tmp/distroforge-host.txt
+grep -q "chroot-terminal" /tmp/distroforge-host.txt
+
+distroforge chroot-backends >/tmp/distroforge-chroot-backends.txt
+grep -q "nspawn" /tmp/distroforge-chroot-backends.txt
+
+SOURCE_ROOT="${AUTOPKGTEST_TEST_SRCDIR:-.}"
+distroforge packaging-policy "$SOURCE_ROOT" >/tmp/distroforge-packaging-policy.txt
+grep -q "Autopkgtest policy" /tmp/distroforge-packaging-policy.txt
+
+distroforge hermetic-build-plan "$SOURCE_ROOT" --backend sbuild --suite resolute >/tmp/distroforge-hermetic-plan.txt
+grep -q "Suite: resolute" /tmp/distroforge-hermetic-plan.txt
+
+python3 - <<'PY'
+import json
+from importlib.resources import files
+from pathlib import Path
+
+from distroforge.core.definition import load_definition
+from distroforge.core.schema import validate_definition_data
+
+data_root = files("distroforge.data")
+for name in ("releases.toml", "profiles.toml", "personas.toml"):
+    assert data_root.joinpath(name).read_text(encoding="utf-8").strip()
+
+vulndb = json.loads(data_root.joinpath("vulndb.json").read_text(encoding="utf-8"))
+assert vulndb.get("advisories")
+
+example = Path("/usr/share/doc/distroforge/examples/minimal-bootstrap.yaml")
+if not example.exists():
+    example = Path("examples/minimal-bootstrap.yaml")
+validate_definition_data(load_definition(example))
+PY

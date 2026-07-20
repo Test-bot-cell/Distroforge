@@ -1,0 +1,22 @@
+DistroForge Debian packaging
+=============================
+
+This package uses dh-sequence-python3 with pybuild-plugin-pyproject.
+
+The imported 0.3.5-1 Git baseline carries the Ubuntu resolute
+Standards-Version adjustment directly in the source. No Quilt patches are
+active in this baseline.
+
+Standalone development remains driven by pyproject.toml and a local virtual
+environment. Debian package builds should use distribution Python packages from
+debian/control instead of pip-installed dependencies.
+
+During alpha development, local binary package builds are intentionally outside
+the default workflow. Use lint, tests, import checks and static packaging review
+unless the maintainer explicitly asks for a package build in the current task.
+
+For a source upload, create an upstream orig tarball that excludes local build
+artifacts such as .venv, __pycache__, .pytest_cache, .ruff_cache and egg-info.
+
+If build dependency inspection is needed, review the dependencies listed in
+debian/control without producing package artifacts.

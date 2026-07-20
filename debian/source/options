@@ -1,0 +1,6 @@
+extend-diff-ignore = "(^|/)(\.venv|\.pytest_cache|\.ruff_cache|__pycache__|.*\.egg-info)(/|$)|.*\.py[co]$"
+tar-ignore = .venv
+tar-ignore = .ruff_cache
+tar-ignore = .pytest_cache
+tar-ignore = __pycache__
+tar-ignore = *.egg-info

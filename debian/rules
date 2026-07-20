@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME=distroforge
+export PYBUILD_SYSTEM=pyproject
+export PYBUILD_TEST_ARGS=-q
+
+%:
+	dh $@ --buildsystem=pybuild
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS) $(DEB_BUILD_PROFILES)))
+	DISTROFORGE_DEBIAN_BUILD=1 python3 -m pytest -q
+endif

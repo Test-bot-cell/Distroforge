@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DistroForge
+GenericName=ISO Builder
+Comment=Build and customize Ubuntu/Debian live ISO images
+Exec=distroforge-gui
+Icon=distroforge
+Terminal=false
+Categories=System;
+StartupNotify=true
+Keywords=ISO;Debian;Ubuntu;Live;Builder;Forge;

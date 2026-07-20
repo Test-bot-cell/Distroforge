@@ -1,0 +1,62 @@
+Source: distroforge
+Section: admin
+Priority: optional
+Maintainer: DistroForge maintainers <maintainers@distroforge.invalid>
+Rules-Requires-Root: no
+Standards-Version: 4.7.3
+Build-Depends:
+ debhelper-compat (= 13),
+ debootstrap <!nocheck>,
+ dh-sequence-python3,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-pluggy <!nocheck>,
+ python3-pydantic <!nocheck>,
+ python3-pytest <!nocheck>,
+ python3-rich <!nocheck>,
+ python3-setuptools,
+ python3-typer <!nocheck>,
+ python3-wheel,
+ python3-yaml <!nocheck>,
+ qemu-system-x86 <!nocheck>,
+ squashfs-tools <!nocheck>,
+ xorriso <!nocheck>,
+ zstd <!nocheck>,
+Build-Depends-Indep:
+ python3-pyqt6 <!nocheck>,
+
+Package: distroforge
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ apt,
+ debootstrap,
+ python3-pluggy,
+ python3-pydantic,
+ python3-rich,
+ python3-typer,
+ python3-yaml,
+ qemu-system-x86,
+ squashfs-tools,
+ xorriso,
+ zstd,
+Recommends:
+ adwaita-icon-theme,
+ fonts-adwaita-sans,
+ python3-pyqt6,
+ qemu-kvm,
+ qt6-svg-plugins,
+ ssh-askpass-gnome,
+ synaptic,
+ systemd-container,
+Suggests:
+ lintian,
+ mmdebstrap,
+Description: build and customize Ubuntu/Debian live ISO images
+ DistroForge is a Python toolkit for planning, validating and building
+ customized Ubuntu/Debian live ISO images.
+ .
+ It provides a classic CLI, optional Typer facade, Qt GUI launcher, dry-run
+ planning, ISO build orchestration, branding, QA helpers, provenance output,
+ plugin hooks and beginner-oriented guardrails.

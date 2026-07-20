@@ -1,0 +1,49 @@
+[personas.noob]
+label = "Beginner"
+description = "Safe defaults, guided choices, minimal destructive options."
+level = "beginner"
+sanitize_apt_lists = false
+sanitize_ssh_host_keys = false
+drivers_auto = true
+qemu_matrix = ["live-bios"]
+sbom = true
+
+[personas.friendly]
+label = "Balanced"
+description = "Balanced defaults for remix makers who want useful automation."
+level = "beginner"
+sanitize_apt_lists = true
+sanitize_ssh_host_keys = false
+drivers_auto = true
+qemu_matrix = ["live-bios", "live-uefi"]
+sbom = true
+
+[personas.intermediate]
+label = "Power user"
+description = "More validation and QA while keeping the workflow approachable."
+level = "power-user"
+sanitize_apt_lists = true
+sanitize_ssh_host_keys = true
+drivers_auto = true
+qemu_matrix = ["live-bios", "live-uefi", "install-uefi"]
+sbom = true
+
+[personas.pro]
+label = "Maintainer"
+description = "CI-friendly, stricter sanitation and full dry-run QA planning."
+level = "maintainer"
+sanitize_apt_lists = true
+sanitize_ssh_host_keys = true
+drivers_auto = false
+qemu_matrix = ["live-bios", "live-uefi", "install-bios", "install-uefi", "lowram-live"]
+sbom = true
+
+[personas.dev_maintainer]
+label = "Developer maintainer"
+description = "Release-engineering defaults for reproducible distro evolution."
+level = "developer"
+sanitize_apt_lists = true
+sanitize_ssh_host_keys = true
+drivers_auto = false
+qemu_matrix = ["live-bios", "live-uefi", "install-bios", "install-uefi", "lowram-live"]
+sbom = true

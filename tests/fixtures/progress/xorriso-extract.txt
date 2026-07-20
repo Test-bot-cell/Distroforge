@@ -1,0 +1,5 @@
+# Real xorriso -osirrox -extract output (xorriso 1.5.6), captured 2026-05-30 over a
+# pipe. The extract phase also reports node/file counts and sizes, never "% done",
+# so xorriso_progress returns None for every line.
+xorriso : UPDATE :      64 nodes read in 1 seconds
+xorriso : UPDATE :      64 files restored ( 256.0m) in 1 seconds = 193.8xD

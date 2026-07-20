@@ -1,0 +1,9 @@
+# apt progress via APT::Status-Fd=1 -- apt's documented machine interface for
+# frontends. NOT a live capture (running apt-get install needs root, a chroot, and
+# network, none of which the test suite uses); these are the documented dlstatus/
+# pmstatus protocol lines. apt is the one heavy command that streams an explicit
+# per-item percentage, which apt_progress reads (-> 0.10, 0.0, 0.428571, 1.0).
+dlstatus:1:10.0000:Retrieving file 1 of 3
+pmstatus:vim:0.0000:Installing vim
+pmstatus:vim:42.8571:Unpacking vim
+pmstatus:vim:100.0000:Installed vim

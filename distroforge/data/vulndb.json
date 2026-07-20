@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "schema": "distroforge-vulndb/1",
+    "description": "Offline CVE advisory seed for DistroForge package scanning. Match is by package name at planning time (no .deb is fetched or built). Replace or extend this file with a maintained export from the Ubuntu Security Notices / OSV feed and point --vuln-db / trust.vuln_scan.db_path at it for production gating.",
+    "source": "seed-snapshot",
+    "updated": "2026-05-01"
+  },
+  "advisories": [
+    {
+      "id": "CVE-2023-38545",
+      "package": "curl",
+      "severity": "high",
+      "fixed_version": "8.4.0",
+      "summary": "SOCKS5 heap buffer overflow in curl/libcurl."
+    },
+    {
+      "id": "CVE-2023-4863",
+      "package": "libwebp",
+      "severity": "critical",
+      "fixed_version": "1.3.2",
+      "summary": "Heap buffer overflow in libwebp WebP image decoding."
+    },
+    {
+      "id": "CVE-2021-3156",
+      "package": "sudo",
+      "severity": "high",
+      "fixed_version": "1.9.5p2",
+      "summary": "Heap-based buffer overflow in sudo (Baron Samedit) allows local root."
+    },
+    {
+      "id": "CVE-2024-3094",
+      "package": "xz-utils",
+      "severity": "critical",
+      "fixed_version": "5.6.1+really5.4.5",
+      "summary": "Malicious backdoor in upstream xz/liblzma build tooling."
+    },
+    {
+      "id": "CVE-2023-0286",
+      "package": "openssl",
+      "severity": "high",
+      "fixed_version": "3.0.8",
+      "summary": "X.400 address type confusion in X.509 GeneralName handling."
+    },
+    {
+      "id": "CVE-2022-0847",
+      "package": "linux-image-generic",
+      "severity": "high",
+      "fixed_version": "5.16.11",
+      "summary": "Dirty Pipe: improper Unix pipe handling allows local privilege escalation."
+    }
+  ]
+}

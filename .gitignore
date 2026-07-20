@@ -1,0 +1,61 @@
+# Python bytecode and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Tests, coverage, and static analysis
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Python build outputs
+*.egg-info/
+.eggs/
+build/
+dist/
+.pybuild/
+pip-wheel-metadata/
+
+# Debian package build outputs. During alpha, package builds are explicit only.
+*.deb
+*.dsc
+*.build
+*.buildinfo
+*.changes
+*.upload
+*.debian.tar.*
+*.orig.tar.*
+.pc/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/*.debhelper
+debian/*.debhelper*
+debian/distroforge/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local assistant state
+.agents/
+.codex/

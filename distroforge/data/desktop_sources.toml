@@ -1,0 +1,62 @@
+[desktop_sources.ubuntu]
+label = "GNOME"
+upstream = "https://release.gnome.org/50"
+current_version = "50"
+build_system = "gnome"
+notes = "GNOME 50 Tokyo source stack profile; override components for exact tarballs."
+
+[desktop_sources.ubuntu_minimal]
+label = "GNOME Minimal"
+upstream = "https://release.gnome.org/50"
+current_version = "50"
+build_system = "gnome"
+notes = "Minimal GNOME 50 source stack profile; override components for exact tarballs."
+
+[desktop_sources.kubuntu]
+label = "KDE Plasma"
+upstream = "https://kde.org/announcements/"
+current_version = "current"
+build_system = "cmake"
+notes = "KDE Plasma source stack profile; override components for exact tarballs."
+
+[desktop_sources.xubuntu]
+label = "XFCE"
+upstream = "https://www.xfce.org/download"
+current_version = "current"
+build_system = "meson"
+notes = "XFCE source stack profile; override components for exact tarballs."
+
+[desktop_sources.lubuntu]
+label = "LXQt"
+upstream = "https://lxqt-project.org/release/"
+current_version = "current"
+build_system = "cmake"
+notes = "LXQt source stack profile; override components for exact tarballs."
+
+[desktop_sources.mate]
+label = "MATE"
+upstream = "https://mate-desktop.org/"
+current_version = "current"
+build_system = "autotools"
+notes = "MATE source stack profile; override components for exact tarballs."
+
+[desktop_sources.budgie]
+label = "Budgie"
+upstream = "https://github.com/BuddiesOfBudgie/budgie-desktop"
+current_version = "current"
+build_system = "meson"
+notes = "Budgie source stack profile; override components for exact tarballs."
+
+[desktop_sources.cinnamon]
+label = "Cinnamon"
+upstream = "https://github.com/linuxmint/cinnamon"
+current_version = "current"
+build_system = "meson"
+notes = "Cinnamon source stack profile; override components for exact tarballs."
+
+[desktop_sources.unity]
+label = "Unity"
+upstream = "https://launchpad.net/unity"
+current_version = "current"
+build_system = "debuild"
+notes = "Unity source stack profile; override components for exact source packages."

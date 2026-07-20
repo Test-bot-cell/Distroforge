@@ -1,0 +1,1 @@
+"""Bundled DistroForge catalogs."""

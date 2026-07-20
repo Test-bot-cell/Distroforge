@@ -1,0 +1,31 @@
+[palettes.forge]
+label = "Forge"
+colors = ["#dd4814", "#2e3436", "#f6f5f4", "#77216f", "#19b6ee"]
+
+[palettes.terminal]
+label = "Terminal"
+colors = ["#26a269", "#241f31", "#f6f5f4", "#3584e4", "#c061cb"]
+
+[palettes.ocean]
+label = "Ocean"
+colors = ["#0f6b8f", "#083344", "#f0f9ff", "#22d3ee", "#f97316"]
+
+[palettes.forest]
+label = "Forest"
+colors = ["#2f6b3f", "#1f2933", "#f4f1de", "#84cc16", "#c2410c"]
+
+[palettes.solar]
+label = "Solar"
+colors = ["#f59e0b", "#111827", "#fff7ed", "#dc2626", "#2563eb"]
+
+[palettes.graphite]
+label = "Graphite"
+colors = ["#64748b", "#111827", "#f8fafc", "#06b6d4", "#f43f5e"]
+
+[palettes.lilac]
+label = "Lilac"
+colors = ["#8b5cf6", "#1e1b4b", "#faf5ff", "#14b8a6", "#f97316"]
+
+[palettes.rose]
+label = "Rose"
+colors = ["#e11d48", "#3f0f1f", "#fff1f2", "#f59e0b", "#0891b2"]

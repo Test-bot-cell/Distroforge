@@ -1,0 +1,22 @@
+source_mode: bootstrap
+packages:
+  - build-essential
+  - git
+  - curl
+  - python3
+  - python3-venv
+  - pipx
+customization:
+  desktop: ubuntu
+  locale: en_US.UTF-8
+branding:
+  name: DistroForge Developer
+  product_name: DistroForge Developer
+sanitize:
+  apt_lists: true
+provenance:
+  enabled: true
+qa:
+  scenarios:
+    - live-bios
+    - live-uefi

@@ -1,0 +1,2 @@
+debian/distroforge.desktop usr/share/applications
+debian/distroforge.svg usr/share/icons/hicolor/scalable/apps
