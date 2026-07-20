@@ -1,0 +1,7 @@
+profiles:
+  base: desktop
+  layers:
+    - developer
+    - privacy
+  overrides:
+    - lightweight

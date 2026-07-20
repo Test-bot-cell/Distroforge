@@ -3,9 +3,11 @@ DistroForge Debian packaging
 
 This package uses dh-sequence-python3 with pybuild-plugin-pyproject.
 
-The imported 0.3.5-1 Git baseline carries the Ubuntu resolute
-Standards-Version adjustment directly in the source. No Quilt patches are
-active in this baseline.
+The Git baseline was imported from the verified 0.3.5-1 package. The develop
+branch restores the 0.3.5-2 runtime and documentation delta from the preserved
+binary release artifact described in PROVENANCE.md, while retaining later
+repository CI fixes. The Ubuntu resolute Standards-Version adjustment is
+carried directly in the source, with no active Quilt patches.
 
 Standalone development remains driven by pyproject.toml and a local virtual
 environment. Debian package builds should use distribution Python packages from

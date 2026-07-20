@@ -88,7 +88,7 @@ Qt SVG packages used by its GNOME-native presentation.
 If you have a DistroForge release package:
 
 ```bash
-sudo apt install ./distroforge_0.3.5-1_all.deb
+sudo apt install ./distroforge_0.3.5-2_all.deb
 ```
 
 The package installs the CLI, Qt launcher, manual pages, examples, and the core
@@ -213,6 +213,7 @@ catalog shipped by your installation.
 - [Image definitions](docs/definitions.md)
 - [Capture workflows](docs/capture-workflows.md)
 - [Derivative profiles](docs/derivative-profiles.md)
+- [Beginner, power-user, and trust workflow](docs/beginner-power-trust-trilogy.md)
 - [Artifacts and release readiness](docs/artifacts-release-readiness.md)
 - [CLI and GUI parity](docs/gui-parity.md)
 - [Debian and Ubuntu Python policy](docs/debian-ubuntu-python-policy.md)

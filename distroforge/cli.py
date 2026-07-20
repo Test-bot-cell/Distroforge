@@ -19,6 +19,7 @@ from .core.definition import (
     example_definition,
     write_definition,
 )
+from .core.noob_flow import noob_profile_choices, noob_profile_default
 from .core.presets import BUILTIN_PRESETS
 from .core.recipe_ai import RecipeAdvisor
 from .core.source_starter import BUILTIN_SOURCE_STARTERS
@@ -66,7 +67,33 @@ def build_parser() -> argparse.ArgumentParser:
         profile_command.add_argument("profile")
         profile_command.add_argument("--definition", type=Path)
         profile_command.add_argument("--output", type=Path)
+        if command == "diff":
+            profile_command.add_argument("--against")
+            profile_command.add_argument("--against-base")
+            profile_command.add_argument("--against-layer", action="append", default=[])
+            profile_command.add_argument("--against-override", action="append", default=[])
+            profile_command.add_argument("--against-config", type=Path)
+            profile_command.add_argument("--config", type=Path)
+            profile_command.add_argument("--layer", action="append", default=[])
+            profile_command.add_argument("--override", action="append", default=[])
+        else:
+            profile_command.add_argument("--against")
         profile_command.add_argument("--json", action="store_true")
+    profile_resolve = profile_sub.add_parser("resolve", help="Resolve composable profile layers")
+    profile_resolve.add_argument("root", type=Path)
+    profile_resolve.add_argument("--base")
+    profile_resolve.add_argument("--layer", action="append", default=[])
+    profile_resolve.add_argument("--override", action="append", default=[])
+    profile_resolve.add_argument("--config", type=Path)
+    profile_resolve.add_argument("--json", action="store_true")
+    profile_show = profile_sub.add_parser("show", help="Show a built-in profile layer")
+    profile_show.add_argument("profile")
+    profile_show.add_argument("--root", type=Path)
+    profile_show.add_argument("--config", type=Path)
+    profile_show.add_argument("--layer", action="append", default=[])
+    profile_show.add_argument("--override", action="append", default=[])
+    profile_show.add_argument("--base")
+    profile_show.add_argument("--json", action="store_true")
     sub.add_parser("personas", help="List beginner-to-pro workflow personas")
     sub.add_parser("desktops", help="List desktop/flavor personalization targets")
     starter_parser = sub.add_parser("source-starters", help="List project source starters")
@@ -199,6 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     explain_parser = sub.add_parser("explain", help="Explain what a build would do in plain language")
     explain_parser.add_argument("root", type=Path)
+    explain_parser.add_argument("--json", action="store_true", help="Machine-readable output")
+    explain_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return exit status 2 when validation blockers are present",
+    )
 
     ux_parser = sub.add_parser("ux-audit", help="Audit persona UX, safety and CLI/GUI parity")
     ux_parser.add_argument("root", type=Path)
@@ -350,6 +383,17 @@ def build_parser() -> argparse.ArgumentParser:
     forgeadvisor_memory.add_argument("--limit", type=int, default=5, help="How many recent attempts to summarize")
     forgeadvisor_memory.add_argument("--json", action="store_true")
 
+    history_parser = sub.add_parser("history", help="List or replay local build history")
+    history_sub = history_parser.add_subparsers(dest="history_command")
+    history_list = history_sub.add_parser("list", help="List local project build history")
+    history_list.add_argument("root", type=Path)
+    history_list.add_argument("--json", action="store_true")
+    history_replay = history_sub.add_parser("replay", help="Replay a saved config into a clean definition")
+    history_replay.add_argument("root", type=Path)
+    history_replay.add_argument("entry", nargs="?", default="latest")
+    history_replay.add_argument("--output", type=Path)
+    history_replay.add_argument("--json", action="store_true")
+
     export_recipe_parser = sub.add_parser("export-recipe", help="Export project and current defaults as a recipe")
     export_recipe_parser.add_argument("root", type=Path)
     export_recipe_parser.add_argument("target", type=Path)
@@ -486,7 +530,32 @@ def build_parser() -> argparse.ArgumentParser:
     new_parser.add_argument("--source-iso", type=Path)
     new_parser.add_argument("--previous-project", type=Path)
     new_parser.add_argument("--from-scratch", action="store_true")
+    new_parser.add_argument(
+        "--profile",
+        choices=noob_profile_choices(),
+        help="Optional beginner profile. When set, creates the project and persists a plan draft.",
+    )
+    new_parser.add_argument("--plan-only", action="store_true", help="Show the noob-first plan without creating files")
+    new_parser.add_argument("--json", action="store_true")
     register_trust_arguments(new_parser)
+
+    wizard_parser = sub.add_parser("wizard", help="Noob-first project wizard")
+    wizard_parser.add_argument("name")
+    wizard_parser.add_argument("root", type=Path)
+    wizard_parser.add_argument("--release", default="26.04")
+    wizard_parser.add_argument(
+        "--profile",
+        choices=noob_profile_choices(),
+        default=noob_profile_default(),
+        help="Noob-first profile to apply",
+    )
+    wizard_parser.add_argument("--source-iso", type=Path)
+    wizard_parser.add_argument("--previous-project", type=Path)
+    wizard_parser.add_argument("--starter", choices=[*BUILTIN_SOURCE_STARTERS, "local-iso", "previous-project"])
+    wizard_parser.add_argument("--from-scratch", action="store_true")
+    wizard_parser.add_argument("--plan-only", action="store_true")
+    wizard_parser.add_argument("--json", action="store_true")
+    register_trust_arguments(wizard_parser)
 
     plan_parser = sub.add_parser("plan", help="Print the build pipeline for a project")
     plan_parser.add_argument("root", type=Path)
@@ -642,9 +711,10 @@ def _main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "explain":
-        from .commands.explain import render_explain
+        from .commands.explain import run_explain
 
-        print(render_explain(args.root))
+        if run_explain(args):
+            raise SystemExit(2)
         return
 
     if args.command == "ux-audit":
@@ -705,6 +775,11 @@ def _main(argv: list[str] | None = None) -> None:
     if args.command == "forgeadvisor":
         from .commands.forgeadvisor import run_forgeadvisor
         run_forgeadvisor(args)
+        return
+
+    if args.command == "history":
+        from .commands.history import run_history
+        run_history(args, parser)
         return
 
     if args.command == "export-recipe":
@@ -844,7 +919,7 @@ def _main(argv: list[str] | None = None) -> None:
         run_debrand(args, parser)
         return
 
-    if args.command == "new":
+    if args.command in {"new", "wizard"}:
         from .commands.new import run_new
         run_new(args)
         return

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from distroforge.cli import main
@@ -346,11 +348,15 @@ def test_cli_secureboot_assist_dry_run_emits_plan(capsys, tmp_path) -> None:
     assert "MOK.der" in out
 
 
-def test_cli_explain_prints_plan(capsys, tmp_path) -> None:
+def test_cli_explain_strict_blocks_invalid_source_mode(capsys, tmp_path) -> None:
     project = Project.create("ExplainStrict", tmp_path / "explain-strict", "26.04")
     project.source_mode = "broken"
     project.save()
 
-    main(["explain", str(project.root)])
+    with pytest.raises(SystemExit) as exc:
+        main(["explain", str(project.root), "--strict", "--json"])
 
-    assert "DistroForge build explanation" in capsys.readouterr().out
+    assert exc.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["blocked"] is True
+    assert any(item["code"] == "source-mode" for item in payload["prerequisites"])

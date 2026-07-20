@@ -195,7 +195,7 @@ def test_cli_branding_preview_and_export_identity(tmp_path, capsys) -> None:
     assert payload["short_name"] == "Planetfall"
 
 
-def test_profiles_cover_target_distro_families_and_cli_output(tmp_path, capsys) -> None:
+def test_profiles_cover_target_distro_families_and_cli_diff(tmp_path, capsys) -> None:
     expected = {"desktop", "developer", "gaming", "education", "enterprise", "privacy", "lightweight"}
     assert expected.issubset(load_profiles())
 
@@ -204,16 +204,22 @@ def test_profiles_cover_target_distro_families_and_cli_output(tmp_path, capsys) 
     main(["profile", "diff", str(project.root), "gaming"])
 
     output = capsys.readouterr().out
-    assert "Profile: gaming" in output
-    assert "Install:" in output
+    assert "Left: gaming" in output
+    assert "Right: project" in output
+    assert "Install only in left:" in output
     assert "steam-installer" in output
 
 
-def test_profile_diff_accepts_json_output(tmp_path, capsys) -> None:
+def test_profile_diff_supports_explicit_and_legacy_targets(tmp_path, capsys) -> None:
     project = Project.create("Planetfall", tmp_path / "planetfall-diff", "26.04")
     project.save()
 
-    main(["profile", "diff", str(project.root), "gaming", "--json"])
+    main(["profile", "diff", str(project.root), "gaming", "--against", "lightweight", "--json"])
     explicit = json.loads(capsys.readouterr().out)
-    assert explicit["metadata"]["profile"] == "gaming"
-    assert explicit["metadata"]["profile_label"] == "Gaming"
+    assert explicit["left"]["profile"] == "gaming"
+    assert explicit["right"]["profile"] == "lightweight"
+
+    main(["profile", "diff", str(project.root), "gaming"])
+    legacy = capsys.readouterr().out
+    assert "Left: gaming" in legacy
+    assert "Right: project" in legacy

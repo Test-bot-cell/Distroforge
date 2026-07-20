@@ -1,2 +1,4 @@
 examples/developer-workstation.yaml
 examples/minimal-bootstrap.yaml
+examples/composable-profile.yaml
+examples/composable-profile.toml

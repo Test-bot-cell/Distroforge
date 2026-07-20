@@ -24,6 +24,17 @@ product workflow map so advanced features remain tied to their purpose and user 
 CLI `build-phases` maps to the Command Center **Show build phase contracts** action; both
 render the per-phase contracts (inputs, artifacts, privileges, rollback points) from
 `core/phase_contracts.py`, and `--stage STAGE` scopes the catalog to one pipeline stage.
+CLI `wizard NAME ROOT --profile portable|desktop|dev|kiosk` maps to the Command Center
+**Beginner plan** action and the Start beginner path. The GUI renders the same
+beginner-first plan from `core/noob_flow.py`: desktop, mirror, partition, persistence,
+security, application add/remove summary, estimate, risks and a chunked build preview.
+The text deliberately groups build phases instead of dumping every engine step at once,
+preserving progressive disclosure while the JSON/definition surfaces keep the full
+machine-readable contract.
+CLI `history list PROJECT` maps to the Command Center **Project history** action, and
+CLI `history replay PROJECT ENTRY` maps to **Replay latest** for the most recent entry.
+Both use `core/build_history.py`; replay writes a clean definition only after the user
+clicks the explicit GUI action.
 The guided build journey **spine** is the primary user-facing journey surface: the shell
 home (`ui/journey_shell.py`) renders the steps from `core/build_journey.py` as a single
 ordered spine, level-gated for progressive disclosure, and routes each step to its focused

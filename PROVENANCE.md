@@ -70,6 +70,33 @@ The reconciled tree passed the following checks before the first commit:
 
 No Debian package was rebuilt or installed during repository initialization.
 
+## `develop` source recovery for 0.3.5-2
+
+The `develop` branch was prepared on 2026-07-20 from the preserved 0.3.5-2
+release payload and the local development journal that produced it.
+
+- Release payload SHA-256:
+  `1ef34b17f97238f41afb62e9bf7cd1db0e10a6f52d93019f46bfef9438aba116`.
+- All 291 payload checksums passed.
+- The 253 files under `distroforge/` produced the sorted path-and-content
+  SHA-256 manifest
+  `d2160c369403cec69c96d1bdeb5e1b4b87b684fb28428602eca26966eeecc362`.
+- The application delta contains five new and seven modified runtime files,
+  plus the matching documentation and composable-profile examples.
+- Source-only tests and metadata were recovered from the local 2026-06-04
+  development journals, whose SHA-256 hashes are
+  `9e7623e528d5b6301cd67845c35253c925024f0c8b5d4457f2ab2d89c43763e8`
+  and
+  `f451aa003315145ae22ee416568713c686ebc60b38f0874d973f93945aa37e0d`.
+
+Repository-only quality adjustments retain the later host-independent
+packaging regression fix from `main` and normalize the recovered files for the
+configured Ruff rules. The resulting source tree passes Ruff, all 587 tests,
+and the packaging policy with `blocked: false`.
+
+No package was rebuilt or installed for this branch recovery: `develop`
+contains the local and remote source history for DistroForge 0.3.5-2.
+
 ## Repeating the application comparison
 
 From the repository root:

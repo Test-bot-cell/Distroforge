@@ -9,6 +9,7 @@ from distroforge.core.beginner_iso import (
     run_beginner_iso_boot_proof,
 )
 from distroforge.core.build import BuildOrchestrator, BuildProgress
+from distroforge.core.build_history import list_history, render_history, replay_history
 from distroforge.core.build_journey import apply_journey_step, build_journey, check_journey_step
 from distroforge.core.build_memory import BuildMemory, default_corpus_path
 from distroforge.core.command import CommandRunner
@@ -26,13 +27,14 @@ from distroforge.core.doctor import (
     missing_required,
     run_doctor,
 )
+from distroforge.core.noob_flow import noob_profile_choices, noob_profile_default, plan_noob_profile
 from distroforge.core.phase_contracts import render_phase_contracts
 from distroforge.core.poweruser_iso import prepare_poweruser_iso_path
 from distroforge.core.publish_bundle import create_publish_bundle
 from distroforge.core.workflows import product_capability_text
 from distroforge.ui.goal_hub import build_goal_hub
 from distroforge.ui.jobs import GuiJob
-from distroforge.ui.qt import QMessageBox, QVBoxLayout, QWidget
+from distroforge.ui.qt import QInputDialog, QMessageBox, QVBoxLayout, QWidget
 from distroforge.ui.widgets import button as _button
 from distroforge.ui.widgets import responsive_row as _responsive_row
 from distroforge.ui.widgets import section as _section
@@ -56,6 +58,9 @@ def build_command_center_page(window) -> QWidget:
         _button("Refresh command map", window._refresh_command_center, "plan"),
         _button("Show build phase contracts", lambda: show_phase_contracts(window), "plan"),
         _button("Show build memory", lambda: show_build_memory(window), "plan"),
+        _button("Beginner plan", lambda: show_beginner_first_plan(window), "plan"),
+        _button("Project history", lambda: show_project_history(window), "plan"),
+        _button("Replay latest", lambda: replay_latest_history(window), "start"),
         _button("Open current step", lambda: open_current_journey_step(window), "open"),
         _button("Apply current step", lambda: apply_current_journey_step(window), "start"),
         breakpoint=720,
@@ -87,6 +92,48 @@ def show_build_memory(window) -> None:
     summary = BuildMemory(default_corpus_path()).summarize()
     window.command_center_view.setPlainText(summary.render_text())
     window._log(summary.citation)
+
+
+def show_beginner_first_plan(window) -> None:
+    if not window._require_project():
+        return
+    window._sync_project_from_ui()
+    choices = list(noob_profile_choices())
+    profile, ok = QInputDialog.getItem(
+        window,
+        "Beginner-first profile",
+        "Profile",
+        choices,
+        current=choices.index(noob_profile_default()) if choices else 0,
+        editable=False,
+    )
+    if not ok or not profile:
+        return
+    report = plan_noob_profile(window.project, profile, write=False)
+    window.command_center_view.setPlainText(report.render_text())
+    window._log(f"Showed beginner-first plan: {profile}")
+
+
+def show_project_history(window) -> None:
+    if not window._require_project():
+        return
+    window.command_center_view.setPlainText(render_history(window.project))
+    window._log("Showed project history.")
+
+
+def replay_latest_history(window) -> None:
+    if not window._require_project():
+        return
+    entries = list_history(window.project)
+    if not entries:
+        window.command_center_view.setPlainText("No local history entries yet.")
+        window._log("No project history to replay.")
+        return
+    latest = entries[-1]
+    output = window.project.root / "replay-latest.yaml"
+    text = replay_history(window.project, latest.id, output=output)
+    window.command_center_view.setPlainText(text)
+    window._log(f"Replayed latest history entry to {output}")
 
 
 def open_current_journey_step(window) -> None:
