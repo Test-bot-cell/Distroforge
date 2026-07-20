@@ -11,6 +11,7 @@ import pytest
 
 from distroforge.cli import main
 from distroforge.core.command import CommandRunner, CommandSpec
+from distroforge.core.doctor import REQUIRED_TOOLS
 from distroforge.core.project import Project
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,11 @@ def _block_runtime_escapes(monkeypatch: pytest.MonkeyPatch, allowed_root: Path) 
 
     monkeypatch.setattr(CommandRunner, "run", guarded_run)
     monkeypatch.setattr(CommandRunner, "run_streaming", guarded_run_streaming)
+    monkeypatch.setattr(
+        CommandRunner,
+        "has_binary",
+        staticmethod(lambda name: name in REQUIRED_TOOLS),
+    )
     monkeypatch.setattr(subprocess, "run", blocked_call)
     monkeypatch.setattr(subprocess, "Popen", blocked_call)
     monkeypatch.setattr(os, "system", blocked_call)

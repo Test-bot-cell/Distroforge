@@ -961,7 +961,7 @@ def diagnose_autopkgtest(
     root = root.resolve()
     runner = runner or CommandRunner(dry_run=not execute)
     deb = (deb or _latest_deb(root))
-    if not runner.has_binary("autopkgtest"):
+    if execute and not runner.has_binary("autopkgtest"):
         return AutopkgtestDoctorReport(
             root=root,
             deb=deb,

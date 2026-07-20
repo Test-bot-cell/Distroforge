@@ -5,7 +5,7 @@ import os
 import subprocess
 
 from distroforge.cli import main
-from distroforge.core.command import CommandResult
+from distroforge.core.command import CommandResult, CommandRunner
 from distroforge.core.packaging import (
     HermeticBuildPlan,
     build_debian_package,
@@ -56,6 +56,11 @@ class BrokenSchrootRunner(FakeSchrootAutopkgtestRunner):
         if spec.argv == ("schroot", "-l"):
             return CommandResult(spec, 1, "", "E: /etc/schroot/schroot.conf: File is not owned by user root\n")
         return CommandResult(spec, self.autopkgtest_returncode, "", "")
+
+
+class MissingAutopkgtestRunner(FakeAutopkgtestRunner):
+    def has_binary(self, name: str) -> bool:
+        return False
 
 
 def test_buildinfo_report_detects_usr_local_taint(tmp_path, capsys) -> None:
@@ -283,17 +288,32 @@ def test_autopkgtest_doctor_reports_broken_schroot_listing(tmp_path) -> None:
     assert "schroot.conf" in report.detail
 
 
-def test_cli_autopkgtest_doctor_writes_json_report(tmp_path, capsys) -> None:
+def test_cli_autopkgtest_doctor_writes_json_report(tmp_path, capsys, monkeypatch) -> None:
     deb = tmp_path / "distroforge_0.1.0-1_all.deb"
     output = tmp_path / "AUTOPKGTEST-DOCTOR.json"
     deb.write_bytes(b"package")
+    monkeypatch.setattr(CommandRunner, "has_binary", staticmethod(lambda _name: False))
 
     main(["autopkgtest-doctor", str(tmp_path), "--deb", str(deb), "--output", str(output), "--json"])
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["schema"] == "distroforge.autopkgtest-doctor.v1"
     assert payload["status"] == "planned"
+    assert payload["classification"] == "not-run"
+    assert payload["command"] == ["autopkgtest", str(deb), "--", "null"]
     assert output.exists()
+
+
+def test_autopkgtest_doctor_requires_tool_for_execution(tmp_path) -> None:
+    deb = tmp_path / "distroforge_0.1.0-1_all.deb"
+    deb.write_bytes(b"package")
+    runner = MissingAutopkgtestRunner()
+
+    report = diagnose_autopkgtest(tmp_path, deb=deb, execute=True, runner=runner)
+
+    assert report.status == "missing-tool"
+    assert report.classification == "host-missing-autopkgtest"
+    assert runner.history == []
 
 
 def test_hermetic_build_plan_has_backend_commands(tmp_path) -> None:
