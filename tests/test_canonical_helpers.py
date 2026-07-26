@@ -63,6 +63,26 @@ def test_the_options_dataclass_has_no_dead_duplicate_of_the_cache_flag() -> None
     assert "apt_cache: bool" in sanitize
 
 
+def test_no_test_reads_a_source_path_relative_to_the_working_directory() -> None:
+    # pybuild runs the test phase from the staged build tree, so a bare relative path
+    # to a source file reads the installed copy, and one under debian/ does not resolve
+    # at all -- which is exactly how tests/test_app_icon.py failed the packaged build.
+    # Anchor at ROOT = Path(__file__).resolve().parents[1] instead. The needle is
+    # assembled from two pieces so this guard is not its own first offender.
+    needle = 'Path("' + "distroforge/"
+    offenders = {
+        path.name: [
+            number
+            for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), start=1)
+            if needle in line
+        ]
+        for path in sorted((ROOT / "tests").glob("*.py"))
+        if needle in path.read_text(encoding="utf-8")
+    }
+
+    assert offenders == {}, f"anchor these at the source root: {offenders}"
+
+
 def test_command_display_quotes_every_part() -> None:
     from distroforge.core.command import CommandSpec
 

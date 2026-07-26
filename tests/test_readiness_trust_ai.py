@@ -39,6 +39,11 @@ from distroforge.core.validate import (
 )
 from distroforge.core.workflows import evaluate_workflow_fit, recommend_workflow_actions
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_trust_service_verifies_source_sha256(tmp_path: Path) -> None:
     iso = tmp_path / "source.iso"
@@ -853,7 +858,7 @@ def test_gui_option_parity_reports_missing_options() -> None:
     }
     gui_source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in Path("distroforge/ui").glob("*.py")
+        for path in (ROOT / "distroforge/ui").glob("*.py")
     )
 
     report = gui_option_parity_report(options, gui_source)

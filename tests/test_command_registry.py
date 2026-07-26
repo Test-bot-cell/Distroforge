@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 from distroforge.cli import build_parser
 from distroforge.core.command_registry import (
     CLI_GUI_COMMANDS,
+    NON_PAGE_SURFACES,
     command_names,
     commands_requiring_progress,
     gui_parity_report,
+    page_surfaces,
 )
+
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _parser_command_names(parser: argparse.ArgumentParser) -> set[str]:
@@ -30,6 +38,21 @@ def test_long_running_gui_commands_require_progress() -> None:
     assert {"build", "validate", "ci", "doctor", "ux-audit"}.issubset(progress)
 
 
+def test_every_mapping_names_a_surface_the_window_registers() -> None:
+    # The audit's own per-command progress loop could never fire -- it was guarded by
+    # `and "progress" not in text`, which is always false -- so "Virtualization page"
+    # sat in the registry while the surface the window registers is "Virtualization
+    # Lab". The label map is the referee; a non-page surface must say so out loud.
+    window = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    block = window.split("self._surface_labels = {", 1)[1].split("}", 1)[0]
+    labels = set(re.findall(r':\s*"([^"]+)"', block))
+
+    assert labels, "the surface label map moved; this guard has to follow it"
+    assert set(page_surfaces()) <= labels, sorted(set(page_surfaces()) - labels)
+    # The exceptions are named, not inferred, so adding one is a decision on the record.
+    assert set(NON_PAGE_SURFACES).isdisjoint(labels)
+
+
 def test_gui_parity_report_is_human_readable() -> None:
     report = gui_parity_report()
 
@@ -39,7 +62,7 @@ def test_gui_parity_report_is_human_readable() -> None:
 
 
 def test_iso_doctor_is_visible_in_build_gui() -> None:
-    build_page = Path("distroforge/ui/build_page.py").read_text(encoding="utf-8")
+    build_page = (ROOT / "distroforge/ui/build_page.py").read_text(encoding="utf-8")
 
     assert "ISO Toolchain" in build_page
     assert "ISO Doctor" in build_page
@@ -54,9 +77,9 @@ def test_iso_doctor_is_visible_in_build_gui() -> None:
 
 
 def test_qemu_virtualization_lab_is_visible_in_gui() -> None:
-    source = Path("distroforge/ui/main_window.py").read_text(encoding="utf-8")
-    page = Path("distroforge/ui/virtualization_page.py").read_text(encoding="utf-8")
-    window_widgets = Path("distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    page = (ROOT / "distroforge/ui/virtualization_page.py").read_text(encoding="utf-8")
+    window_widgets = (ROOT / "distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
 
     assert "Virtualization Lab" in source
     assert "QEMU Virtualization" in page
@@ -65,10 +88,10 @@ def test_qemu_virtualization_lab_is_visible_in_gui() -> None:
 
 
 def test_artifacts_and_derivative_workflows_are_visible_in_gui() -> None:
-    source = Path("distroforge/ui/main_window.py").read_text(encoding="utf-8")
-    artifacts = Path("distroforge/ui/artifacts_page.py").read_text(encoding="utf-8")
-    packages = Path("distroforge/ui/packages_page.py").read_text(encoding="utf-8")
-    window_widgets = Path("distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    artifacts = (ROOT / "distroforge/ui/artifacts_page.py").read_text(encoding="utf-8")
+    packages = (ROOT / "distroforge/ui/packages_page.py").read_text(encoding="utf-8")
+    window_widgets = (ROOT / "distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
 
     assert "Artifacts" in source
     assert "_artifacts_page" in source
@@ -92,14 +115,14 @@ def test_artifacts_and_derivative_workflows_are_visible_in_gui() -> None:
     assert "_run_autopkgtest_doctor" in source
     assert "Hermetic Build" in artifacts
     assert "Verify Evidence" in artifacts
-    assert "render_artifacts_command" in Path("distroforge/commands/artifacts.py").read_text(encoding="utf-8")
-    assert "render_evidence_command" in Path("distroforge/commands/evidence.py").read_text(encoding="utf-8")
+    assert "render_artifacts_command" in (ROOT / "distroforge/commands/artifacts.py").read_text(encoding="utf-8")
+    assert "render_evidence_command" in (ROOT / "distroforge/commands/evidence.py").read_text(encoding="utf-8")
     assert "Create Derivative Project" in packages
     assert "_browse_derivative_dockerfile" in source
 
 
 def test_build_phases_are_visible_in_command_center_gui() -> None:
-    page = Path("distroforge/ui/command_center_page.py").read_text(encoding="utf-8")
+    page = (ROOT / "distroforge/ui/command_center_page.py").read_text(encoding="utf-8")
 
     assert "Show build phase contracts" in page
     assert "show_phase_contracts" in page
@@ -107,8 +130,8 @@ def test_build_phases_are_visible_in_command_center_gui() -> None:
 
 
 def test_forgeadvisor_is_visible_in_maintainer_gui() -> None:
-    source = Path("distroforge/ui/main_window.py").read_text(encoding="utf-8")
-    page = Path("distroforge/ui/maintainer_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    page = (ROOT / "distroforge/ui/maintainer_page.py").read_text(encoding="utf-8")
 
     assert "ForgeAdvisor" in page
     assert "Evidence Status" in page
@@ -134,8 +157,8 @@ def test_forgeadvisor_is_visible_in_maintainer_gui() -> None:
 
 
 def test_gui_uses_sudo_by_default_and_keeps_pkexec_opt_in() -> None:
-    window_widgets = Path("distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
-    guidance = Path("distroforge/ui/build_guidance.py").read_text(encoding="utf-8")
+    window_widgets = (ROOT / "distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
+    guidance = (ROOT / "distroforge/ui/build_guidance.py").read_text(encoding="utf-8")
 
     assert 'QCheckBox("Use sudo for system operations")' in window_widgets
     assert 'QCheckBox("Use pkexec for GUI privilege prompts (advanced)")' in window_widgets
@@ -153,4 +176,4 @@ def test_recent_pages_are_split_out_of_main_window() -> None:
         "distroforge/commands/derivative.py",
         "distroforge/commands/artifacts.py",
     ):
-        assert Path(path).exists()
+        assert (ROOT / path).exists()

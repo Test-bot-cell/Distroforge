@@ -6,6 +6,11 @@ from distroforge.core.command import CommandRunner
 from distroforge.core.prebuild_vm import PrebuildVmOptions, QemuLabService
 from distroforge.core.qemu_screenshot import QemuScreenshotOptions, QemuScreenshotService
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_qemu_lab_dry_run_uses_qmp_and_writes_report(tmp_path) -> None:
     runner = CommandRunner(dry_run=True)
@@ -42,7 +47,7 @@ def test_qemu_lab_uefi_tpm_artifacts_are_explicit(tmp_path) -> None:
 
 
 def test_qemu_lab_gui_exposes_artifacts() -> None:
-    window_widgets = Path("distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
+    window_widgets = (ROOT / "distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
 
     assert "prebuild_vm_qmp_socket_edit" in window_widgets
     assert "prebuild_vm_report_name_edit" in window_widgets

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .build import BuildOptions
-from .command_registry import CLI_GUI_COMMANDS, commands_requiring_progress
+from .command_registry import CLI_GUI_COMMANDS, page_surfaces
 from .project import Project
 from .workflows import LEVEL_KEYS
 
@@ -273,15 +273,22 @@ def _audit_gui_parity(report: UxAuditReport, gui_source: Path) -> None:
                 "Expose a QProgressBar and update it from job progress events.",
             )
         )
-    for command in commands_requiring_progress():
-        if command not in text and "progress" not in text:
+    # This used to loop over commands_requiring_progress() asking whether the CLI name
+    # appeared in the GUI source, guarded by `and "progress" not in text`. The guard
+    # made the whole loop vacuous: the check above proves "progress" is in the source,
+    # so no finding could ever fire. The name check was wrong anyway -- the GUI calls
+    # Python functions, it does not spell out CLI command names -- so a per-command
+    # source audit reported 26 phantom gaps. What a source audit *can* settle is
+    # whether each mapping names a surface the window actually registers.
+    for surface in page_surfaces():
+        if surface not in text:
             report.findings.append(
                 UxFinding(
                     "error",
                     "all",
-                    "progress",
-                    f"Long-running command {command!r} is not tied to a progress surface.",
-                    "Route GUI execution through the job/progress mechanism.",
+                    "cli-gui parity",
+                    f"Registry surface {surface!r} is not a surface the GUI registers.",
+                    "Fix the gui_surface label in core/command_registry.py, or list it in NON_PAGE_SURFACES.",
                 )
             )
 

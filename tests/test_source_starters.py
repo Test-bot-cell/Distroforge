@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from distroforge.cli import main
 from distroforge.core.project import Project
 from distroforge.core.source_starter import apply_source_starter, list_source_starters
+
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_source_starter_catalog_covers_ubuntu_and_debian() -> None:
@@ -77,9 +83,7 @@ def test_source_starters_cli_json(capsys) -> None:
 
 
 def test_gui_mentions_source_starter_widgets() -> None:
-    from pathlib import Path
-
-    source = Path("distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
     assert "source_starter_combo" in source
     assert "_apply_source_starter" in source
     assert "_use_previous_project_source" in source

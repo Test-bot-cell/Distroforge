@@ -17,6 +17,11 @@ from distroforge.core.project import Project
 from distroforge.core.qemu_interaction import QemuInteractionOptions, QemuInteractionService
 from distroforge.core.qmp import QmpControl, stop_by_pidfile
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _run(tmp_path, plan_spec="boot-capture", **option_kwargs):
     runner = CommandRunner(dry_run=True)
@@ -190,10 +195,10 @@ def test_interaction_cli_lists_plans_and_plans_a_smoke_scenario(tmp_path) -> Non
 
 
 def test_interaction_gui_and_registry_expose_the_surface() -> None:
-    page = Path("distroforge/ui/virtualization_page.py").read_text(encoding="utf-8")
-    widgets = Path("distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
-    actions = Path("distroforge/ui/service_actions.py").read_text(encoding="utf-8")
-    registry = Path("distroforge/core/command_registry.py").read_text(encoding="utf-8")
+    page = (ROOT / "distroforge/ui/virtualization_page.py").read_text(encoding="utf-8")
+    widgets = (ROOT / "distroforge/ui/window_widgets.py").read_text(encoding="utf-8")
+    actions = (ROOT / "distroforge/ui/service_actions.py").read_text(encoding="utf-8")
+    registry = (ROOT / "distroforge/core/command_registry.py").read_text(encoding="utf-8")
 
     assert "interaction_plan_combo" in widgets
     assert "interaction_plan_combo" in page

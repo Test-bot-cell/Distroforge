@@ -7,6 +7,11 @@ from pathlib import Path
 from distroforge.core.command import CommandSpec
 from distroforge.core.terminal import ChrootTerminalSpec, PtySession
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_chroot_terminal_command_uses_clean_maintainer_environment(tmp_path) -> None:
     spec = ChrootTerminalSpec(tmp_path / "rootfs", use_sudo=False, backend="chroot")
@@ -56,8 +61,8 @@ def test_chroot_terminal_supports_session_logs(tmp_path) -> None:
 
 
 def test_gui_exposes_maintainer_terminal_controls() -> None:
-    shell = Path("distroforge/ui/main_window.py").read_text(encoding="utf-8")
-    actions = Path("distroforge/ui/terminal_actions.py").read_text(encoding="utf-8")
+    shell = (ROOT / "distroforge/ui/main_window.py").read_text(encoding="utf-8")
+    actions = (ROOT / "distroforge/ui/terminal_actions.py").read_text(encoding="utf-8")
 
     assert "_mount_terminal_runtime" in shell
     assert "_unmount_terminal_runtime" in shell

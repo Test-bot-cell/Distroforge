@@ -58,8 +58,8 @@ CLI_GUI_COMMANDS: tuple[CommandGuiMapping, ...] = (
     CommandGuiMapping("release-pipeline", "Run maintainer release publish pipeline", "Artifacts page", True),
     CommandGuiMapping("boot-proof", "Run or plan normalized ISO boot proof", "Artifacts page", True),
     CommandGuiMapping("qemu-smoke-plan", "Plan QEMU install smoke matrix", "Artifacts page"),
-    CommandGuiMapping("preview", "Launch or plan interactive ISO preview", "Virtualization page", True),
-    CommandGuiMapping("qemu-interaction", "Plan or run declarative QMP-driven ISO interaction", "Virtualization page", True),
+    CommandGuiMapping("preview", "Launch or plan interactive ISO preview", "Virtualization Lab page", True),
+    CommandGuiMapping("qemu-interaction", "Plan or run declarative QMP-driven ISO interaction", "Virtualization Lab page", True),
     CommandGuiMapping("buildinfo-report", "Inspect Debian buildinfo taint", "Artifacts page"),
     CommandGuiMapping("packaging-policy", "Inspect packaging release policy", "Artifacts page"),
     CommandGuiMapping("debian-package", "Build Debian package and maintainer checks", "Artifacts page", True),
@@ -147,6 +147,33 @@ def gui_parity_report() -> str:
 
 def commands_requiring_progress() -> tuple[str, ...]:
     return tuple(command.command for command in CLI_GUI_COMMANDS if command.progress_required)
+
+
+# Surfaces that are deliberately not one of the stacked pages: three toolbar actions,
+# the First Run dialog and the application entry point. Listed here so the parity
+# audit can tell a non-page surface apart from a page label that has drifted out of
+# the GUI -- which is how "Virtualization page" survived while the surface the window
+# actually registers has always been "Virtualization Lab".
+NON_PAGE_SURFACES = (
+    "Application entrypoint",
+    "First Run / docs",
+    "Toolbar Doctor",
+    "Toolbar Explain",
+    "Toolbar Plan",
+)
+
+
+def page_surfaces() -> tuple[str, ...]:
+    """The page label behind every mapping that claims a page, deduplicated."""
+    return tuple(
+        sorted(
+            {
+                command.gui_surface.removesuffix(" page")
+                for command in CLI_GUI_COMMANDS
+                if command.gui_surface not in NON_PAGE_SURFACES
+            }
+        )
+    )
 
 
 def gui_option_parity_report(options: dict[str, str], gui_source: str) -> str:

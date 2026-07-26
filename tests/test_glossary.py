@@ -10,6 +10,12 @@ from distroforge.core.education import GLOSSARY, render_glossary
 from distroforge.core.project import Project
 from distroforge.core.ux_audit import audit_experience
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
+
 EXPECTED_TERMS = frozenset(
     {
         "autoinstall",
@@ -125,6 +131,6 @@ def test_first_run_dialog_exposes_the_glossary(qt_app) -> None:
 
 
 def test_first_run_source_exposes_glossary() -> None:
-    source = Path("distroforge/ui/first_run.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/first_run.py").read_text(encoding="utf-8")
     assert "render_glossary" in source
     assert "glossary_view" in source

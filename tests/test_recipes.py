@@ -16,6 +16,11 @@ from distroforge.core.education import (
 )
 from distroforge.core.profiles import load_profiles
 
+# Source paths are anchored here, not at the working directory: pybuild runs the
+# test phase from the staged build tree, where a relative "distroforge/..." would
+# read the installed copy instead of the file the assertion is about.
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_every_package_profile_has_a_guided_recipe() -> None:
     # The guided recipes are the curated source-to-ISO entry points; each
@@ -95,6 +100,6 @@ def test_presets_page_lists_guided_recipes(qt_app) -> None:
 
 
 def test_presets_page_source_wires_guided_recipes() -> None:
-    source = Path("distroforge/ui/recipes_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "distroforge/ui/recipes_page.py").read_text(encoding="utf-8")
     assert "_show_guided_recipes" in source
     assert "Guided recipes" in source
