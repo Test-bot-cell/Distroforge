@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from distroforge.ai.forgeadvisor import ForgeAdvisor
 from distroforge.ai.review import ConstrainedRecipeAssistant, PlanReviewer
 from distroforge.cli import build_parser, main
@@ -174,6 +176,7 @@ def test_dry_run_report_detects_dirty_output_and_incomplete_rootfs(tmp_path: Pat
     assert "bootstrap-rootfs-incomplete" in codes
 
 
+@pytest.mark.unprivileged
 def test_dry_run_report_detects_locked_boot_artifacts_without_privilege(tmp_path: Path) -> None:
     project = Project.create("LockedBoot", tmp_path / "locked-boot", "26.04")
     project.source_mode = "bootstrap"

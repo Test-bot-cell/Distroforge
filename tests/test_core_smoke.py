@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
 from distroforge.core.apt_cache import AptCacheOptions, AptCacheService
 from distroforge.core.artifact_paths import default_output_iso
@@ -311,6 +313,7 @@ def test_bootstrap_copies_locked_boot_artifacts_with_sudo_install(tmp_path) -> N
     assert "console=ttyS0,115200n8" in grub.read_text(encoding="utf-8")
 
 
+@pytest.mark.unprivileged
 def test_apt_sources_uses_privileged_write_for_protected_rootfs(tmp_path) -> None:
     project = Project.create("AptWrite", tmp_path / "apt-write", "26.04")
     apt_dir = project.squashfs_root / "etc" / "apt"

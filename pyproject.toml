@@ -86,6 +86,13 @@ pythonpath = ["."]
 # --strict-config when they are passed through addopts, so putting them there
 # would look like a guard and enforce nothing.
 strict_markers = true
+markers = [
+  # A test that needs a path this user cannot write. Root has no such path: chmod
+  # answers to ownership, so a 0500 directory is still writable by its owner and by
+  # root, and the PermissionError these tests are about never happens. Declared here
+  # because strict_markers is on, and skipped by tests/conftest.py.
+  "unprivileged: requires a user who cannot write a mode-locked path",
+]
 strict_config = true
 filterwarnings = [
   "error::DeprecationWarning",

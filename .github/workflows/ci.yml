@@ -132,11 +132,17 @@ jobs:
         # rather than delegated to ruff, and needs nothing installed.
         env:
           DEBIAN_FRONTEND: noninteractive
+        #
+        # zstd and xorriso are the two runtime Depends the suite really invokes -- a
+        # snapshot test drives tar --zstd for real -- so leaving them out failed a
+        # test for a missing tool rather than for a defect. debootstrap,
+        # qemu-system-x86 and squashfs-tools are Depends the suite never invokes and
+        # are deliberately absent here, which is why they left Build-Depends too.
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             python3 python3-pytest python3-pydantic python3-yaml python3-pluggy \
-            python3-rich python3-typer python3-pyqt6 libegl1
+            python3-rich python3-typer python3-pyqt6 libegl1 zstd xorriso passwd
       - name: Report what the distribution provides
         run: |
           python3 --version
@@ -147,7 +153,20 @@ jobs:
         run: |
           dpkg --compare-versions "$(dpkg-query -f '${Version}' -W python3-pydantic)" ge 2.7
       - name: Run the suite the way debian/rules does
+        # As an unprivileged user, because that is what Rules-Requires-Root: no means:
+        # dpkg-buildpackage never becomes root, so neither does the test phase. A
+        # container defaults to root, and root defeats the tests that lock a directory
+        # to 0500 and expect a PermissionError -- chmod answers to ownership, so root
+        # writes it anyway. Those tests carry the `unprivileged` marker and skip under
+        # root rather than failing, but skipping is not the point: running them is.
         env:
           DISTROFORGE_DEBIAN_BUILD: "1"
           QT_QPA_PLATFORM: offscreen
-        run: python3 -m pytest -q
+        run: |
+          useradd --create-home --shell /bin/sh builder
+          chown -R builder:builder .
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            DISTROFORGE_DEBIAN_BUILD=1 \
+            QT_QPA_PLATFORM=offscreen \
+            python3 -m pytest -q

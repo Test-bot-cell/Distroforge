@@ -89,6 +89,7 @@ def test_debrand_apply_replaces_text_and_keeps_plan_report(tmp_path) -> None:
     assert 'set distributor="Planetfall"' in grub.read_text(encoding="utf-8")
 
 
+@pytest.mark.unprivileged
 def test_debrand_apply_uses_privileged_write_for_locked_text_files(tmp_path) -> None:
     project = Project.create("Planetfall", tmp_path / "planetfall", "26.04")
     os_release = project.squashfs_root / "etc/os-release"
@@ -134,6 +135,7 @@ def test_debrand_does_not_rename_kernel_module_paths(tmp_path) -> None:
     ).exists()
 
 
+@pytest.mark.unprivileged
 def test_debrand_uses_privileged_rename_for_locked_branding_paths(tmp_path) -> None:
     project = Project.create("Planetfall", tmp_path / "planetfall", "26.04")
     theme = project.squashfs_root / "usr/share/plymouth/themes/ubuntu-logo"
