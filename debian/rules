@@ -2,12 +2,21 @@
 
 export PYBUILD_NAME=distroforge
 export PYBUILD_SYSTEM=pyproject
-export PYBUILD_TEST_ARGS=-q
+export PYBUILD_TEST_PYTEST=1
+# Verify what the package will ship, not the checkout. pybuild runs the test phase
+# from {build_dir} -- the staged tree dh_install turns into the .deb -- so
+# `import distroforge` resolves there, and -o pythonpath={build_dir} replaces the
+# pyproject default pythonpath = ["."], which would otherwise put the source tree
+# first and hide every packaging regression (a data file dropped from package-data
+# passed the build in silence). The suite still reads the source files it asserts
+# on -- debian/control, docs/, pyproject.toml -- because {dir}/tests is absolute,
+# so Path(__file__).parents[1] remains the source root.
+export PYBUILD_TEST_ARGS=-q -p no:cacheprovider -o pythonpath={build_dir} {dir}/tests
 
 %:
 	dh $@ --buildsystem=pybuild
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS) $(DEB_BUILD_PROFILES)))
-	DISTROFORGE_DEBIAN_BUILD=1 python3 -m pytest -q
+	DISTROFORGE_DEBIAN_BUILD=1 dh_auto_test
 endif

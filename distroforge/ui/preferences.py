@@ -18,6 +18,7 @@ DEFAULT_LEVEL = "beginner"
 _FILENAME = "ui.json"
 _LEVEL_KEY = "workflow_level"
 _CHROOT_BACKEND_KEY = "chroot_backend"
+_DOCK_PIN_KEY = "dock_pin"
 CHROOT_BACKENDS = ("auto", "chroot", "nspawn")
 
 
@@ -77,4 +78,20 @@ def save_chroot_backend(backend: str) -> None:
         raise ValueError(f"Unknown chroot backend: {backend!r}. Known: {', '.join(CHROOT_BACKENDS)}")
     data = _read()
     data[_CHROOT_BACKEND_KEY] = backend
+    _write(data)
+
+
+def load_dock_pin_choice() -> bool | None:
+    """The user's answer about the GNOME dock, or ``None`` while it is unanswered.
+
+    Three states, not two: the postinst that used to decide this had no way to tell
+    "the user said no" from "nobody ever asked", so it kept re-deciding for them.
+    """
+    choice = _read().get(_DOCK_PIN_KEY)
+    return choice if isinstance(choice, bool) else None
+
+
+def save_dock_pin_choice(pin: bool) -> None:
+    data = _read()
+    data[_DOCK_PIN_KEY] = bool(pin)
     _write(data)

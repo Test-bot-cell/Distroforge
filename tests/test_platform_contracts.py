@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import ast
+import re
 import shutil
 import subprocess
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,15 @@ from distroforge.core.build_journey import JOURNEY_STEPS
 from distroforge.core.workflows import PRODUCT_CAPABILITIES, WORKFLOW_LEVELS
 
 ROOT = Path(__file__).resolve().parents[1]
+GATED_SOURCE_DIRS = ("distroforge", "tools")
+# Hard and soft keywords that open a block. `\b` keeps `else_` and `match_case`
+# out: they are ordinary names that merely start with the same letters.
+_CLAUSE_KEYWORD = re.compile(
+    r"^(if|elif|else|for|while|with|try|except|finally|def|class|async|match|case)\b"
+)
+# Split like DISALLOWED_PUBLIC_NAMES in test_policy_compliance, for the same reason:
+# the test that forbids the token must not contain the token.
+_SELECT_OVERRIDE = '"--' + 'select"'
 
 
 def _read(path: str) -> str:
@@ -27,42 +37,119 @@ def _build_subparser() -> argparse.ArgumentParser:
     return subparsers.choices["build"]
 
 
-def _ruff_argv() -> list[str] | None:
-    # Prefer a ruff binary on PATH; fall back to `-m ruff`; None lets the gate skip.
-    binary = shutil.which("ruff")
-    if binary:
-        return [binary]
-    if importlib.util.find_spec("ruff") is not None:
-        return [sys.executable, "-m", "ruff"]
-    return None
+def packed_statements(path: Path) -> list[str]:
+    """Report E701/E702 statement packing using nothing but the standard library.
+
+    This gate used to shell out to ruff and ``pytest.skip`` when ruff was missing.
+    ruff has no binary package in the archive, so it is absent from the sbuild
+    chroot that produces the .deb: the gate reported "1 skipped", exit 0, and never
+    ran once during a package build. Nothing here can be missing, so nothing here
+    can be skipped.
+
+    E702 is two statements sharing one line inside the same block. E701 is a
+    statement that starts on a line which opens a clause -- ``if x: y``, ``else: y``
+    -- detected from the physical line plus the column, which also covers ``else``
+    and ``finally``, clauses the AST gives no position of their own. An inline ``...``
+    body is exempt, matching ruff: it is how a Protocol declares a method.
+    """
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    findings: list[str] = []
+    for block in _statement_blocks(ast.parse(source, filename=str(path))):
+        for previous, statement in zip(block, block[1:], strict=False):
+            if previous.lineno == statement.lineno:
+                findings.append(f"{path}:{statement.lineno}: E702 two statements on one line")
+        if len(block) == 1 and _is_ellipsis(block[0]):
+            continue
+        for statement in block:
+            line = lines[statement.lineno - 1]
+            indent = len(line) - len(line.lstrip())
+            if statement.col_offset > indent and _CLAUSE_KEYWORD.match(line.lstrip()):
+                findings.append(f"{path}:{statement.lineno}: E701 statement on a clause line")
+    return findings
+
+
+def _is_ellipsis(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is Ellipsis
+    )
+
+
+def _statement_blocks(tree: ast.AST) -> list[list[ast.stmt]]:
+    blocks: list[list[ast.stmt]] = []
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if isinstance(block, list) and block and all(isinstance(item, ast.stmt) for item in block):
+                blocks.append(block)
+    return blocks
 
 
 def test_no_statement_packing_in_python_sources() -> None:
     # Replaces the old monolith line-count ratchet: capping lines only encouraged packing
     # many statements onto one line, so we forbid the packing (E701/E702) directly instead.
-    ruff_argv = _ruff_argv()
-    if ruff_argv is None:
-        pytest.skip("ruff is unavailable to enforce the E701/E702 statement-packing gate")
+    sources = [
+        path
+        for directory in GATED_SOURCE_DIRS
+        for path in sorted((ROOT / directory).rglob("*.py"))
+        if "__pycache__" not in path.parts
+    ]
+    findings = [finding for path in sources for finding in packed_statements(path)]
+
+    # Anti-vacuity: a gate that inspected nothing is not a gate.
+    assert len(sources) >= 200, f"only {len(sources)} sources inspected"
+    assert findings == [], "Statement-packing is not allowed; put each statement on its own line.\n" + "\n".join(
+        findings
+    )
+
+
+def test_statement_packing_detector_flags_both_spellings(tmp_path: Path) -> None:
+    # The detector has to be shown catching what it claims to catch, or the green
+    # result above only proves that it looks at nothing.
+    sample = tmp_path / "packed.py"
+    sample.write_text(
+        "def f(x):\n"
+        "    a = 1; b = 2\n"
+        "    if x: return a\n"
+        "    else: return b\n",
+        encoding="utf-8",
+    )
+
+    findings = packed_statements(sample)
+
+    assert any("E702" in finding for finding in findings)
+    assert sum("E701" in finding for finding in findings) == 2
+    assert packed_statements(Path(__file__)) == []
+
+
+def test_ruff_gate_runs_the_project_configuration_not_a_command_line_override() -> None:
+    """The lint gate must exercise the config the project actually ships.
+
+    Passing ``--select E701,E702`` replaced ``select`` *and* ``extend-select`` from
+    pyproject, so the run that was supposed to guard the tree checked four rules out
+    of the six families the project declares -- S202, the archive-extraction filter
+    guard, among the ones it silently dropped.
+    """
+    lint = tomllib.loads(_read("pyproject.toml"))["tool"]["ruff"]["lint"]
+
+    assert "E" in lint["select"]
+    assert "S202" in lint["extend-select"]
+    # The argv spelling, not the prose: this file explains the defect it removed.
+    assert _SELECT_OVERRIDE not in _read("tests/test_platform_contracts.py")
+
+    ruff = shutil.which("ruff")
+    if ruff is None:
+        pytest.skip("ruff is not installed here; the stdlib gate above covers the packing rules")
     result = subprocess.run(
-        [
-            *ruff_argv,
-            "check",
-            "--select",
-            "E701,E702",
-            "--no-cache",
-            "--output-format",
-            "concise",
-            str(ROOT / "distroforge"),
-        ],
+        [ruff, "check", "--no-cache", "--output-format", "concise", "."],
         capture_output=True,
         text=True,
         cwd=ROOT,
     )
 
-    assert result.returncode == 0, (
-        "Statement-packing is not allowed; put each statement on its own line.\n"
-        + (result.stdout or result.stderr)
-    )
+    assert result.returncode == 0, result.stdout or result.stderr
 
 
 def test_cli_delegates_build_argument_registration() -> None:

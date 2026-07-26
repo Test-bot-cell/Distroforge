@@ -71,7 +71,10 @@ APT_PACKAGES = {
     "chroot": "coreutils",
     "apt-get": "apt",
     "synaptic": "synaptic",
-    "kvm": "qemu-kvm",
+    # qemu-kvm is a virtual package with no candidate of its own: `apt install
+    # qemu-kvm` resolves to qemu-system-x86, which ships the kvm wrapper this row
+    # looks for. Name the real package so the printed command can be pasted.
+    "kvm": "qemu-system-x86",
     "systemd-nspawn": "systemd-container",
     "PyQt6-or-PySide6": "python3-pyqt6",
 }

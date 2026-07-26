@@ -1,10 +1,11 @@
 distroforge (0.3.5-2) resolute; urgency=medium
 
   * Stabilize profile diff UX for no-regression compatibility while preserving
-    explicit compare mode (`--against`), including project-layer default fallback.
-  * Finalize beginner/power/trust flow parity: wizard profile plan paths, profile
-    resolution/diff outputs, and replayable history entries remain coherent for CLI
-    and GUI mapping.
+    explicit compare mode (`--against`), including project-layer default
+    fallback.
+  * Finalize beginner/power/trust flow parity: wizard profile plan paths,
+    profile resolution/diff outputs, and replayable history entries remain
+    coherent for CLI and GUI mapping.
   * Strengthen pre-build reliability signals with stricter package checks and
     release-readiness alignment before executing package builds.
 

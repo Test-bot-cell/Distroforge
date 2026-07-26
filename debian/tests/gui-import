@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+# The Qt bindings are only a Recommends, so this test declares python3-pyqt6
+# explicitly instead of riding on @. Without it the PySide6/PyQt6 fallback in
+# distroforge/ui/qt.py could break and no autopkgtest would notice: the build-time
+# suite runs with python3-pyqt6 from Build-Depends-Indep, the installed package
+# does not necessarily have it at all.
+WORK="${AUTOPKGTEST_TMP:-$(mktemp -d)}"
+
+QT_QPA_PLATFORM=offscreen python3 - >"$WORK/gui-import.txt" <<'PY'
+from distroforge.ui.app import run
+from distroforge.ui.main_window import MainWindow
+from distroforge.ui.qt import QApplication, QIcon
+from distroforge.ui.theme import apply_theme
+
+assert callable(run)
+app = QApplication([])
+app.setApplicationName("DistroForge")
+app.setDesktopFileName("distroforge")
+app.setWindowIcon(QIcon.fromTheme("distroforge"))
+apply_theme(app)
+window = MainWindow()
+window.resize(900, 640)
+window.show()
+app.processEvents()
+print(window.windowTitle() or app.applicationName())
+PY
+
+grep -q "DistroForge" "$WORK/gui-import.txt"

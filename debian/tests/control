@@ -1,5 +1,10 @@
 Tests: smoke
 Depends:
  @,
- python3-pytest,
+Restrictions: allow-stderr
+
+Tests: gui-import
+Depends:
+ @,
+ python3-pyqt6,
 Restrictions: allow-stderr

@@ -6,7 +6,6 @@ Rules-Requires-Root: no
 Standards-Version: 4.7.3
 Build-Depends:
  debhelper-compat (= 13),
- debootstrap <!nocheck>,
  dh-sequence-python3,
  pybuild-plugin-pyproject,
  python3-all,
@@ -18,8 +17,6 @@ Build-Depends:
  python3-typer <!nocheck>,
  python3-wheel,
  python3-yaml <!nocheck>,
- qemu-system-x86 <!nocheck>,
- squashfs-tools <!nocheck>,
  xorriso <!nocheck>,
  zstd <!nocheck>,
 Build-Depends-Indep:
@@ -45,7 +42,6 @@ Recommends:
  adwaita-icon-theme,
  fonts-adwaita-sans,
  python3-pyqt6,
- qemu-kvm,
  qt6-svg-plugins,
  ssh-askpass-gnome,
  synaptic,

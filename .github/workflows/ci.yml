@@ -66,6 +66,11 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Shellcheck the maintainer scripts
         run: make shellcheck
+      - name: Compile the python3 payloads embedded in packaging scripts
+        # The one class of packaging defect shellcheck cannot see: a python3 payload
+        # inside a shell script is syntax-checked by nothing, and this package
+        # shipped a broken one from 0.3.4-4 to 0.3.5-2.
+        run: make maintainer-scripts
       - name: Install
         run: python -m pip install -e ".[dev]"
       - name: Packaging and policy guards
@@ -76,7 +81,8 @@ jobs:
             tests/test_policy_compliance.py \
             tests/test_platform_contracts.py \
             tests/test_packaging_reports.py \
-            tests/test_pillar_contracts.py
+            tests/test_pillar_contracts.py \
+            tests/test_maintainer_scripts.py
       - name: Lintian profile must be a vendor
         # lintian profiles are vendors (debian, ubuntu), never suites: --profile
         # resolute does not exist. An unpinned invocation makes the verdict depend

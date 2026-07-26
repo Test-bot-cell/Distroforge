@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import time
 from pathlib import Path
 
@@ -69,10 +70,19 @@ def test_gui_exposes_maintainer_terminal_controls() -> None:
 
 
 class _EchoSpec(ChrootTerminalSpec):
-    """A rootless, chroot-free stand-in: emit one line, then exit non-zero."""
+    """A rootless, chroot-free stand-in: emit one line, wait, then exit non-zero."""
+
+    def gate(self) -> Path:
+        return self.root.parent / "reader-has-read"
 
     def command(self) -> CommandSpec:
-        return CommandSpec(argv=("/bin/sh", "-c", "echo forge-ready; exit 7"))
+        # Linux discards whatever is still buffered on the PTY master the moment the
+        # last slave descriptor closes, so a child that exits straight after writing
+        # turns the output assertion into a race the reader loses on a busy machine.
+        # The gate file holds the slave open until the reader has actually seen the
+        # line; the exit path is then triggered on purpose rather than by luck.
+        script = f"echo forge-ready; while [ ! -e {shlex.quote(str(self.gate()))} ]; do sleep 0.01; done; exit 7"
+        return CommandSpec(argv=("/bin/sh", "-c", script))
 
 
 def test_pty_session_drains_output_and_survives_child_exit(tmp_path) -> None:
@@ -81,22 +91,27 @@ def test_pty_session_drains_output_and_survives_child_exit(tmp_path) -> None:
     # (never raise) -- otherwise the GUI's is_alive() cleanup never runs and the
     # /dev /proc /sys /run bind mounts leak. This drives a real PTY and keeps reading
     # past the child's exit to lock that contract.
-    session = PtySession(
-        _EchoSpec(tmp_path / "rootfs", use_sudo=False, mount_runtime=False)
-    ).start()
+    spec = _EchoSpec(tmp_path / "rootfs", use_sudo=False, mount_runtime=False)
+    session = PtySession(spec).start()
     try:
         output = b""
-        deadline = time.time() + 5
+        deadline = time.time() + 10
+        released = False
         while time.time() < deadline:
             chunk = session.read()  # must never raise, including after EIO
             if chunk:
                 output += chunk
-            elif not session.is_alive():
-                break
-            else:
+            if not released and b"forge-ready" in output:
+                released = True
+                spec.gate().write_bytes(b"")
+            if not chunk:
+                if released and not session.is_alive():
+                    break
                 time.sleep(0.02)
         assert b"forge-ready" in output
+        assert released, "the child was still holding the PTY open at the deadline"
         assert session.is_alive() is False
         assert session.returncode == 7
     finally:
+        spec.gate().write_bytes(b"")
         session.terminate()

@@ -7,10 +7,17 @@ import subprocess
 from distroforge.cli import main
 from distroforge.core.command import CommandResult, CommandRunner
 from distroforge.core.packaging import (
+    LINTIAN_ARGV,
+    LINTIAN_PROFILE,
     HermeticBuildPlan,
+    _check_from_result,
+    _write_deb_content_report,
     build_debian_package,
     create_hermetic_release_bundle,
     diagnose_autopkgtest,
+    lintian_reason,
+    lintian_status,
+    lintian_tags,
     packaging_policy_report,
 )
 
@@ -130,6 +137,8 @@ def test_packaging_policy_reports_docs_modes_and_tool_availability(tmp_path) -> 
         "distroforge chroot-backends\n"
         "distroforge packaging-policy\n"
         "distroforge hermetic-build-plan\n"
+        "distroforge-typer --help\n"
+        "AUTOPKGTEST_TMP\n"
         "importlib.resources\n"
         "distroforge.data\n"
         "vulndb.json\n"
@@ -368,7 +377,6 @@ def test_hermetic_release_bundle_writes_manifest_and_reports(tmp_path, monkeypat
                     "./usr/share/icons/hicolor/scalable/apps/distroforge.svg",
                     "./usr/share/doc/distroforge/acceptance-matrix.md",
                     "./usr/share/man/man1/distroforge.1.gz",
-                    "./usr/share/lintian/overrides/distroforge",
                 ]
             )
         elif command[:2] == ("dpkg-deb", "-f"):
@@ -485,3 +493,140 @@ def test_cli_packaging_policy_and_hermetic_plan(tmp_path, capsys) -> None:
     output = capsys.readouterr().out
     assert "Hermetic Debian build plan" in output
     assert "pbuilder" in output
+
+
+# The four tags lintian 2.129 really emits on the shipped distroforge_0.3.5-2_all.deb,
+# at exit code 0. Verbatim, because the point is that rc alone says "clean".
+SHIPPED_LINTIAN_OUTPUT = (
+    "W: distroforge: command-with-path-in-maintainer-script /usr/bin/gsettings"
+    " (in test syntax) [postinst:11]\n"
+    "W: distroforge: debian-changelog-line-too-long"
+    " [usr/share/doc/distroforge/changelog.Debian.gz:4]\n"
+    "W: distroforge: debian-changelog-line-too-long"
+    " [usr/share/doc/distroforge/changelog.Debian.gz:5]\n"
+    "W: distroforge: debian-changelog-line-too-long"
+    " [usr/share/doc/distroforge/changelog.Debian.gz:6]\n"
+)
+
+
+class FakeLintianRunner:
+    """A runner that answers lintian the way lintian answers: warnings at rc 0."""
+
+    dry_run = False
+
+    def __init__(self, output: str = SHIPPED_LINTIAN_OUTPUT, returncode: int = 0) -> None:
+        self.output = output
+        self.returncode = returncode
+        self.history: list = []
+
+    def has_binary(self, name: str) -> bool:
+        return name in {"lintian", "dpkg-buildpackage"}
+
+    def run(self, spec, check: bool = True):
+        self.history.append(spec)
+        if spec.argv[:1] == ("lintian",):
+            return CommandResult(spec=spec, returncode=self.returncode, stdout=self.output, stderr="")
+        return CommandResult(spec=spec, returncode=0, stdout="", stderr="")
+
+
+def _package_root(tmp_path):
+    root = tmp_path / "root"
+    (root / "distroforge/data").mkdir(parents=True)
+    (root / "debian").mkdir()
+    (root / "debian/docs").write_text("", encoding="utf-8")
+    # _latest_deb globs the parent of the source root, where dpkg-buildpackage drops it.
+    (root.parent / "distroforge_0.3.5-2_all.deb").write_bytes(b"deb\n")
+    return root
+
+
+def test_lintian_verdict_reads_the_output_instead_of_trusting_exit_zero(tmp_path) -> None:
+    """rc 0 with four W: tags is not a pass, and the tags have to reach the report.
+
+    _package_tool_status returned "passed" before it looked at anything, and the reason
+    field was cleared for every non-failing status, so the four real warnings on the
+    shipped package could not surface through either path.
+    """
+    runner = FakeLintianRunner()
+
+    report = build_debian_package(_package_root(tmp_path), execute=True, runner=runner)
+    lintian = next(check for check in report.checks if check.name == "lintian")
+
+    assert lintian.returncode == 0
+    assert lintian.status == "review required"
+    assert lintian.reason.count("W: distroforge:") == 4
+    assert "command-with-path-in-maintainer-script" in lintian.reason
+    assert "debian-changelog-line-too-long" in lintian.reason
+    assert lintian.needs_review
+    assert not lintian.failed
+
+
+def test_lintian_runs_with_a_pinned_vendor_profile(tmp_path) -> None:
+    """Left unset, the profile comes from dpkg-vendor on whatever host runs the check.
+
+    lintian profiles are vendors, never suites: `--profile resolute` aborts with
+    "Could not find a profile matching: resolute/main".
+    """
+    runner = FakeLintianRunner()
+
+    build_debian_package(_package_root(tmp_path), execute=True, runner=runner)
+    argv = next(spec.argv for spec in runner.history if spec.argv[:1] == ("lintian",))
+
+    assert LINTIAN_PROFILE in {"debian", "ubuntu"}
+    assert argv[1:4] == ("--profile", LINTIAN_PROFILE, "--no-tag-display-limit")
+    assert argv[:4] == LINTIAN_ARGV
+
+
+def test_lintian_errors_block_and_a_silent_run_passes() -> None:
+    assert lintian_status(0, "") == "passed"
+    assert lintian_status(0, SHIPPED_LINTIAN_OUTPUT) == "review required"
+    assert lintian_status(2, "E: distroforge: no-copyright-file\n") == "failed"
+    # --fail-on warning is not the mechanism: it turns rc into 2 for a healthy
+    # artifact and still blocks nothing, so the tags stay the source of truth.
+    assert lintian_status(2, SHIPPED_LINTIAN_OUTPUT) == "review required"
+    assert lintian_status(127, "") == "failed"
+    assert lintian_tags(SHIPPED_LINTIAN_OUTPUT + "N: 3 hints overridden\n")[-1].startswith("N: ")
+    assert lintian_reason(SHIPPED_LINTIAN_OUTPUT).count(";") == 3
+
+
+def test_hermetic_bundle_lintian_check_keeps_the_tags(tmp_path) -> None:
+    """The bundle path grades lintian too, and it graded on rc alone as well."""
+    result = subprocess.CompletedProcess(LINTIAN_ARGV, 0, SHIPPED_LINTIAN_OUTPUT, "")
+
+    check = _check_from_result("lintian", LINTIAN_ARGV, result)
+
+    assert check.status == "review required"
+    assert "command-with-path-in-maintainer-script" in check.reason
+    assert _check_from_result("lintian", LINTIAN_ARGV, subprocess.CompletedProcess(LINTIAN_ARGV, 127, "", "")).status == "missing"
+
+
+def test_deb_content_does_not_require_a_lintian_override_that_is_never_shipped(tmp_path, monkeypatch) -> None:
+    """packaging.py demanded lintian/overrides/distroforge from every built .deb.
+
+    The project ships none and has decided never to: silencing a tag with an override
+    is not the same thing as being clean. The requirement made deb-content fail on
+    every build for a file that does not and should not exist.
+    """
+    deb = tmp_path / "distroforge_0.3.5-2_all.deb"
+    deb.write_bytes(b"deb\n")
+
+    def fake_run(command, env=None):
+        if command[:2] == ("dpkg-deb", "-c"):
+            stdout = "\n".join(
+                [
+                    "./usr/share/applications/distroforge.desktop",
+                    "./usr/share/icons/hicolor/scalable/apps/distroforge.svg",
+                    "./usr/share/doc/distroforge/acceptance-matrix.md",
+                    "./usr/share/man/man1/distroforge.1.gz",
+                ]
+            )
+        else:
+            stdout = "Package: distroforge\n"
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr("distroforge.core.packaging._run_capture", fake_run)
+
+    check = _write_deb_content_report(tmp_path / "DEB-CONTENT-REPORT.txt", deb)
+
+    assert check.status == "passed"
+    assert check.reason == ""
+    assert "lintian/overrides" not in (tmp_path / "DEB-CONTENT-REPORT.txt").read_text(encoding="utf-8")

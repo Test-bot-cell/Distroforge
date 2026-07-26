@@ -3,9 +3,14 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-LAUNCHER_ICON = Path("debian/distroforge.svg")
-DESKTOP_ENTRY = Path("debian/distroforge.desktop")
-GUI_APP = Path("distroforge/ui/app.py")
+# Anchored at the source root, not the working directory: pybuild runs the test
+# phase from the staged build tree, where "debian/distroforge.svg" does not exist
+# and "distroforge/ui/app.py" resolves to the installed copy instead of the file
+# these assertions are about.
+ROOT = Path(__file__).resolve().parents[1]
+LAUNCHER_ICON = ROOT / "debian" / "distroforge.svg"
+DESKTOP_ENTRY = ROOT / "debian" / "distroforge.desktop"
+GUI_APP = ROOT / "distroforge" / "ui" / "app.py"
 
 
 def test_launcher_icon_is_valid_square_svg() -> None:

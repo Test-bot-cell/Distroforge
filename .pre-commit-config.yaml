@@ -21,7 +21,14 @@ repos:
         name: shellcheck (maintainer scripts)
         entry: shellcheck
         language: system
-        files: ^debian/(distroforge\.(postinst|preinst|prerm|postrm)|tests/smoke)$
+        files: ^debian/(distroforge\.(postinst|preinst|prerm|postrm)|tests/(?!control$)[^/]+)$
+
+      - id: maintainer-script-payloads
+        name: "python3 payloads embedded in packaging scripts must compile"
+        entry: python3 tools/check-maintainer-scripts.py .
+        language: system
+        pass_filenames: false
+        files: ^(debian/(tests/.*|distroforge\..*)|tools/check-maintainer-scripts\.py)$
 
       - id: no-extend-or-append
         name: "list.extend returns None, so `or append` always fires"

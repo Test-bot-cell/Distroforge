@@ -1,27 +1,37 @@
 #!/bin/sh
 set -eu
 
-distroforge --help >/tmp/distroforge-help.txt
-grep -q "usage: distroforge" /tmp/distroforge-help.txt
+# autopkgtest hands every test a private scratch directory; writing to fixed
+# /tmp/distroforge-*.txt names instead invited a symlink from any local user and
+# made two testbed runs collide. mktemp -d keeps a manual run just as private.
+WORK="${AUTOPKGTEST_TMP:-$(mktemp -d)}"
 
-distroforge releases >/tmp/distroforge-releases.txt
-grep -q "26.04" /tmp/distroforge-releases.txt
+distroforge --help >"$WORK/help.txt"
+grep -q "usage: distroforge" "$WORK/help.txt"
 
-distroforge doctor --python >/tmp/distroforge-python-doctor.txt
-grep -q "pydantic" /tmp/distroforge-python-doctor.txt
+distroforge releases >"$WORK/releases.txt"
+grep -q "26.04" "$WORK/releases.txt"
 
-distroforge host >/tmp/distroforge-host.txt
-grep -q "chroot-terminal" /tmp/distroforge-host.txt
+distroforge doctor --python >"$WORK/python-doctor.txt"
+grep -q "pydantic" "$WORK/python-doctor.txt"
 
-distroforge chroot-backends >/tmp/distroforge-chroot-backends.txt
-grep -q "nspawn" /tmp/distroforge-chroot-backends.txt
+distroforge host >"$WORK/host.txt"
+grep -q "chroot-terminal" "$WORK/host.txt"
+
+distroforge chroot-backends >"$WORK/chroot-backends.txt"
+grep -q "nspawn" "$WORK/chroot-backends.txt"
+
+# python3-typer is a hard Depends, so the Typer facade entry point must work in the
+# installed package too -- not only in the build tree where the suite exercises it.
+distroforge-typer --help >"$WORK/typer-help.txt"
+grep -q "distroforge-typer" "$WORK/typer-help.txt"
 
 SOURCE_ROOT="${AUTOPKGTEST_TEST_SRCDIR:-.}"
-distroforge packaging-policy "$SOURCE_ROOT" >/tmp/distroforge-packaging-policy.txt
-grep -q "Autopkgtest policy" /tmp/distroforge-packaging-policy.txt
+distroforge packaging-policy "$SOURCE_ROOT" >"$WORK/packaging-policy.txt"
+grep -q "Autopkgtest policy" "$WORK/packaging-policy.txt"
 
-distroforge hermetic-build-plan "$SOURCE_ROOT" --backend sbuild --suite resolute >/tmp/distroforge-hermetic-plan.txt
-grep -q "Suite: resolute" /tmp/distroforge-hermetic-plan.txt
+distroforge hermetic-build-plan "$SOURCE_ROOT" --backend sbuild --suite resolute >"$WORK/hermetic-plan.txt"
+grep -q "Suite: resolute" "$WORK/hermetic-plan.txt"
 
 python3 - <<'PY'
 import json
@@ -38,8 +48,11 @@ for name in ("releases.toml", "profiles.toml", "personas.toml"):
 vulndb = json.loads(data_root.joinpath("vulndb.json").read_text(encoding="utf-8"))
 assert vulndb.get("advisories")
 
+# This test runs against the installed package, so the packaged example is the only
+# acceptable answer. The former fallback to examples/minimal-bootstrap.yaml made the
+# assertion unfalsifiable: debian/examples could stop shipping the file and the
+# source copy next to the test would keep the check green.
 example = Path("/usr/share/doc/distroforge/examples/minimal-bootstrap.yaml")
-if not example.exists():
-    example = Path("examples/minimal-bootstrap.yaml")
+assert example.is_file(), f"packaged example is missing: {example}"
 validate_definition_data(load_definition(example))
 PY

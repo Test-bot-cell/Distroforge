@@ -34,6 +34,20 @@ IMPORTANT_DOCS = (
     "docs/advisory-agent.md",
 )
 
+# lintian profiles are vendors, never suites: /usr/share/lintian/profiles holds
+# debian, ubuntu, kali, pureos and friends, and `--profile resolute` simply aborts
+# with "Could not find a profile matching: resolute/main". Left unset, the profile
+# comes from dpkg-vendor on whichever host happens to run the check, so the same
+# .dsc and .changes can pass on one machine and fail on the next. Pinning the
+# Debian profile makes the verdict reproducible and holds the package to the
+# upstream Policy baseline that docs/debian-canonical-compliance.md claims.
+# --no-tag-display-limit matters just as much: without it lintian truncates
+# repeated tags, and a truncated report cannot be turned into a reason string.
+LINTIAN_PROFILE = "debian"
+LINTIAN_ARGV = ("lintian", "--profile", LINTIAN_PROFILE, "--no-tag-display-limit")
+# E error, W warning, I info, P pedantic, X experimental, O overridden, N classification.
+_LINTIAN_TAG = re.compile(r"^[EWIPXON]: \S")
+
 HERMETIC_BUNDLE_COMMANDS = {
     "LINTIAN.txt": "lintian",
     "BUILDINFO-REPORT.txt": "buildinfo-report",
@@ -490,7 +504,7 @@ def _write_hermetic_bundle_reports(
     changes = artifact_dir / f"distroforge_{version}_amd64.changes"
     distroforge = (sys.executable, "-m", "distroforge")
     commands = {
-        "LINTIAN.txt": ("lintian", str(deb), str(dsc), str(changes)),
+        "LINTIAN.txt": (*LINTIAN_ARGV, str(deb), str(dsc), str(changes)),
         "BUILDINFO-REPORT.txt": (*distroforge, "buildinfo-report", str(buildinfo), "--changes", str(changes)),
         "PACKAGING-POLICY.txt": (
             *distroforge,
@@ -621,6 +635,13 @@ def _write_bundle_contract(
 
 
 def _check_from_result(name: str, command: tuple[str, ...], result: subprocess.CompletedProcess[str]) -> PackageBuildCheck:
+    # lintian exits 0 with warnings, so an exit-code-only verdict declared the
+    # shipped 0.3.5-2 package clean while it carried four W: tags. Read the output.
+    if command[:1] == ("lintian",) and result.returncode != 127:
+        output = f"{result.stdout}\n{result.stderr}"
+        status = lintian_status(result.returncode, output)
+        reason = lintian_reason(output) if status != "passed" else ""
+        return PackageBuildCheck(name, status, command, result.returncode, reason)
     status = "passed" if result.returncode == 0 else "missing" if result.returncode == 127 else "failed"
     return PackageBuildCheck(
         name,
@@ -661,12 +682,15 @@ def _write_source_extract_report(path: Path, dsc: Path) -> PackageBuildCheck:
 def _write_deb_content_report(path: Path, deb: Path) -> PackageBuildCheck:
     metadata = _run_capture(("dpkg-deb", "-f", str(deb), "Package", "Version", "Architecture", "Depends", "Recommends"))
     content = _run_capture(("dpkg-deb", "-c", str(deb)))
+    # No lintian/overrides/distroforge entry: the package ships none and must not.
+    # Requiring the file made deb-content fail on every build for a file the project
+    # has decided never to create -- silencing a tag with an override is not the same
+    # thing as being clean, so DistroForge fixes tags instead of overriding them.
     required = (
         "distroforge.desktop",
         "distroforge.svg",
         "acceptance-matrix.md",
         "/man1/distroforge",
-        "lintian/overrides/distroforge",
     )
     selected = [line for line in content.stdout.splitlines() if any(item in line for item in required)]
     path.write_text(
@@ -929,7 +953,7 @@ def build_debian_package(
             runner,
             root,
             "lintian",
-            (str(deb),) if deb else (),
+            (*LINTIAN_ARGV[1:], str(deb)) if deb else (),
             effective_execute,
             bool(deb),
         ),
@@ -1063,6 +1087,41 @@ def _result_reason(stdout: str, stderr: str) -> str:
     return lines[-1] if lines else ""
 
 
+def lintian_tags(output: str) -> tuple[str, ...]:
+    """Every tag lintian emitted, in order, as ``SEVERITY: package: tag ...``."""
+    return tuple(line.strip() for line in output.splitlines() if _LINTIAN_TAG.match(line.strip()))
+
+
+def lintian_status(returncode: int, output: str) -> str:
+    """Grade a lintian run from its tags, not from its exit code.
+
+    lintian exits 0 for a package that emits warnings, so the exit code alone rates
+    the shipped 0.3.5-2 .deb -- four W: tags -- as clean. Reading tags is also why
+    ``--fail-on warning`` is the wrong lever here: it turns rc into 2 for a healthy
+    artifact without blocking anything, so it would paint the bundle red and still
+    tell the maintainer nothing about which tag to go and fix.
+    """
+    tags = lintian_tags(output)
+    if any(tag.startswith("E:") for tag in tags):
+        return "failed"
+    if tags:
+        return "review required"
+    return "passed" if returncode == 0 else "failed"
+
+
+def lintian_reason(output: str) -> str:
+    """Keep every tag in the reason, not just the last line of output.
+
+    ``_result_reason`` returns one line, so three of the four real warnings were
+    dropped before anybody could read them.
+    """
+    tags = lintian_tags(output)
+    if tags:
+        return "; ".join(tags)
+    lines = [line for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
 def _run_package_tool_check(
     runner: CommandRunner,
     root: Path,
@@ -1083,12 +1142,14 @@ def _run_package_tool_check(
     spec = CommandSpec(argv=command, cwd=root, description=f"Run {tool} on Debian package")
     result = runner.run(spec, check=False)
     status = _package_tool_status(tool, result.returncode, result.stdout, result.stderr)
+    output = f"{result.stdout}\n{result.stderr}"
+    reason = lintian_reason(output) if tool == "lintian" else _result_reason(result.stdout, result.stderr)
     return PackageBuildCheck(
         tool,
         status,
         command,
         returncode=result.returncode,
-        reason=_result_reason(result.stdout, result.stderr) if status != "passed" else "",
+        reason=reason if status != "passed" else "",
     )
 
 
@@ -1121,12 +1182,13 @@ def _run_autopkgtest_package_check(
 
 
 def _package_tool_status(tool: str, returncode: int, stdout: str, stderr: str) -> str:
-    if returncode == 0:
-        return "passed"
     output = f"{stdout}\n{stderr}"
-    if tool == "lintian" and not any(line.startswith("E:") for line in output.splitlines()):
-        return "review required"
-    return "failed"
+    # Grade lintian before looking at rc: it exits 0 with warnings, so the early
+    # `if returncode == 0: return "passed"` this replaced never reached its own tag
+    # check and the four real warnings on the shipped .deb could not surface.
+    if tool == "lintian":
+        return lintian_status(returncode, output)
+    return "passed" if returncode == 0 else "failed"
 
 
 def _autopkgtest_command(deb: Path, backend: str, testbed: str | None) -> tuple[str, ...] | None:
@@ -1396,6 +1458,13 @@ REQUIRED_AUTOPKGTEST_SMOKE_CHECKS = (
     "distroforge chroot-backends",
     "distroforge packaging-policy",
     "distroforge hermetic-build-plan",
+    # The package installs three console scripts and three manpages; the smoke test
+    # used to exercise one of them. python3-typer is a hard Depends, so the facade
+    # has to answer in the installed package too, not only in the build tree.
+    "distroforge-typer --help",
+    # autopkgtest hands each test a private scratch directory. Fixed /tmp names are
+    # a symlink target for any local user and collide between parallel runs.
+    "AUTOPKGTEST_TMP",
     "importlib.resources",
     "distroforge.data",
     "vulndb.json",
