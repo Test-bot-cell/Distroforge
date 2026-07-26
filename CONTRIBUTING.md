@@ -6,9 +6,17 @@
 make check
 ```
 
-That is the whole contract: `ruff check .`, `mypy distroforge/`, `pytest -q`, and
-`shellcheck` over the Debian maintainer scripts. It needs no network and installs
-nothing. Run it before every commit; CI runs the same four.
+That is the whole contract: `ruff check .`, `mypy distroforge/`, `pytest -q`,
+`shellcheck` over the Debian packaging scripts, and `compile()` over the `python3`
+payloads embedded in them. It needs no network and installs nothing. Run it before
+every commit; CI runs the same five.
+
+Prefer `make check` over calling `pytest` yourself, and not only for the coverage:
+the Makefile exports `PYTHONDONTWRITEBYTECODE=1`. Python invalidates a `.pyc` on the
+source's whole-second mtime and byte size, so editing a line to the *same length*
+inside one second — which is exactly what happens while checking that a test can
+fail — leaves a stale cache in place and the run answers about code you no longer
+have. `make clean-pyc` clears it if you have already been bitten.
 
 `pre-commit install` wires the fast subset into your commits. The hook file is
 deliberately all `repo: local` with `language: system` or `language: pygrep`, so
