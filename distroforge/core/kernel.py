@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -231,7 +232,7 @@ class KernelModuleService:
     def _build_kernel_debs(self, source_dir: Path) -> None:
         target_dir = self._target_path(source_dir)
         jobs = self.options.jobs if self.options.jobs > 0 else "$(nproc)"
-        localversion = self._shell_quote(self.options.localversion)
+        localversion = shlex.quote(self.options.localversion)
         command = f"cd {target_dir} && make -j{jobs} bindeb-pkg LOCALVERSION={localversion}"
         ChrootService(self.runner, self.root, self.use_sudo).run("/bin/bash", "-lc", command)
 
@@ -390,10 +391,6 @@ class KernelModuleService:
         else:
             packages.append("linux-headers-generic")
         return packages
-
-    @staticmethod
-    def _shell_quote(value: str) -> str:
-        return "'" + value.replace("'", "'\"'\"'") + "'"
 
     @staticmethod
     def _version_from_url(url: str) -> str:

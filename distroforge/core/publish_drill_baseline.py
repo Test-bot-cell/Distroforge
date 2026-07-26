@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .host_artifacts import write_host_artifact
+from .jsonio import read_json_object
 from .project import Project
 
 
@@ -64,7 +65,7 @@ def promote_publish_drill_baseline(project: Project, *, bundle_dir: Path | None 
     baseline = bundle_dir / "PUBLISH-DRILL.previous.json"
     report_path = bundle_dir / "PUBLISH-DRILL-BASELINE.json"
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    data = _read_json(source)
+    data = read_json_object(source)
     drill_status = str(data.get("status", "missing"))
     promoted = False
     if not data:
@@ -80,12 +81,3 @@ def promote_publish_drill_baseline(project: Project, *, bundle_dir: Path | None 
     write_host_artifact(report_path, report.render_json() + "\n", "Write PUBLISH-DRILL-BASELINE.json")
     return report
 
-
-def _read_json(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}

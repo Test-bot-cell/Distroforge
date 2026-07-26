@@ -7,6 +7,7 @@ from pathlib import Path
 from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .host_artifacts import write_host_artifact
+from .jsonio import read_json_object
 from .project import Project
 from .release_explain import ReleaseExplainReport, explain_release
 from .release_pipeline import ReleasePipelineReport, run_release_pipeline
@@ -95,7 +96,7 @@ def run_publish_drill(
     )
     explanation = explain_release(project, iso=iso, bundle_dir=bundle_dir)
     status = _drill_status(pipeline.status, explanation.status)
-    evidence = {name: _read_json(bundle_dir / filename) for name, filename in (("release_gate", "RELEASE-GATE.json"), ("manifest", "RELEASE-MANIFEST.json"), ("signing", "SIGNING-REPORT.json"), ("verify", "VERIFY-REPORT.json"))}
+    evidence = {name: read_json_object(bundle_dir / filename) for name, filename in (("release_gate", "RELEASE-GATE.json"), ("manifest", "RELEASE-MANIFEST.json"), ("signing", "SIGNING-REPORT.json"), ("verify", "VERIFY-REPORT.json"))}
     report = PublishDrillReport(project.root, iso, bundle_dir, status, bundle_dir / "PUBLISH-DRILL.json", pipeline, explanation, execute_signing, evidence)
     write_host_artifact(report.drill, report.render_json() + "\n", "Write PUBLISH-DRILL.json")
     return report
@@ -108,12 +109,3 @@ def _drill_status(pipeline_status: str, explanation_status: str) -> str:
         return "ready_to_publish"
     return "review_required"
 
-
-def _read_json(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}

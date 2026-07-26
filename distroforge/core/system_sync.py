@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,7 +74,7 @@ class SystemSyncService:
         action = self._action()
         hold = ""
         if self.options.hold_packages:
-            hold = "apt-mark hold " + " ".join(_shell_quote(item) for item in self.options.hold_packages) + "; "
+            hold = "apt-mark hold " + " ".join(shlex.quote(item) for item in self.options.hold_packages) + "; "
         if not self.options.fallback:
             return f"set -e; apt-get -s {action}; {hold}apt-get -y {action}"
         return (
@@ -114,7 +115,7 @@ class SystemSyncService:
         action = self._action()
         hold = ""
         if self.options.hold_packages:
-            hold = "apt-mark hold " + " ".join(_shell_quote(item) for item in self.options.hold_packages) + "\n"
+            hold = "apt-mark hold " + " ".join(shlex.quote(item) for item in self.options.hold_packages) + "\n"
         if not self.options.fallback:
             return f"{hold}apt-get -y {action}"
         return (
@@ -129,6 +130,3 @@ class SystemSyncService:
             return "--with-new-pkgs upgrade"
         return "full-upgrade"
 
-
-def _shell_quote(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"

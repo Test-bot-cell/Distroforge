@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from .artifact_paths import default_output_iso
 from .build import BuildOptions
+from .hashing import sha256_file
 from .project import Project
 from .release_gate import ReleaseGateService
 
@@ -94,7 +94,7 @@ def _check_iso_contract(items: list[IsoAcceptanceItem], project: Project, iso: P
     if size <= 0:
         items.append(IsoAcceptanceItem("iso", "blocked", "Output ISO is empty."))
         return
-    digest = _sha256(iso)
+    digest = sha256_file(iso)
     items.append(IsoAcceptanceItem("iso", "ready", f"{size} bytes, SHA256 {digest}."))
     data = _read_report(report_path)
     if not data:
@@ -134,10 +134,3 @@ def _next_command(project: Project, iso: Path, items: list[IsoAcceptanceItem]) -
         return f"distroforge release-gate {root} --iso {iso}"
     return f"distroforge publish-bundle {root} --iso {iso}"
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

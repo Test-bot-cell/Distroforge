@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +8,7 @@ from .artifact_paths import default_output_iso
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
 from .command import CommandRunner
+from .hashing import sha256_file
 from .iso_doctor import IsoDoctorReport, diagnose_iso_build
 from .project import Project
 
@@ -128,12 +128,5 @@ def _output_contract(path: Path) -> tuple[bool, int, str]:
     if not path.exists() or not path.is_file():
         return False, 0, ""
     size = path.stat().st_size
-    return True, size, _sha256(path) if size > 0 else ""
+    return True, size, sha256_file(path) if size > 0 else ""
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

@@ -64,7 +64,6 @@ class BuildOptions:
     package_plan: PackagePlan = field(default_factory=PackagePlan)
     run_preview: bool = False
     run_synaptic: bool = False
-    clean_apt_cache: bool = True
     use_sudo: bool = True
     sanitize: SanitizeOptions = field(default_factory=SanitizeOptions)
     bootstrap: BootstrapOptions = field(default_factory=BootstrapOptions)

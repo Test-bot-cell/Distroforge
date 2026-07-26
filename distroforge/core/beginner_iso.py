@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +14,7 @@ from .build_memory import BuildAttempt, BuildMemory, options_signature
 from .command import CommandRunner
 from .definition import definition_from_project, write_definition
 from .dry_run_report import generate_dry_run_report
+from .hashing import sha256_file
 from .prebuild_vm import QemuLabService
 from .project import Project
 from .release_gate import ReleaseGateService
@@ -300,7 +300,7 @@ def repair_beginner_iso_release_artifacts(project: Project, options: BuildOption
     else:
         output_dir = iso.parent
         output_dir.mkdir(parents=True, exist_ok=True)
-        digest = _sha256(iso)
+        digest = sha256_file(iso)
         (output_dir / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
         repaired.append("SHA256SUMS")
         (output_dir / "BUILDINFO").write_text(
@@ -369,13 +369,6 @@ def _classify_failure(text: str) -> tuple[str, str, str]:
     rule = classify_log(text)
     return rule.code, rule.title, rule.remediation
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _minimal_html_report(project: Project, iso: Path, digest: str) -> str:

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .host_artifacts import write_host_artifact
+from .jsonio import read_json_object
 from .project import Project
 
 
@@ -49,11 +50,11 @@ class ReleaseNotesReport:
 def write_release_notes(project: Project, *, bundle_dir: Path | None = None) -> ReleaseNotesReport:
     bundle_dir = bundle_dir or project.output_dir / "publish"
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    manifest = _read_json(bundle_dir / "RELEASE-MANIFEST.json")
-    gate = _read_json(bundle_dir / "RELEASE-GATE.json")
-    signing = _read_json(bundle_dir / "SIGNING-REPORT.json")
+    manifest = read_json_object(bundle_dir / "RELEASE-MANIFEST.json")
+    gate = read_json_object(bundle_dir / "RELEASE-GATE.json")
+    signing = read_json_object(bundle_dir / "SIGNING-REPORT.json")
     buildinfo = _read_text(bundle_dir / "BUILDINFO")
-    provenance = _read_json(bundle_dir / "distroforge-provenance.json")
+    provenance = read_json_object(bundle_dir / "distroforge-provenance.json")
     status = str(gate.get("status") or manifest.get("gate_status") or "unknown")
     blockers = tuple(
         f"{item.get('code', 'unknown')}: {item.get('detail', '')}"
@@ -150,15 +151,6 @@ def _changelog(project: Project, manifest: dict[str, object], gate: dict[str, ob
     ]
     return "\n".join(lines) + "\n"
 
-
-def _read_json(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _read_text(path: Path) -> str:

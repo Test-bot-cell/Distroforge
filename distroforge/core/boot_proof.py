@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -11,6 +10,7 @@ from pathlib import Path
 from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .command import CommandError, CommandRunner
+from .hashing import sha256_file
 from .prebuild_vm import QemuLabService
 from .project import Project
 
@@ -182,7 +182,7 @@ def _run_iso_scan(iso: Path, *, execute: bool) -> tuple[str, list[str], dict[str
     evidence: dict[str, object] = {"scan_time": datetime.now(UTC).isoformat()}
     if not iso.exists():
         return "blocked", ["ISO is missing; build or select an ISO before boot proof."], evidence
-    evidence.update({"size": iso.stat().st_size, "sha256": _sha256(iso)})
+    evidence.update({"size": iso.stat().st_size, "sha256": sha256_file(iso)})
     if not execute:
         notes.append("Planned ISO structure scan without reading boot metadata.")
         return "planned", notes, evidence
@@ -268,10 +268,3 @@ def _run_metadata_command(argv: tuple[str, ...]) -> str | None:
         return None
     return " | ".join(text.splitlines()[:6])
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

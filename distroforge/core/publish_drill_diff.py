@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .jsonio import require_json_object
+
 
 @dataclass(frozen=True)
 class PublishDrillDiffReport:
@@ -75,8 +77,8 @@ class PublishDrillDiffReport:
 
 
 def diff_publish_drills(old_path: Path, new_path: Path) -> PublishDrillDiffReport:
-    old = _read_json(old_path)
-    new = _read_json(new_path)
+    old = require_json_object(old_path)
+    new = require_json_object(new_path)
     old_status = str(old.get("status", "unknown"))
     new_status = str(new.get("status", "unknown"))
     old_gate = _gate_status(old)
@@ -197,9 +199,3 @@ def _list(data: object, key: str) -> list[str]:
     values = data.get(key, [])
     return [str(item) for item in values] if isinstance(values, list) else []
 
-
-def _read_json(path: Path) -> dict[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    return data

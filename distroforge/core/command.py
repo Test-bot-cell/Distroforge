@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -291,6 +292,9 @@ def _absolute_program(program: str) -> str:
 
 
 def _quote(value: str) -> str:
-    if not value or any(ch.isspace() for ch in value):
-        return "'" + value.replace("'", "'\"'\"'") + "'"
-    return value
+    # CommandSpec.display() feeds the printed plan, which operators read and
+    # re-run, so every part is quoted by shlex rather than only the ones with a
+    # space in them: $(...), *, ~root and backticks carry no whitespace and used
+    # to be printed raw. The same defect was live in the GUI's CLI-equivalent
+    # panel and in the desktop-source chroot command.
+    return shlex.quote(value)

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .artifact_paths import default_output_iso
+from .jsonio import read_json_object
 from .project import Project
 
 
@@ -77,10 +78,10 @@ def explain_release(project: Project, *, iso: Path | None = None, bundle_dir: Pa
     iso = iso or default_output_iso(project)
     output_dir = iso.parent
     bundle_dir = bundle_dir or project.output_dir / "publish"
-    gate = _read_json(bundle_dir / "RELEASE-GATE.json") or _read_json(output_dir / "RELEASE-GATE.json")
-    boot = _read_json(bundle_dir / "boot-proof.json") or _read_json(output_dir / "boot-proof.json")
-    manifest = _read_json(bundle_dir / "RELEASE-MANIFEST.json")
-    verify = _read_json(bundle_dir / "VERIFY-REPORT.json")
+    gate = read_json_object(bundle_dir / "RELEASE-GATE.json") or read_json_object(output_dir / "RELEASE-GATE.json")
+    boot = read_json_object(bundle_dir / "boot-proof.json") or read_json_object(output_dir / "boot-proof.json")
+    manifest = read_json_object(bundle_dir / "RELEASE-MANIFEST.json")
+    verify = read_json_object(bundle_dir / "VERIFY-REPORT.json")
     ready, review, blocked = _collect_items(gate, verify, manifest)
     boot_summary = _boot_summary(boot)
     if boot_summary["status"] == "missing":
@@ -176,12 +177,3 @@ def _markdown(report: ReleaseExplainReport) -> str:
     ]
     return "\n".join(lines)
 
-
-def _read_json(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
