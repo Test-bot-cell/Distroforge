@@ -177,8 +177,13 @@ Build option parity:
   (off, warn, block-high, block-critical), and the custom CVE database field.
 - CLI `--sbom-format` maps to the GUI **Quality Lab** SBOM format selector
   (Native, SPDX 2.3, CycloneDX 1.5).
-- CLI `--bootstrap-arch` maps to the GUI **Source page** **Bootstrap arch** field for
-  cross-architecture builds on a foreign host.
+- CLI `--bootstrap-arch` maps to the GUI **Bootstrap arch** field for cross-architecture
+  builds on a foreign host. That field, together with **Bootstrap variant**,
+  **Bootstrap mirror** and **Output ISO**, lives on **Advanced Modules**
+  (`ui/advanced_page.py`), not on the **Source** page. The build option contract in
+  `commands/build_contracts.py` still classifies every `bootstrap*` option under
+  `Source page`; that expected-surface string is stale and should be corrected in the
+  contract, not in the widget.
 
 The **Artifacts** page covers:
 
@@ -317,7 +322,12 @@ Livefs ISO parity:
 - CLI `livefs-iso-build --write` maps to the GUI **Write livefs ISO workspace** action.
 - CLI `--work-dir`, `--dest`, `--series`, `--arch`, `--mirror`, `--component`,
   `--project`, and `--volume-id` are represented by fields in the **Ubuntu livefs ISO**
-  GUI section.
+  GUI section (**Work dir**, **Destination ISO**, **Series**, **Architecture**,
+  **Mirror**, **Components**, **Project**, **Volume ID**).
+- CLI `--disk-id` is the one livefs option with no GUI field: the section has eight rows
+  for nine options. It is not a documented exception either, so this is an open parity
+  gap. Until a **Disk ID** row exists, the GUI always takes the derived default
+  (`PROJECT SERIES ARCH`, from `core/livefs_iso.py`), which the CLI overrides.
 
 Refactor parity:
 

@@ -6,9 +6,9 @@ This audit records the current structural debt and the target refactor path. It 
 
 | Surface | Current state | Risk |
 | --- | --- | --- |
-| CLI entrypoint | `distroforge/cli.py` is about 896 lines after build option extraction and command-handler extraction into `distroforge/commands/*`, including the catalog-listing, advisory, and privileged-plan adapters and a single `commands/output_policy.py` helper for dry-run command-history output | routing delegates per command; the remaining inline handlers are thin core delegations, so new command families must land as `commands/*` adapters rather than re-growing the router |
-| GUI shell | `distroforge/ui/main_window.py` is about 928 lines after Build & Release page, build controller, build option mapper, CLI-equivalent extraction, workflow-level centralization, the extraction of every remaining domain page (ISO, customization, recipes, plugins, logs, advanced, maintainer, quality, virtualization) into `distroforge/ui/*_page.py`, the move of shared widget construction into the `distroforge/ui/window_widgets.py` factory, and the extraction of every domain action handler (terminal, capture, artifacts, mirror, branding, profile, recipe, project, advisor, service, recommendation) into `distroforge/ui/*_actions.py` modules | the shell now owns only its Track-3 surface — navigation, shared state, job dispatch and global logs — plus the thin delegators that wire those page and `*_actions.py` handlers back onto the page and toolbar surfaces; widget construction is delegated to the `window_widgets` factory while the shell keeps the shared-state references, and job dispatch stays shell-owned on the reusable `ServiceRunnerMixin` boundary rather than being a further extraction target; the live risk is keeping new features from re-growing the shell |
-| Build core | `distroforge/core/build.py` is about 495 lines after the source-to-ISO path moved to `distroforge/core/build_pipeline.py` (about 732 lines) | `BuildOrchestrator.run` now delegates ordered stages; per-phase declarative metadata now lives in `distroforge/core/phase_contracts.py` |
+| CLI entrypoint | `distroforge/cli.py` is about 972 lines after build option extraction and command-handler extraction into `distroforge/commands/*`, including the catalog-listing, advisory, and privileged-plan adapters and a single `commands/output_policy.py` helper for dry-run command-history output | routing delegates per command; the remaining inline handlers are thin core delegations, so new command families must land as `commands/*` adapters rather than re-growing the router |
+| GUI shell | `distroforge/ui/main_window.py` is about 1143 lines after Build & Release page, build controller, build option mapper, CLI-equivalent extraction, workflow-level centralization, the extraction of every remaining domain page (ISO, customization, recipes, plugins, logs, advanced, maintainer, quality, virtualization) into `distroforge/ui/*_page.py`, the move of shared widget construction into the `distroforge/ui/window_widgets.py` factory, and the extraction of every domain action handler (terminal, capture, artifacts, mirror, branding, profile, recipe, project, advisor, service, recommendation) into `distroforge/ui/*_actions.py` modules | the shell now owns only its Track-3 surface — navigation, shared state, job dispatch and global logs — plus the thin delegators that wire those page and `*_actions.py` handlers back onto the page and toolbar surfaces; widget construction is delegated to the `window_widgets` factory while the shell keeps the shared-state references, and job dispatch stays shell-owned on the reusable `ServiceRunnerMixin` boundary rather than being a further extraction target; the live risk is keeping new features from re-growing the shell |
+| Build core | `distroforge/core/build.py` is about 317 lines after the source-to-ISO path moved to `distroforge/core/build_pipeline.py` (about 741 lines) | `BuildOrchestrator.run` now delegates ordered stages; per-phase declarative metadata now lives in `distroforge/core/phase_contracts.py` |
 | Protected writes | centralized through `FileSystemOps` and the sudo-wrapped ISO/squashfs/snapshot services, with the in-build host-side report/preview writers centralized through the `HostArtifactWriter` boundary | audited: every protected rootfs/ISO mutation flows through these boundaries, and the in-build host-side reports/previews flow through `HostArtifactWriter`; raw writes remain allowed only for host-side reports, plans, previews and output scaffolding, and each boundary stays dry-run-pure — now locked by a test that plans a full build and asserts zero host filesystem side effects |
 | Rollback | now transactional in `SnapshotService` | must remain part of the reliability contract, not a cosmetic option |
 | Docs | broad but scattered | product architecture, user levels, module gates, and parity need one canonical source |
@@ -104,6 +104,35 @@ The test suite should keep the refactor honest:
   effects;
 - docs referenced by `debian/docs` exist;
 - platform architecture docs use product language, not script/remix framing.
+
+### 6. Known gaps in the gates
+
+The gates above are honest about what they prove, so they must also be honest
+about what they do not:
+
+- **The suite is entirely L0/L1.** Every test is a pure unit test or an offline
+  plan/dry-run test: no external tool (`debootstrap`, `mksquashfs`, `xorriso`,
+  `qemu`, `apt`, `sbuild`, `autopkgtest`) has ever been executed by it, and no
+  network call, privilege prompt or real artifact is involved. The progress
+  fixtures under `tests/fixtures/progress/` exist precisely so heavy tools stay
+  out of the suite. There is therefore **no L2 gate**: nothing verifies that a
+  real ISO builds, boots or installs. That verification is a manual maintainer
+  step on real hardware or a real target ISO.
+- **Line coverage is 74.7% overall** (21351 of 28586 statements), and
+  `distroforge/ui/` is the weakest surface at 58.6%. The GUI is covered by
+  offscreen reachability, responsiveness and parity contracts rather than by
+  exhaustive widget tests.
+- **`mypy`, `pre-commit` and `shellcheck` are not wired anywhere.** They appear
+  only as tools that `doctor --debian-dev` audits on a maintainer workstation:
+  no `pyproject.toml` configuration, no CI step, no `debian/control` entry and
+  no `.pre-commit-config.yaml`. The shell scripts under `debian/` are
+  consequently unlinted, and no static type check gates a change.
+- **`lintian` runs, but never in a gate.** `debian-package --execute` invokes it
+  to produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and
+  `debian/control` lists it under `Suggests`; but CI does not run it,
+  `debian/rules` does not run it, and the rendered `sbuild` command passes
+  `--no-run-lintian`. Policy lint is therefore a maintainer action, not an
+  automatic verdict.
 
 ## First Extraction Targets
 

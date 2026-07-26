@@ -20,7 +20,7 @@ Canonical-best-practices compliant.
 - `core/build_memory.py`: the host-owned, append-only build-memory corpus (one JSONL line per build attempt) that grounds advisory citations such as "3 of your last 5 builds failed at squashfs".
 - `commands/`: lightweight command renderers used by CLI facades.
 - `ui/`: Qt desktop application.
-- `data/`: bundled TOML catalogs for releases, desktops, profiles, derivative profiles, personas, and branding palettes.
+- `data/`: bundled TOML catalogs for releases, desktops, upstream desktop sources, profiles, derivative profiles, personas, and branding palettes, plus the JSON advisory database `vulndb.json`.
 - `tests/`: regression tests for core behavior and command smoke checks.
 
 ## Build Flow
@@ -136,9 +136,10 @@ Related modules:
 - `core/qemu_smoke.py`
 - `core/capture_diff.py`
 
-The GUI surface is **Artifacts** and must remain in parity with `artifact-paths`,
-`release-readiness`, `qemu-smoke-plan`, `buildinfo-report`, `packaging-policy`, and
-`hermetic-build-plan`.
+The GUI surface is **Artifacts** and must remain in parity with the eight commands it
+covers: `artifact-paths`, `release-readiness`, `release-gate`, `qemu-smoke-plan`,
+`buildinfo-report`, `packaging-policy`, `debian-package`, and `hermetic-build-plan`. The
+per-action mapping is in `docs/gui-parity.md`, which is the single source for that list.
 
 Recent entrypoints are split into small command/page adapters:
 

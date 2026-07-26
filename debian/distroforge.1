@@ -1,3 +1,797 @@
-.TH distroforge 1 2026-06-03 "DistroForge" "User Commands"
+.\" Manual page for the DistroForge command-line interface.
+.\" Every command name, option name, choice list and default documented here is
+.\" derived from the argparse parser in distroforge/cli.py and the option
+.\" registrations in distroforge/commands/, not written from memory.
+.TH distroforge 1 2026-07-26 "DistroForge 0.3.5" "User Commands"
 .SH NAME
 distroforge \- plan and build Ubuntu/Debian live ISO images
+.SH SYNOPSIS
+.B distroforge
+.RI [ COMMAND ]
+.RI [ OPTIONS ]
+.PP
+.B distroforge new
+.I NAME PROJECT
+.RB [ \-\-release
+.IR VERSION ]
+.RB [ \-\-starter
+.IR KEY ]
+.PP
+.B distroforge plan
+.I PROJECT
+.PP
+.B distroforge readiness
+.I PROJECT
+.RB [ \-\-json ]
+.PP
+.B distroforge build
+.I PROJECT
+.RI [ BUILD\-OPTIONS ]
+.RB [ \-\-execute ]
+.PP
+.B distroforge iso\-build
+.I PROJECT
+.RB [ \-\-execute ]
+.RB [ \-\-boot\-proof
+.IR MODE ]
+.PP
+.B distroforge gui
+.SH DESCRIPTION
+.B distroforge
+plans, validates, builds, tests and releases customized Ubuntu and Debian live
+ISO images. A DistroForge
+.I project
+is a host directory holding a
+.I project.json
+description, a
+.I work/
+staging area and a
+.I dist/
+output directory; every command above operates on such a directory.
+.PP
+The tool is dry\-run first. A build prints and records the command history it
+.I would
+run and produces no ISO until
+.B \-\-execute
+is given, and privileged operations go through an explicit privilege helper
+selected with
+.BR \-\-privilege .
+Reviewing commands
+.RB ( \fBplan\fR ,
+.BR readiness ,
+.BR dry\-run\-report ,
+.BR explain ,
+.BR explain\-risk )
+never mutate the host or the image.
+.PP
+.B distroforge
+exposes 84 top\-level commands. Rather than a flat list, they form the coherent
+groups below; each command accepts
+.B \-\-help
+for its own options. The Qt desktop application
+.BR distroforge\-gui (1)
+covers the same workflows, and
+.BR distroforge\-typer (1)
+is an optional slim facade over the most common ones.
+.SH COMMANDS
+.SS Catalogs and vocabulary
+Read\-only listings of the bundled catalogs, plus the didactic surfaces.
+.TP
+.BR releases ", " profiles ", " desktops ", " personas ", " presets ", " source\-starters ", " branding\-palettes ", " derivative\-profiles ", " frameworks ", " chroot\-backends ", " autoinstall\-templates
+List the corresponding bundled catalog or host capability.
+.TP
+.BR glossary " [\fITERM\fR]"
+Explain DistroForge and ISO\-build vocabulary.
+.TP
+.BR guided\-recipe " [\fINAME\fR], " recipe " \fITEXT\fR"
+List the curated recipe prompts, or expand one into a candidate definition.
+.TP
+.B build\-phases
+Print the per\-phase build contracts (inputs, artifacts, privileges, rollback
+points).
+.B \-\-stage
+scopes the catalog to one pipeline stage.
+.SS Creating and describing a project
+.TP
+.BR new " \fINAME PROJECT\fR, " wizard " \fINAME PROJECT\fR"
+Create a project.
+.B wizard
+is the beginner\-first entry point and defaults
+.B \-\-profile
+to
+.BR portable ;
+both accept
+.BR "\-\-profile portable|desktop|dev|kiosk" ,
+.BR \-\-starter ,
+.B \-\-release
+and
+.BR \-\-plan\-only .
+.TP
+.BR init\-definition " \fIPATH\fR"
+Write an example YAML/JSON image definition.
+.TP
+.BR profile " {\fBcreate\fR|\fBapply\fR|\fBshow\fR|\fBdiff\fR|\fBresolve\fR}"
+Compose package profiles from a base plus repeated
+.B \-\-layer
+and
+.B \-\-override
+selections.
+.TP
+.BR derivative\-profile " {\fBplan\fR|\fBvalidate\fR|\fBexport\fR|\fBcreate\-project\fR}"
+Plan or export a downstream derivative distribution profile.
+.TP
+.BR export\-recipe ", " export\-build\-preset ", " plugins ", " history
+Export the project as a reusable recipe or maintainer build preset, list local
+plugins, or list and replay local build history.
+.SS Reviewing before building
+.TP
+.BR plan " \fIPROJECT\fR"
+Print the ordered build pipeline for the project.
+.TP
+.BR validate " \fIPROJECT\fR, " compat " \fIPROJECT\fR"
+Validate the project, host and option contracts, and check release
+compatibility.
+.TP
+.BR readiness " \fIPROJECT\fR, " dry\-run\-report " \fIPROJECT\fR"
+Show the readiness dashboard, or write a structured dry\-run report.
+.TP
+.BR explain " \fIPROJECT\fR, " explain\-risk " \fIPROJECT\fR"
+Explain in plain language what a build would do, and which selected options are
+risky.
+.B "explain \-\-strict"
+promotes advisory findings to blocking ones.
+.TP
+.BR journey " \fIPROJECT\fR"
+Show the guided build journey.
+.B \-\-level
+selects
+.BR beginner ,
+.BR power\-user ,
+.B maintainer
+or
+.BR developer ;
+.B \-\-apply
+and
+.B \-\-check
+act on a single step.
+.TP
+.BR ux\-audit " \fIPROJECT\fR, " ai\-review " \fIPROJECT\fR"
+Audit persona friction and CLI/GUI parity, or run the local advisory review.
+.SS Host readiness
+.TP
+.BR doctor ", " host ", " iso\-toolchain ", " iso\-doctor " \fIPROJECT\fR"
+Report host tooling and build capabilities.
+.B doctor \-\-python
+checks the Python dependency set,
+.B doctor \-\-debian\-dev
+audits the Debian/Ubuntu maintainer toolchain, and
+.B iso\-toolchain \-\-install
+prints and optionally runs the one apt command that installs the missing ISO
+tools.
+.SS Building
+.TP
+.BR build " \fIPROJECT\fR"
+The full build surface: 191 long options, described under
+.B OPTIONS
+below. Dry\-run unless
+.B \-\-execute
+is given.
+.TP
+.BR iso\-build " \fIPROJECT\fR"
+The guarded one\-command ISO path. Without
+.B \-\-execute
+it stays a dry\-run and writes
+.IR dist/ISO\-BUILD.json .
+.TP
+.BR beginner\-iso " \fIPROJECT\fR, " poweruser\-iso " \fIPROJECT\fR"
+Prepare the safe beginner or the guarded power\-user source\-to\-ISO path, with
+.BR \-\-apply\-safe\-defaults .
+.TP
+.BR demo\-iso " \fIPROJECT\fR"
+Try the shortest demonstrable ISO path on the current host.
+.TP
+.BR iso\-accept " \fIPROJECT\fR"
+Accept or block a produced ISO for publication.
+.TP
+.BR restore\-snapshot " \fIPROJECT SNAPSHOT\fR"
+Restore a rootfs rollback snapshot.
+.SS Branding, debranding and mirrors
+.TP
+.BR branding " {\fBset\fR|\fBaudit\fR|\fBvalidate\fR|\fBcompliance\fR|\fBclearance\fR|\fBpreview\fR|\fBexport\fR|\fBimport\fR}"
+Manage image identity and trademark clearance.
+.B \-\-mode
+selects
+.BR internal ,
+.B redistributable
+or
+.BR approved .
+.TP
+.BR debrand " {\fBscan\fR|\fBplan\fR|\fBapply\fR}"
+Find and remove upstream identity text from a source ISO.
+.TP
+.BR mirrors " {\fBdoctor\fR|\fBrender\fR|\fBapply\fR|\fBrestore\fR}"
+Diagnose and manage the deb822 APT mirror layer.
+.SS Capture and alternative image backends
+.TP
+.BR capture " \fITARGET\fR, " capture\-diff " \fIPROFILE\fR, " rebuild\-from\-capture " \fIPROFILE PROJECT\fR"
+Extract a sanitized profile from an installed system, review it, and rebuild
+from it. Capture is read\-only and never copies homes, keys, caches or machine
+identity.
+.TP
+.BR live\-build\-plan " \fIPROFILE\fR, " livefs\-iso\-plan " \fIPROFILE\fR, " livefs\-iso\-build " \fIPROFILE\fR"
+Render a reviewable Debian live\-build
+.I config/
+tree, or an Ubuntu livefs ISO workspace.
+.TP
+.BR upgrade\-media ", " image\-plan
+Read\-only upgrade\-media preflight, and OEM/systemd image planning.
+.SS Virtualization and boot evidence
+.TP
+.BR preview " \fIPROJECT\fR"
+Plan or launch a drivable preview VM.
+.B \-\-display
+selects
+.BR gtk ,
+.B spice
+or
+.BR none .
+.TP
+.BR qemu\-interaction " \fIPROJECT\fR, " qemu\-smoke\-plan
+Run a declarative QMP interaction plan, or render the live/install smoke
+matrix.
+.TP
+.BR boot\-proof " \fIPROJECT\fR"
+Write normalized boot evidence.
+.B \-\-backend
+selects
+.BR auto ,
+.B qemu
+or
+.BR iso\-scan .
+.TP
+.BR secureboot\-assist " \fIOUTPUT_DIR\fR"
+Plan the Secure Boot MOK key workflow.
+.SS Release, publication and signing
+.TP
+.BR artifact\-paths " \fIPROJECT\fR, " release\-readiness ", " release\-gate " \fIPROJECT\fR"
+Show host artifact paths, summarize release readiness, and run the maintainer
+publication gate.
+.TP
+.BR publish\-bundle " \fIPROJECT\fR, " sign\-release " \fIPROJECT\fR, " release\-notes " \fIPROJECT\fR, " verify\-release " \fIPROJECT\fR, " explain\-release " \fIPROJECT\fR"
+Build the inspection bundle under
+.IR dist/publish/ ,
+add signing evidence, write notes, verify the bundle and explain its evidence.
+.TP
+.BR publish\-drill " \fIPROJECT\fR, " publish\-drill\-baseline " \fIPROJECT\fR, " publish\-drill\-diff " \fIOLD NEW\fR, " release\-pipeline " \fIPROJECT\fR"
+Rehearse the whole publication sequence, promote a baseline, compare two
+drills, or run the pipeline end to end.
+.SS Debian packaging evidence
+.TP
+.BR packaging\-policy " \fIPROJECT\fR, " buildinfo\-report " \fIBUILDINFO\fR, " debian\-package " \fIPROJECT\fR"
+Review the packaging policy verdict, inspect
+.I .buildinfo
+taint, and wrap the maintainer package build.
+.TP
+.BR autopkgtest\-doctor " \fIPROJECT\fR, " hermetic\-build\-plan " \fIPROJECT\fR, " hermetic\-release\-bundle " \fIPROJECT\fR"
+Classify a real autopkgtest run, render the clean\-build plan for
+.BR sbuild ,
+.B pbuilder
+or
+.BR mmdebstrap ,
+and assemble a local release evidence bundle.
+.TP
+.BR evidence\-status " \fIPROJECT\fR, " evidence\-verify " \fIPATH\fR, " ci " \fIPROJECT\fR"
+Summarize maintainer evidence without building, validate a bundle contract, and
+run the lint/test/dry\-run CI plan.
+.SS Advisory
+.TP
+.BR forgeadvisor " {\fBcopilot\fR|\fBexplain\-evidence\fR|\fBfix\-plan\fR|\fBreview\-build\fR|\fBpropose\-fixes\fR|\fBreview\-definition\fR|\fBsearch\-local\fR|\fBexplain\-log\fR|\fBtriage\-log\fR|\fBdoctor\-ai\fR|\fBmemory\fR}"
+The local\-first advisory layer. It explains, cites and proposes; it never
+builds, signs or applies anything. Every subcommand except
+.B memory
+accepts
+.B \-\-backend
+.RB ( offline ,
+.BR llama ,
+.BR ollama )
+and
+.B \-\-register
+.RB ( beginner ,
+.BR power\-user ,
+.BR maintainer ,
+.BR developer ).
+.SS Desktop application
+.TP
+.B gui
+Launch the Qt desktop interface; equivalent to
+.BR distroforge\-gui (1).
+.SH OPTIONS
+.SS Global
+.TP
+.BR \-h ", " \-\-help
+Show the option list for
+.B distroforge
+or for any subcommand and exit.
+.SS Conventions shared by many subcommands
+.TP
+.B \-\-json
+Emit the machine\-readable form of the report instead of the text form. Accepted
+by most reporting commands.
+.TP
+.BI \-\-definition " FILE"
+Load an image definition (YAML or JSON) and apply it before command\-line
+overrides. Command\-line options win over the definition.
+.TP
+.B \-\-execute
+Leave dry\-run mode and actually run the planned commands. Without it, mutating
+commands only record the command history they would have run.
+.TP
+.BI \-\-output " FILE"
+Write the report or generated artifact to
+.I FILE
+instead of standard output.
+.SS Options of distroforge build
+.B distroforge build
+accepts 191 long options besides
+.BR \-\-help .
+They are registered in
+.I distroforge/commands/build_options.py
+and classified in
+.I distroforge/commands/build_contracts.py
+by user level \(em 27 beginner, 59 power\-user, 77 maintainer and 28 developer
+\(em and by the GUI surface that mirrors them. Deliberately, this page does not
+reprint them as one wall of flags: the families below are the actual option
+groups, and
+.B "distroforge build \-\-help"
+prints the complete list with every choice and default.
+.PP
+Every family can say "disabled" cleanly: an unset family costs nothing in the
+plan, the dry\-run or the report.
+.TP
+.B Source selection and trust (9)
+.BR \-\-source\-iso ,
+.BR \-\-definition ,
+.BR \-\-persona ,
+.BR \-\-from\-scratch ,
+.BR \-\-source\-iso\-sha256 ,
+.BR \-\-source\-iso\-signature ,
+.BR \-\-source\-iso\-gpg\-fingerprint ,
+.BR \-\-require\-source\-iso\-checksum ,
+.BR \-\-require\-source\-iso\-signature .
+.B \-\-persona
+takes
+.BR noob ,
+.BR friendly ,
+.BR intermediate ,
+.B pro
+or
+.BR dev_maintainer .
+.TP
+.B Bootstrap, when building from scratch (3)
+.BR \-\-bootstrap\-arch " (default " amd64 "), "
+.BR \-\-bootstrap\-variant " (default " minbase "), "
+.BR \-\-bootstrap\-mirror .
+A foreign
+.B \-\-bootstrap\-arch
+requires
+.B qemu\-user\-static
+on the host.
+.TP
+.B Packages and package profiles (6)
+.BR \-\-install ,
+.BR \-\-remove ,
+.BR \-\-profile ,
+.BR \-\-snap ,
+.BR \-\-purge ,
+.BR \-\-synaptic .
+The first four are repeatable and also accept comma\-separated values.
+.TP
+.B APT sources, caches, mirrors and PPAs (12)
+.BR \-\-mirrors ,
+.BR \-\-mirror\-archive ,
+.BR \-\-mirror\-security ,
+.BR \-\-mirror\-country ,
+.BR \-\-mirror\-allow\-http ,
+.BR \-\-mirror\-override\-ubuntu\-security ,
+.BR \-\-apt\-cache ,
+.BR \-\-apt\-cache\-dir ,
+.BR \-\-apt\-proxy ,
+.BR \-\-apt\-snapshot ,
+.BR \-\-ppa ,
+.BR \-\-ppa\-no\-auto\-key .
+.B \-\-ppa
+takes
+.BI ppa: owner / name
+or
+.BI ppa: owner / name @ FINGERPRINT .
+.TP
+.B Release track (7)
+.BR \-\-release\-track " (" stable ", " devel ", " rolling "; default " stable "), "
+.BR \-\-devel\-suite ,
+.BR \-\-enable\-backports ,
+.BR \-\-enable\-proposed ,
+.BR \-\-proposed\-pin " (default 100), "
+.BR \-\-rolling\-upgrades ,
+.BR \-\-rolling\-full\-upgrade .
+.TP
+.B System sync (6)
+.BR \-\-system\-sync ,
+.BR \-\-system\-sync\-strategy " (" safe ", " full "; default " full "), "
+.BR \-\-system\-sync\-no\-fallback ,
+.BR \-\-system\-sync\-hold ,
+.BR \-\-system\-sync\-post\-install\-only ,
+.BR \-\-system\-sync\-no\-post\-install\-tool .
+.TP
+.B Desktop, locale and identity (8)
+.BR \-\-desktop ,
+.BR \-\-display\-manager " (" gdm3 ", " lightdm ", " sddm "), "
+.BR \-\-autologin\-user ,
+.BR \-\-wallpaper ,
+.BR \-\-hostname ,
+.BR \-\-locale ,
+.BR \-\-timezone ,
+.BR \-\-keyboard\-layout .
+Run
+.B distroforge desktops
+for the accepted
+.B \-\-desktop
+keys.
+.TP
+.B Users, services, network, kiosk, OEM and drivers (12)
+.BR \-\-user ,
+.BR \-\-enable\-service ,
+.BR \-\-disable\-service ,
+.BR \-\-mask\-service ,
+.BR \-\-netplan\-dhcp ,
+.BR \-\-dns ,
+.BR \-\-kiosk ,
+.BR \-\-kiosk\-url ,
+.BR \-\-kiosk\-browser ,
+.BR \-\-kiosk\-user ,
+.BR \-\-oem ,
+.BR \-\-drivers\-auto .
+.B \-\-user
+takes
+.IR name [: group1 , group2 [: password_hash ]].
+.TP
+.B Unattended installation (6)
+.BR \-\-autoinstall ,
+.BR \-\-autoinstall\-user ,
+.BR \-\-autoinstall\-realname ,
+.BR \-\-autoinstall\-password\-hash ,
+.BR \-\-autoinstall\-package ,
+.BR \-\-autoinstall\-late\-command .
+.TP
+.B Branding and trademark compliance (35)
+.B \-\-brand\-name
+and the other
+.BI \-\-brand\- *
+options set os\-release identity, URLs, palette, logos, GRUB and Plymouth
+theming, login backgrounds, issue and motd.
+.B \-\-brand\-palette
+takes a built\-in palette or
+.BR generate ;
+.B \-\-brand\-compliance\-mode
+takes
+.BR internal " (default), "
+.B redistributable
+or
+.BR approved .
+Run
+.B distroforge branding\-palettes
+for the palette list.
+.TP
+.B Secure Boot (4)
+.BR \-\-secure\-boot ,
+.BR \-\-secure\-boot\-mok\-key ,
+.BR \-\-secure\-boot\-mok\-cert ,
+.BR \-\-secure\-boot\-sign\-modules .
+.TP
+.B Custom kernel (19)
+.B \-\-kernel\-module
+and the other
+.BI \-\-kernel\- *
+options select the source, verification and packaging of an out\-of\-tree module
+or a rebuilt kernel, plus
+.B \-\-no\-kernel\-pgp
+and
+.BR \-\-prune\-obsolete\-kernels .
+.B \-\-kernel\-channel
+takes
+.BR stable " (default), "
+.B longterm
+or
+.BR mainline ;
+.B \-\-kernel\-config\-strategy
+takes
+.B current
+or
+.BR defconfig .
+.TP
+.B Upstream desktop source builds (8)
+.B \-\-desktop\-source
+and the other
+.BI \-\-desktop\-source\- *
+options build desktop components from upstream sources.
+.B \-\-desktop\-source\-component
+takes
+.IR name | version | url [| sha256 | build_system | package ].
+.TP
+.B Virtualization and boot checks (23)
+.B \-\-prebuild\-vm
+and the other
+.BI \-\-prebuild\-vm\- *
+options drive the headless QEMU lab (firmware
+.B bios
+or
+.BR uefi ,
+profile
+.BR live ,
+.B install
+or
+.BR rescue ,
+default 4096 MiB of memory, 2 CPUs, a 24G disk and a 300 second timeout), plus
+.BR \-\-qa ,
+.BR \-\-bootcheck ,
+.B \-\-qemu\-screenshot
+and
+.BR \-\-preview .
+.TP
+.B Supply chain, reproducibility and policy (9)
+.BR \-\-vuln\-scan ,
+.BR \-\-vuln\-policy " (" off ", " warn " (default), " block\-high ", " block\-critical "), "
+.BR \-\-vuln\-db ,
+.BR \-\-sbom\-format " (" native " (default), " spdx ", " cyclonedx "), "
+.BR \-\-reproducible ,
+.BR \-\-source\-date\-epoch ,
+.BR \-\-size\-report ,
+.BR \-\-size\-top " (default 50), "
+.BR \-\-policy\-strict .
+.TP
+.B Sanitation and retention (8)
+.BR \-\-no\-sanitize ,
+.BR \-\-sanitize\-apt\-lists ,
+.BR \-\-sanitize\-ssh\-host\-keys ,
+.BR \-\-no\-prune\-obsolete\-packages ,
+.BR \-\-keep\-logs ,
+.BR \-\-keep\-history ,
+.BR \-\-keep\-machine\-id ,
+.BR \-\-keep\-temp .
+.TP
+.B Rollback snapshots (2)
+.BR \-\-snapshot ,
+.BR \-\-auto\-restore\-on\-failure .
+Snapshots are staged as
+.I .part
+archives and published only after
+.B tar
+succeeds.
+.TP
+.B Host artifacts and release output (7)
+.BR \-\-output\-iso ,
+.BR \-\-log\-file ,
+.BR \-\-no\-html\-report ,
+.BR \-\-html\-report\-name " (default " report.html "), "
+.BR \-\-no\-release\-artifacts ,
+.BR \-\-sign\-artifacts ,
+.BR \-\-artifact\-gpg\-key .
+.TP
+.B Extensions (2)
+.BR \-\-plugin\-dir ,
+.BR \-\-import\-script .
+.TP
+.B Execution and privilege (5)
+.BR \-\-execute ,
+.BR \-\-ci ,
+.BR \-\-skip\-deps\-check ,
+.BR \-\-no\-sudo ,
+.BR \-\-privilege " (" sudo " (default), " pkexec ", " none ")."
+.SH EXIT STATUS
+.TP
+.B 0
+The command completed. A report command exiting 0 does not mean the report is
+clean: read the verdict, which may be
+.BR ready ,
+.B review
+or
+.BR blocked .
+.TP
+.B 1
+No command was given, so the top\-level help was printed instead.
+.TP
+.B 2
+Usage error, or a handled runtime failure: an unknown or misused option
+(argparse), a missing file or directory, malformed JSON or YAML, an invalid
+option value, or a project that does not exist. The message goes to standard
+error as
+.RB \(lq distroforge: " error: " \fITEXT\fR \(rq.
+.PP
+.B distroforge gui
+propagates the exit status of the Qt application, which is
+.B 2
+when no Qt Python bindings are installed.
+.SH ENVIRONMENT
+.TP
+.B DISTROFORGE_PRIVILEGE
+Default privilege backend when
+.B \-\-privilege
+is not given:
+.BR sudo " (the default), "
+.B pkexec
+or
+.BR none .
+.TP
+.B SUDO_ASKPASS
+Graphical askpass helper. When set, or when one is detected, privileged
+commands use
+.B "sudo \-A"
+so a build started without a terminal can still authenticate.
+.TP
+.B XDG_STATE_HOME
+Base of the host\-owned build\-memory corpus; defaults to
+.IR ~/.local/state .
+.TP
+.B XDG_CONFIG_HOME
+Base of the desktop application preferences; defaults to
+.IR ~/.config .
+.TP
+.BR DISTROFORGE_LLAMA_MODEL ", " DISTROFORGE_OLLAMA_MODEL
+Model passed to the optional local advisory backends. Without
+.BR DISTROFORGE_LLAMA_MODEL ,
+the
+.B llama
+backend degrades to
+.BR offline ;
+.B DISTROFORGE_OLLAMA_MODEL
+defaults to
+.BR llama3 .
+.SH FILES
+.TP
+.I PROJECT/project.json
+The project description: name, release, source mode, packages and
+customization.
+.TP
+.I PROJECT/work/
+Staging area.
+.I work/filesystem
+is the extracted rootfs and
+.I work/iso
+the ISO tree; both are permission boundaries written only through the
+filesystem\-operations layer.
+.I work/snapshots
+holds rollback archives.
+.TP
+.I PROJECT/dist/
+Host output directory: the ISO, its
+.IR SHA256SUMS ,
+.IR BUILDINFO ,
+.IR distroforge\-provenance.json ,
+the HTML report and the JSON reports
+.RI ( ISO\-BUILD.json ,
+.IR ISO\-ACCEPTANCE.json ,
+.IR RELEASE\-GATE.json ,
+.IR PUBLISH\-DRILL.json ,
+.IR boot\-proof.json ,
+.IR qemu\-lab\-report.json ).
+The canonical default ISO name is
+.IR dist/ NAME \- VERSION .iso ;
+.B \-\-output\-iso
+overrides it.
+.TP
+.I PROJECT/dist/publish/
+The maintainer inspection bundle written by
+.BR publish\-bundle :
+the ISO, release evidence,
+.IR RELEASE\-GATE.json ,
+.IR RELEASE\-MANIFEST.json ,
+.IR SIGNING\-REPORT.json ,
+.IR VERIFY\-REPORT.json ,
+.IR RELEASE\-NOTES.md ,
+.I CHANGELOG.txt
+and
+.IR README\-PUBLISH.txt .
+.TP
+.I PROJECT/hooks/
+Local shell hooks, run only when the build executes.
+.TP
+.I PROJECT/plugins/
+Local plugins, loaded only when the build executes.
+.TP
+.I PROJECT/.distroforge/history.jsonl
+Project\-owned build history, replayable with
+.BR "distroforge history replay" .
+.TP
+.I ~/.local/state/distroforge/build\-memory.jsonl
+Host\-owned, append\-only build\-memory corpus, one line per build attempt. It
+grounds the advisory citations and is written only when a build actually runs.
+.TP
+.I ~/.config/distroforge/
+Desktop application preferences.
+.TP
+.I /usr/share/doc/distroforge/
+Installed documentation, and the reviewable example definitions under
+.IR examples/ .
+.SH EXAMPLES
+Create a project and inspect the whole path without touching the host:
+.PP
+.EX
+distroforge releases
+distroforge new MyDistro ~/DistroForge/MyDistro \-\-release 26.04
+distroforge plan ~/DistroForge/MyDistro
+distroforge readiness ~/DistroForge/MyDistro
+distroforge dry\-run\-report ~/DistroForge/MyDistro \-\-json
+.EE
+.PP
+Dry\-run a customized build, then execute it explicitly:
+.PP
+.EX
+distroforge build ~/DistroForge/MyDistro \\
+    \-\-desktop ubuntu_minimal \-\-install git,curl \-\-locale en_US.UTF\-8
+distroforge build ~/DistroForge/MyDistro \\
+    \-\-desktop ubuntu_minimal \-\-install git,curl \-\-execute
+.EE
+.PP
+Take the guarded one\-command path and accept the result:
+.PP
+.EX
+distroforge iso\-doctor ~/DistroForge/MyDistro
+distroforge iso\-build ~/DistroForge/MyDistro \-\-execute \-\-boot\-proof auto
+distroforge iso\-accept ~/DistroForge/MyDistro
+.EE
+.PP
+Enforce source trust and supply\-chain policy:
+.PP
+.EX
+distroforge build ~/DistroForge/MyDistro \\
+    \-\-source\-iso ~/iso/source.iso \\
+    \-\-source\-iso\-sha256 SHA256 \-\-require\-source\-iso\-checksum \\
+    \-\-vuln\-scan \-\-vuln\-policy block\-critical \-\-sbom\-format spdx
+.EE
+.PP
+Capture an installed system as reviewable intent, then rebuild from it:
+.PP
+.EX
+distroforge capture / \-\-output system\-profile.yaml \-\-sanitize strict
+distroforge capture\-diff system\-profile.yaml
+distroforge rebuild\-from\-capture system\-profile.yaml ~/DistroForge/Rebuilt
+.EE
+.PP
+Rehearse a publication without signing anything:
+.PP
+.EX
+distroforge release\-gate ~/DistroForge/MyDistro
+distroforge publish\-drill ~/DistroForge/MyDistro
+distroforge explain\-release ~/DistroForge/MyDistro
+.EE
+.SH SEE ALSO
+.BR distroforge\-gui (1),
+.BR distroforge\-typer (1),
+.BR debootstrap (8),
+.BR mksquashfs (1),
+.BR xorriso (1),
+.BR sudo (8),
+.BR pkexec (1),
+.BR lintian (1),
+.BR autopkgtest (1),
+.BR sbuild (1)
+.PP
+Installed documentation lives in
+.IR /usr/share/doc/distroforge/ .
+Start with
+.IR README.md ,
+then
+.I docs/build\-pipeline.md
+for the pipeline,
+.I docs/definitions.md
+for the definition schema,
+.I docs/gui\-parity.md
+for the CLI/GUI mapping and
+.I docs/debian\-canonical\-compliance.md
+for the packaging rules.
+.SH BUGS
+DistroForge 0.3.5 is alpha software. Build on a dedicated host or virtual
+machine, review the plan before executing, and keep backups before privileged
+operations.
+.PP
+DistroForge is an independent project and is not affiliated with or endorsed by
+Canonical. Ubuntu is mentioned solely as a compatible target distribution.

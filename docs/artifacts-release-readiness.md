@@ -21,6 +21,12 @@ The GUI **Artifacts** page exposes the same paths:
 The **Advanced Modules** `Output ISO` field and CLI `--output-iso` remain the build option
 source for the final ISO path.
 
+The canonical default ISO name is `dist/{name}-{version}.iso` — the only accepted form.
+Every command below resolves it through the single helper `default_output_iso(project)` in
+`core/artifact_paths.py`, so producer and consumers cannot drift; there is no unversioned
+`dist/{name}.iso` fallback. Each command still accepts `--iso`, for an ISO that sits
+somewhere else.
+
 ## Release Readiness
 
 ```bash
@@ -44,14 +50,21 @@ The report summarizes the release surface:
 
 - ISO path and size;
 - SHA-256 when the ISO exists;
-- `SHA256SUMS`, `BUILDINFO`, `INTEGRITY`, provenance and QEMU report presence;
-- `compatibility-report.txt` release support summary;
+- presence of `SHA256SUMS`, `BUILDINFO`, `INTEGRITY`, `PROVENANCE.json` and
+  `qemu-lab-report.json` in the output directory;
 - planned QEMU smoke coverage;
 - trademark/redistribution review warning;
 - repository trust warning.
 
 Missing ISO is blocking. Missing reports are review items until the release pipeline writes
 them.
+
+Two known limits of this report, both to be read as defects rather than as behaviour to
+rely on. Its provenance item probes the literal name `PROVENANCE.json`, while the build
+writes provenance as `distroforge-provenance.json`, so that item stays a review item even
+for a project that has provenance. And the release support summary from
+`compatibility-report.txt` is *not* part of this report: that file is written by the build
+into the project output directory and is read by the dry-run and build reports instead.
 
 `release-gate` is stricter: it is the maintainer publication stoplight. It blocks when the
 final ISO, `SHA256SUMS` verification, source trust, boot proof, release files, release
@@ -118,10 +131,12 @@ The release gate rejects planned or review proof as blocking evidence.
 
 Every build writes `distroforge-provenance.json`. When `--sbom-format` selects a standard
 format, the build writes a portable SBOM next to it: `distroforge-sbom.spdx.json` for
-SPDX-2.3 or `distroforge-sbom.cdx.json` for CycloneDX 1.5. Release readiness reports
-provenance presence in the artifact summary, so a published bundle carries a
-vendor-neutral component inventory alongside the native provenance document. The GUI
-**Quality Lab** exposes the same SBOM format selector as the CLI `--sbom-format` flag.
+SPDX-2.3 or `distroforge-sbom.cdx.json` for CycloneDX 1.5. A published bundle therefore
+carries a vendor-neutral component inventory alongside the native provenance document.
+Release readiness does have a provenance line, but it probes `PROVENANCE.json` rather than
+the name the build writes, so do not read that line as proof that provenance is absent;
+check the output directory. The GUI **Quality Lab** exposes the same SBOM format selector
+as the CLI `--sbom-format` flag.
 
 ## QEMU Install Smoke Plan
 

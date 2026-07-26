@@ -1,3 +1,324 @@
-.TH distroforge-typer 1 2026-06-03 "DistroForge" "User Commands"
+.\" Manual page for the optional DistroForge Typer facade.
+.\" The command list, the argument names, the defaults and the exit statuses
+.\" documented here are derived from distroforge/typer_cli.py and confirmed
+.\" against the generated `--help` output, not written from memory.
+.TH distroforge\-typer 1 2026-07-26 "DistroForge 0.3.5" "User Commands"
 .SH NAME
 distroforge-typer \- launch the DistroForge Typer entry point
+.SH SYNOPSIS
+.B distroforge\-typer
+.RI [ COMMAND ]
+.RI [ OPTIONS ]
+.PP
+.B distroforge\-typer legacy
+.RI [ ARGUMENTS ]
+.SH DESCRIPTION
+.B distroforge\-typer
+is an optional, deliberately narrow facade over
+.BR distroforge (1).
+It exposes 29 commands \(em the ones used most often \(em with Typer's
+completion, coloured help and strict argument parsing, and forwards everything
+else to the classic parser.
+.PP
+It adds no capability of its own: every command below builds an argument list
+and hands it to the same code path
+.B distroforge
+uses, so behaviour, safety model and reports are identical. The advanced surface
+is intentionally
+.I not
+mirrored here; use
+.B distroforge\-typer legacy
+or
+.BR distroforge (1)
+for it.
+.PP
+Typer is an optional dependency. When it is not installed this program prints
+how to obtain it and exits without doing anything.
+.SH COMMANDS
+.SS Project and catalogs
+.TP
+.BR releases ", " source\-starters
+List the bundled release catalog and the project source starters.
+.B source\-starters
+accepts
+.B \-\-release
+and
+.BR \-\-json .
+.TP
+.BR new " \fINAME ROOT\fR"
+Create a project.
+.B \-\-release
+defaults to
+.BR 26.04 ;
+.BR \-\-starter ,
+.B \-\-source\-iso
+and
+.B \-\-previous\-project
+select the source.
+.TP
+.BR profile\-diff " \fIROOT PROFILE\fR"
+Diff a project against a package profile.
+.B \-\-json
+emits the machine\-readable form.
+.TP
+.BR plugins " \fIROOT\fR"
+List the local plugins of a project.
+.SS Host readiness
+.TP
+.B doctor
+Check host tooling.
+.BR \-\-python ,
+.BR \-\-debian\-dev ,
+.BR \-\-fix\-python ,
+.BR \-\-install ,
+.B \-\-include\-optional
+and
+.B \-\-no\-sudo
+map one\-to\-one onto the
+.B distroforge doctor
+flags.
+.TP
+.BR mirrors\-doctor " \fIROOT\fR"
+Diagnose the APT mirror layer.
+.B \-\-definition
+and
+.B \-\-json
+are accepted.
+.SS Reviewing and building
+.TP
+.BR readiness " \fIROOT\fR, " dry\-run\-report " \fIROOT\fR, " explain\-risk " \fIROOT\fR, " ux\-audit " \fIROOT\fR, " ai\-review " \fIROOT\fR"
+The review surfaces. All accept
+.BR \-\-definition ;
+all but
+.B explain\-risk
+also accept
+.BR \-\-json ,
+and
+.B dry\-run\-report
+accepts
+.BR \-\-no\-command\-simulation .
+.TP
+.BR explain " \fIROOT\fR"
+Explain in plain language what a build of that project would do.
+.B \-\-json
+emits the machine\-readable form and
+.B \-\-strict
+promotes advisory findings to blocking ones.
+.TP
+.BR build\-phases
+Print the build phase contracts.
+.B \-\-stage
+scopes the catalog to one pipeline stage.
+.TP
+.BR build " \fIROOT\fR"
+Run or dry\-run a build with the small common option set:
+.BR \-\-source\-iso ,
+.BR \-\-desktop ,
+.BR \-\-execute ,
+.B \-\-no\-sudo
+and
+.BR \-\-ci .
+It stays a dry\-run without
+.BR \-\-execute .
+The other 186 build options are not mirrored here; reach them through
+.B distroforge\-typer legacy
+or
+.BR distroforge (1).
+.SS Branding and debranding
+.TP
+.BR branding\-audit " \fIROOT\fR"
+Audit branding compliance.
+.B \-\-mode
+defaults to
+.BR internal ;
+.B \-\-definition
+and
+.B \-\-json
+are accepted.
+.TP
+.BR branding\-validate " \fIROOT\fR, " branding\-clearance " \fIROOT\fR"
+Validate branding or write a clearance report.
+.B \-\-mode
+defaults to
+.B redistributable
+for both;
+.B branding\-clearance
+also accepts
+.BR \-\-output .
+.TP
+.BR branding\-preview " \fIROOT\fR"
+Render branding previews.
+.B \-\-target
+defaults to
+.BR all ;
+.B \-\-output\-dir
+selects the destination.
+.TP
+.BR debrand\-scan " \fIROOT\fR"
+Scan a source ISO for upstream identity text.
+.SS Recipes and presets
+.TP
+.BR guided\-recipe " [\fINAME\fR], " glossary " [\fITERM\fR]"
+List or render the guided recipe prompts, and explain the domain vocabulary.
+.TP
+.BR export\-recipe " \fIROOT TARGET\fR, " export\-build\-preset " \fIROOT TARGET\fR"
+Export the project as a reusable recipe or a maintainer build preset.
+.B export\-build\-preset
+accepts
+.BR \-\-channel ,
+.B \-\-revision
+and
+.BR \-\-notes .
+.SS Advisory
+.TP
+.BR forgeadvisor\-review\-build " \fIROOT\fR, " forgeadvisor\-explain\-log " \fILOG\fR, " forgeadvisor\-doctor\-ai
+The three most used advisory verbs. They explain and cite; they never build,
+sign or apply anything. The remaining advisory subcommands are reached through
+.B distroforge\-typer legacy
+or
+.BR distroforge (1).
+.SS Escape hatch and desktop
+.TP
+.BR legacy " [\fIARGUMENTS\fR]"
+Forward every remaining argument verbatim to
+.BR distroforge (1),
+unparsed. This is how the full 84\-command, 292\-option surface stays reachable
+from this entry point.
+.TP
+.B gui
+Launch the Qt desktop interface; equivalent to
+.BR distroforge\-gui (1).
+.SH OPTIONS
+.SS Global
+.TP
+.B \-\-help
+Show the command list, or the options of one command, and exit.
+.TP
+.B \-\-install\-completion
+Install shell completion for the current shell.
+.TP
+.B \-\-show\-completion
+Print the completion script for the current shell instead of installing it.
+.SS Option conventions
+Typer derives the option names from the Python parameter names, so an option is
+always the parameter name with underscores replaced by dashes, and it pairs
+every boolean option with a generated negative form
+.RB ( \-\-execute
+implies
+.BR \-\-no\-execute ).
+The positive form is what the underlying
+.BR distroforge (1)
+verb receives; the negative form only restores the default.
+.PP
+.B \-\-json
+is the machine\-readable output switch, exactly as in
+.BR distroforge (1).
+.B \-\-definition
+loads an image definition before the command\-line values.
+.B \-\-execute
+is the only way to leave dry\-run mode.
+.PP
+This facade rejects options it does not declare. An unknown flag is an error
+here, not a pass\-through; use
+.B distroforge\-typer legacy
+when the option you need lives only on the classic parser.
+.SH EXIT STATUS
+.TP
+.B 0
+The command completed.
+.TP
+.B 1
+Typer is not installed. The message names the optional extra to install and the
+.B "python3 \-m distroforge"
+fallback.
+.TP
+.B 2
+Usage error, or a handled runtime failure forwarded from
+.BR distroforge (1):
+an unknown or misused option, a missing file or directory, malformed JSON or
+YAML, or a project that does not exist.
+.PP
+.B gui
+propagates the exit status of the Qt application.
+.SH ENVIRONMENT
+.B distroforge\-typer
+introduces no variable of its own. It honours the whole environment of
+.BR distroforge (1),
+in particular
+.BR DISTROFORGE_PRIVILEGE ,
+.BR SUDO_ASKPASS ,
+.B XDG_STATE_HOME
+and
+.BR XDG_CONFIG_HOME .
+Typer additionally honours the standard
+.B NO_COLOR
+and
+.B TERM
+conventions when rendering its help.
+.SH FILES
+.TP
+.I PROJECT/project.json
+The project description read and written by every command that takes a
+.I ROOT
+argument.
+.TP
+.I PROJECT/dist/
+Host output directory for the reports these commands produce.
+.TP
+.I /usr/share/doc/distroforge/
+Installed documentation.
+.PP
+The files of
+.BR distroforge (1)
+apply unchanged; this entry point owns no state of its own.
+.SH EXAMPLES
+Create a project and review it:
+.PP
+.EX
+distroforge\-typer new MyDistro ~/DistroForge/MyDistro \-\-release 26.04
+distroforge\-typer readiness ~/DistroForge/MyDistro \-\-json
+distroforge\-typer explain ~/DistroForge/MyDistro
+.EE
+.PP
+Dry\-run then execute a small build:
+.PP
+.EX
+distroforge\-typer build ~/DistroForge/MyDistro \-\-desktop ubuntu_minimal
+distroforge\-typer build ~/DistroForge/MyDistro \-\-desktop ubuntu_minimal \-\-execute
+.EE
+.PP
+Reach an option this facade does not declare:
+.PP
+.EX
+distroforge\-typer legacy build ~/DistroForge/MyDistro \\
+    \-\-vuln\-scan \-\-vuln\-policy block\-critical \-\-sbom\-format spdx
+.EE
+.PP
+Install shell completion:
+.PP
+.EX
+distroforge\-typer \-\-install\-completion
+.EE
+.PP
+Install the optional dependency when the launcher reports it is missing:
+.PP
+.EX
+sudo apt install python3\-typer
+.EE
+.SH SEE ALSO
+.BR distroforge (1),
+.BR distroforge\-gui (1)
+.PP
+See
+.I /usr/share/doc/distroforge/docs/gui\-parity.md
+for the full command surface and
+.I docs/debian\-ubuntu\-python\-policy.md
+for how the optional Python dependencies are expressed.
+.SH BUGS
+DistroForge 0.3.5 is alpha software. This facade covers 29 of the 84 commands on
+purpose; treat
+.BR distroforge (1)
+as the reference surface.
+.PP
+DistroForge is an independent project and is not affiliated with or endorsed by
+Canonical. Ubuntu is mentioned solely as a compatible target distribution.

@@ -33,10 +33,13 @@ These are the testable, inviolable rules.
 
 1. **Heavy work runs off the UI thread.** Every long-running or potentially
    blocking operation (builds, dry-runs, scans, doctor, audits, snapshots) is
-   dispatched through `GuiJob` in `ui/jobs.py`, which runs the target on a
-   daemon thread and communicates with the UI exclusively through a
-   `queue.Queue` of events. The UI thread only drains that queue; it never runs
-   the heavy work itself.
+   dispatched through one of the two canonical seams — `GuiJob` in `ui/jobs.py`
+   for cancellable, progress-bearing builds, and `_run_in_worker` in
+   `ui/service_runner.py` for one-shot service calls — both of which run the
+   target on a daemon thread and communicate with the UI exclusively through a
+   `queue.Queue` of events or a polling timer. The UI thread only drains that
+   channel; it never runs the heavy work itself. A slot that hashes, copies or
+   boots an ISO uses a seam, never the click handler.
 
 2. **Cancellable, progress-bearing long work.** `GuiJob` exposes a cooperative
    cancel and emits weighted progress so the inherent cost of a real build is
@@ -46,6 +49,10 @@ These are the testable, inviolable rules.
    `_refresh()`, the journey-spine refresh, the step-focus header refresh, and
    responsive relayout — perform no synchronous disk or subprocess I/O. Work for
    surfaces the user has not opened is done lazily, not eagerly on every frame.
+   The main `_refresh()` computes the journey report **once** and passes it to the
+   spine, the command center and the Start cards; a per-refresh status never
+   hashes a build artifact — it answers from the `SHA256SUMS` sidecar, and the
+   verifying gate stays on the on-demand per-step check.
 
 4. **No accidental quadratic.** Refresh and layout code must stay close to
    linear in the number of visible items; a redraw rebuilds a bounded spine, not
@@ -58,7 +65,13 @@ The teeth are structural rather than wall-clock, on purpose:
 - A structural test proves `GuiJob` runs its target off the calling (UI) thread
   and that the heavy GUI controllers dispatch through it.
 - A source-level guard proves the per-frame refresh modules carry no synchronous
-  subprocess or blocking-build calls.
+  subprocess or blocking-build calls, and that the per-refresh journey status
+  performs no artifact hashing.
+- A counting test proves every heavy Artifacts, capture and release slot
+  dispatches through a worker seam, and that a maintainer-level refresh reads the
+  finished ISO at most once — never once per view.
+- A handshake test proves `run_streaming` forwards a line that is already in the
+  pipe immediately, without a wall-clock assertion.
 - Non-regression budgets, where used, are deliberately **generous**: tight
   wall-clock assertions are flaky across hardware and CI, so we gate on
   structure (work is off-thread, the hot path is clean) and on generous bounds,

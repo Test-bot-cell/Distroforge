@@ -12,7 +12,7 @@ Executed ISO builds are marked `built` only when the configured output ISO exist
 non-empty, and has a recorded SHA-256 digest. A completed build attempt without that
 artifact stays `blocked`; dry-runs stay `planned`.
 
-Use `distroforge iso-accept PROJECT --iso dist/Image.iso` after a real build to get the
+Use `distroforge iso-accept PROJECT --iso dist/NAME-VERSION.iso` after a real build to get the
 publication verdict. It accepts only an ISO that matches `ISO-BUILD.json`, has a ready
 boot proof, and passes the release gate; otherwise it writes `ISO-ACCEPTANCE.json` with
 the next command to run.
@@ -33,6 +33,14 @@ The final ISO is a host artifact. CLI users can pass `--output-iso`; GUI users s
 same path from **Advanced Modules** with **Output ISO**, including a host save-file chooser.
 When unset, DistroForge falls back to the project output defaults.
 
+The canonical default ISO name is `dist/{name}-{version}.iso`, where `name` is the project
+name and `version` the target release version. It is the only accepted form: the builder
+produces it, preflight and the dry-run report expect it, and every downstream review
+command resolves it through the single helper `default_output_iso(project)` in
+`core/artifact_paths.py`. No unversioned `dist/{name}.iso` fallback exists; a new consumer
+must call that helper rather than rebuild the path. Pass `--iso` explicitly only when the
+ISO does not sit at that default path.
+
 Build options are governed by `commands/build_contracts.py`. Each option is assigned to
 Beginner, Power user, Maintainer, or Developer level, plus an expected GUI surface. The
 contract is tested against the parser and GUI so the build cycle remains explicit instead
@@ -52,8 +60,8 @@ QEMU online/offline install smoke matrix.
 1. Resolve the source starter: skeleton, official ISO/netboot, local ISO, or previous project.
 2. Validate project, host, and option contracts.
 3. Check source trust metadata, consistency, safety policy, and release compatibility.
-   Execution writes `out/compatibility-report.txt`; dry-runs record the same report as a
-   virtual command event.
+   Execution writes `dist/compatibility-report.txt` in the project output directory;
+   dry-runs record the same report as a virtual command event.
 4. Plan a transaction id, import legacy scripts and preview the requested diff.
 5. Prepare workspace and source rootfs by skeleton bootstrap or ISO extraction.
    Locked rootfs boot artifacts are copied into `casper/` through the configured
@@ -207,10 +215,14 @@ integer scale driven by that fraction; the CLI prints the same percentage next t
 Each step opens a weight band `[band_start, band_start + band_width)`. Heavy external
 commands stream their output line by line through `CommandRunner.run_streaming`, and the
 per-tool parsers in `core/progress_parsers.py` turn a recognized line into a 0–1 fraction
-that fills the current band through `_phase_progress`. The progress shapes were captured
-from the real tools (squashfs-tools 4.7.5, xorriso 1.5.6) over a pipe — the production
-path — and pinned as fixtures under `tests/fixtures/progress/`, because how much a band
-fills in practice depends entirely on what each tool actually emits:
+that fills the current band through `_phase_progress`. The squashfs and xorriso shapes were
+captured from the real tools (squashfs-tools 4.7.5, xorriso 1.5.6) over a pipe — the
+production path — and pinned as fixtures under `tests/fixtures/progress/`. The apt fixture
+is deliberately not a capture: running `apt-get install` needs root, a chroot and the
+network, none of which the suite uses, so that fixture carries apt's documented
+`dlstatus`/`pmstatus` protocol lines instead. Each fixture header records which of the two
+it is. The shapes matter because how much a band fills in practice depends entirely on what
+each tool actually emits:
 
 - **apt** is the one heavy command that streams a true fraction. With `APT::Status-Fd=1`
   (added only when a progress callback is active in execute mode) it prints an explicit

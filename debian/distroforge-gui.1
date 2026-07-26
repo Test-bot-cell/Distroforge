@@ -1,3 +1,221 @@
-.TH distroforge-gui 1 2026-06-03 "DistroForge" "User Commands"
+.\" Manual page for the DistroForge Qt desktop application.
+.\" The surface list, the keyboard shortcut and the exit statuses documented
+.\" here are derived from distroforge/ui/app.py, distroforge/ui/main_window.py
+.\" and distroforge/ui/qt.py, not written from memory.
+.TH distroforge\-gui 1 2026-07-26 "DistroForge 0.3.5" "User Commands"
 .SH NAME
 distroforge-gui \- launch the Qt desktop interface
+.SH SYNOPSIS
+.B distroforge\-gui
+.RI [ QT\-OPTIONS ]
+.PP
+.B distroforge gui
+.SH DESCRIPTION
+.B distroforge\-gui
+launches the DistroForge desktop application: the graphical counterpart of
+.BR distroforge (1),
+built on the same services and enforcing the same safety model. Builds stay
+dry\-runs until execution is requested explicitly, privileged writes go through
+the configured privilege helper, and no window action bypasses a check the CLI
+performs.
+.PP
+The application takes no options of its own; it is a pure launcher. Anything on
+the command line is handed to Qt, so the usual Qt platform arguments
+.RB ( \-style ,
+.BR \-platform ,
+.BR \-stylesheet ,
+.BR \-platformtheme )
+are accepted. Project selection, options and actions all happen inside the
+window.
+.B distroforge gui
+is the same launcher reached from the command\-line tool.
+.PP
+The window presents 15 surfaces, all reachable at any workflow level:
+.BR Start ,
+.BR Source ,
+.BR Packages ,
+.BR "Desktop & Identity" ,
+.BR "Capture & Images" ,
+.BR Presets ,
+.BR "Quality Lab" ,
+.BR "Virtualization Lab" ,
+.BR Artifacts ,
+.BR Maintainer ,
+.BR "Command Center" ,
+.BR Extensions ,
+.BR "Advanced Modules" ,
+.BR "Build & Release"
+and
+.BR Logs .
+.PP
+.B Start
+is the guided journey spine: an ordered, level\-gated list of the build steps,
+each routing to its focused panel with an
+.B "Apply this step"
+and
+.B Check
+pair.
+.B "Command Center"
+is the auditor view: the
+.B "What do you want to achieve?"
+goal hub, the CLI/GUI parity map, the product capability map, the build phase
+contracts and the CLI equivalent of the current settings, so the automation
+surface can be learned from the desktop app.
+.PP
+Chosen workflow level
+.RB ( beginner ,
+.BR power\-user ,
+.BR maintainer ,
+.BR developer )
+gates only how much of the guided spine is unlocked. Navigation is never gated:
+the header
+.B "Open tool\(rq"
+palette is a type\-to\-filter action index over every surface and every journey
+step, focused with
+.BR Ctrl+K ,
+and a
+.B Start
+button at the leading edge of the header bar returns home from any surface.
+.PP
+Long work never blocks the interface: builds, dry\-runs, doctor runs, audits and
+snapshots are dispatched onto a worker thread that reports weighted progress and
+supports cancellation through the toolbar job controls.
+.SH OPTIONS
+.B distroforge\-gui
+defines no options of its own. The following are the Qt arguments most often
+useful here; the Qt documentation lists the full set.
+.TP
+.BI \-style " STYLE"
+Select the Qt widget style.
+.TP
+.BI \-platform " PLATFORM"
+Select the window\-system plugin, for example
+.B wayland
+or
+.BR xcb .
+Setting it to
+.B offscreen
+runs the shell headlessly, which is how the GUI smoke tests drive it.
+.TP
+.BI \-stylesheet " FILE"
+Load an additional Qt stylesheet.
+.PP
+The application forces its own GNOME\-native presentation: Adwaita Sans
+typography, the
+.B Adwaita
+icon theme, and light or dark surfaces following the host colour scheme. Those
+choices come from the transcribed GNOME HIG palette rather than from the host
+theme, so the look does not drift between desktop environments.
+.SH EXIT STATUS
+.TP
+.B 0
+The window was opened and closed normally.
+.TP
+.B 2
+No Qt Python bindings are installed. The launcher prints the packages to
+install and exits without opening a window.
+.PP
+Any other status is the exit code Qt itself returned.
+.SH ENVIRONMENT
+.TP
+.B QT_QPA_PLATFORM
+Qt platform plugin, honoured before
+.BR \-platform .
+.B offscreen
+runs without a display.
+.TP
+.B DISTROFORGE_PRIVILEGE
+Default privilege backend for the builds the window starts:
+.BR sudo " (the default), "
+.B pkexec
+or
+.BR none .
+.TP
+.B SUDO_ASKPASS
+Graphical askpass helper. A build started from the desktop has no terminal, so
+the privilege helper uses
+.B "sudo \-A"
+with this program. When none is available, preflight stops before the first
+privileged command with setup guidance rather than hanging on an invisible
+password prompt.
+.TP
+.B XDG_CONFIG_HOME
+Base of the preferences file; defaults to
+.IR ~/.config .
+.TP
+.B XDG_STATE_HOME
+Base of the build\-memory corpus read by the advisory panels; defaults to
+.IR ~/.local/state .
+.SH FILES
+.TP
+.I ~/.config/distroforge/
+Application preferences: chosen workflow level, chroot backend and other
+persisted choices. Written atomically through a
+.I .part
+file.
+.TP
+.I ~/.local/state/distroforge/build\-memory.jsonl
+Host\-owned build\-memory corpus summarised by the
+.B "Show build memory"
+readout. Appended only when a build actually runs.
+.TP
+.I /usr/share/applications/distroforge.desktop
+Desktop entry that launches this program.
+.TP
+.I /usr/share/icons/hicolor/scalable/apps/distroforge.svg
+Application icon.
+.TP
+.I PROJECT/project.json
+The project the window opens; the same file the command\-line tool reads.
+.TP
+.I /usr/share/doc/distroforge/
+Installed documentation, including the CLI/GUI parity contract.
+.SH EXAMPLES
+Launch the desktop application:
+.PP
+.EX
+distroforge\-gui
+.EE
+.PP
+Launch it through the command\-line tool:
+.PP
+.EX
+distroforge gui
+.EE
+.PP
+Force the Wayland platform plugin:
+.PP
+.EX
+distroforge\-gui \-platform wayland
+.EE
+.PP
+Run the shell headlessly, as the offscreen smoke tests do:
+.PP
+.EX
+QT_QPA_PLATFORM=offscreen distroforge\-gui
+.EE
+.PP
+Install the optional Qt bindings when the launcher reports they are missing:
+.PP
+.EX
+sudo apt install python3\-pyqt6
+.EE
+.SH SEE ALSO
+.BR distroforge (1),
+.BR distroforge\-typer (1),
+.BR sudo (8),
+.BR pkexec (1)
+.PP
+See
+.I /usr/share/doc/distroforge/docs/gui\-parity.md
+for the command\-to\-surface mapping,
+.I docs/ux\-cognitive\-ergonomics.md
+for the interface contract and
+.I docs/velocity\-responsiveness.md
+for the responsiveness contract.
+.SH BUGS
+DistroForge 0.3.5 is alpha software. Review the plan the window shows before
+executing a build, and prefer a dedicated build host or virtual machine.
+.PP
+DistroForge is an independent project and is not affiliated with or endorsed by
+Canonical. Ubuntu is mentioned solely as a compatible target distribution.

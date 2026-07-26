@@ -44,4 +44,19 @@ python3 -m pytest -q
 If it passes together with Ruff, `packaging-policy`, and the hermetic build plan,
 the source tree has cleared its dry-run and maintainer workflow gate. The next
 step may be a clean Debian package build in the environment selected by
-`hermetic-build-plan`.
+`hermetic-build-plan`. Of those, only Ruff and pytest run in CI;
+`packaging-policy` and `hermetic-build-plan` are maintainer commands.
+
+## What This Matrix Does Not Prove
+
+The whole suite, this matrix included, is unit and offline plan/dry-run testing
+only. No test has ever executed `debootstrap`, `mksquashfs`, `unsquashfs`,
+`xorriso`, `apt`, `qemu`, `sbuild` or `autopkgtest`: the progress fixtures under
+`tests/fixtures/progress/` exist precisely so those tools stay out of the suite.
+Nothing here verifies that a real ISO builds, boots, or installs, or that a real
+`.deb` passes `lintian`. That confirmation is a manual maintainer step on real
+hardware or a real target ISO, and it is the honest boundary of this gate.
+
+Line coverage is 74.7% overall (21351 of 28586 statements). `distroforge/ui/` is
+the weakest surface at 58.6%: the GUI is held by offscreen reachability,
+responsiveness and parity contracts rather than by exhaustive widget tests.

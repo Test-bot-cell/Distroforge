@@ -172,7 +172,9 @@ ASCII-safe YAML/JSON with deterministic keys.
 
 ## Distribution Channel
 
-`debian/changelog` currently uses `unstable` for local Debian-style alpha builds. Before
-publishing through a PPA, Ubuntu repository, Debian repository, or a private archive, set
-the changelog distribution to the real target channel such as `noble`, `resolute`,
-`trixie`, `experimental`, `unstable`, or the private archive suite.
+`debian/changelog` currently uses `resolute` — the Ubuntu 26.04 series — for every stanza
+from `0.3.4-2` onward; `unstable` was last used for `0.3.4-1`. Before publishing through a
+PPA, Ubuntu repository, Debian repository, or a private archive, confirm that the changelog
+distribution names the real target channel (`noble`, `resolute`, `trixie`, `experimental`,
+`unstable`, or the private archive suite) rather than the one that happened to fit the last
+local build.

@@ -32,9 +32,28 @@ than restating it.
 - `Rules-Requires-Root: no`.
 - Machine-readable `debian/copyright`.
 - Autopkgtest smoke coverage for the installed CLI.
-- CI must run Ruff, pytest, and the policy guard tests.
+- CI must run Ruff and pytest on Python 3.11, 3.12 and 3.13; the policy guard tests are
+  part of that pytest run, not a separate CI step.
 - During alpha development, package build artifacts must not be produced unless
   the maintainer explicitly authorizes a package build in the current task.
+
+## What Is Not Yet Enforced
+
+Compliance is a standing requirement, but only part of it is currently automated. Stating
+the gap is part of the rule, not an exception to it:
+
+- `lintian` is a maintainer action, never a gate. `debian-package --execute` runs it to
+  produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and `debian/control`
+  lists it under `Suggests`; but no CI step runs it, `debian/rules` does not run it, and
+  the rendered `sbuild` command passes `--no-run-lintian`.
+- `mypy`, `pre-commit` and `shellcheck` are not wired into the project at all. They appear
+  only in the `doctor --debian-dev` audit of a maintainer workstation: no `pyproject.toml`
+  configuration, no CI step, no `debian/control` entry, no `.pre-commit-config.yaml`. The
+  shell in `debian/rules`, `debian/distroforge.postinst` and `debian/tests/smoke` is
+  therefore unlinted.
+- The test suite never executes an external build tool, so nothing verifies that a real
+  package or a real ISO is produced. Package-build conformance is confirmed by a
+  maintainer running the hermetic build path, not by the suite.
 
 ## GUI Theming Dependencies
 

@@ -222,13 +222,28 @@ catalog shipped by your installation.
 
 ## Development
 
-Install the development dependencies, then run the same checks used by CI:
+Install the development dependencies, then run the two checks CI runs, on
+Python 3.11, 3.12 and 3.13:
 
 ```bash
 .venv/bin/python -m ruff check .
 .venv/bin/python -m pytest
+```
+
+Before a package review, also run the source-only packaging verdict, which CI
+does not run:
+
+```bash
 .venv/bin/python -m distroforge packaging-policy .
 ```
+
+The suite is offline, rootless and tool-free by design: it never runs
+`debootstrap`, `mksquashfs`, `xorriso`, `qemu`, `apt` or `sbuild`, so a green
+suite proves the plan and the contracts, not that a real ISO boots. Line
+coverage is 74.7% overall and 58.6% under `distroforge/ui/`. Static typing
+(`mypy`), shell linting (`shellcheck`), `pre-commit` and `lintian` are
+maintainer tools audited by `distroforge doctor --debian-dev`; none of them
+gates a change.
 
 Focused bug reports and pull requests are welcome. New workflows should
 preserve dry-run behavior, CLI/GUI parity, explicit privilege boundaries, test
