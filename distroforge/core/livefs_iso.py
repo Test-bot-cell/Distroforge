@@ -58,7 +58,7 @@ class LivefsIsoPlan:
         ]
         lines.extend(f"- {step['name']}: {step['description']}" for step in self.steps)
         lines.extend(["", "Package pool intent:"])
-        lines.extend(f"- {package}" for package in self.package_list) or lines.append("-")
+        lines.extend([f"- {package}" for package in self.package_list] or ["- none"])
         if self.warnings:
             lines.extend(["", "Warnings:"])
             lines.extend(f"- {warning}" for warning in self.warnings)

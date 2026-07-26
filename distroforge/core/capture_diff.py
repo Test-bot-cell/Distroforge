@@ -38,7 +38,7 @@ class CaptureDiff:
             "",
             "Included config files:",
         ]
-        lines.extend(f"- {path}" for path in self.config_files) or lines.append("-")
+        lines.extend([f"- {path}" for path in self.config_files] or ["- none"])
         return "\n".join(lines)
 
     def render_json(self) -> str:

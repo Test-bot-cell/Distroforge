@@ -135,10 +135,17 @@ def run() -> None:
         _legacy(argv)
 
     @app.command()
-    def explain(root: Path) -> None:
-        from .commands.explain import render_explain
-
-        typer_mod.echo(render_explain(root))
+    def explain(
+        root: Path,
+        json_output: bool = typer_mod.Option(False, "--json"),
+        strict: bool = False,
+    ) -> None:
+        argv = ["explain", str(root)]
+        if json_output:
+            argv.append("--json")
+        if strict:
+            argv.append("--strict")
+        _legacy(argv)
 
     @app.command()
     def plugins(root: Path) -> None:

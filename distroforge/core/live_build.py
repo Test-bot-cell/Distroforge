@@ -37,13 +37,13 @@ class LiveBuildPlan:
             "",
             "Package list entries:",
         ]
-        lines.extend(f"- {item}" for item in self.package_lists) or lines.append("-")
+        lines.extend([f"- {item}" for item in self.package_lists] or ["- none"])
         lines.extend(["", "Hooks:"])
-        lines.extend(f"- {item}" for item in self.hooks) or lines.append("-")
+        lines.extend([f"- {item}" for item in self.hooks] or ["- none"])
         lines.extend(["", "Includes:"])
-        lines.extend(f"- {item}" for item in self.includes) or lines.append("-")
+        lines.extend([f"- {item}" for item in self.includes] or ["- none"])
         lines.extend(["", "Captured config files:"])
-        lines.extend(f"- {item.get('path', '-')}" for item in self.config_files) or lines.append("-")
+        lines.extend([f"- {item.get('path', '-')}" for item in self.config_files] or ["- none"])
         if self.warnings:
             lines.extend(["", "Warnings:"])
             lines.extend(f"- {item}" for item in self.warnings)
