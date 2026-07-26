@@ -214,7 +214,9 @@ def _safe_extract_tar(archive: Path, destination: Path) -> None:
         for member in archive_handle.getmembers():
             if _is_unsafe_archive_path(member.name):
                 raise ValueError("Unsafe archive entry path.")
-        archive_handle.extractall(path=destination)
+            if (member.issym() or member.islnk()) and _is_unsafe_archive_path(member.linkname):
+                raise ValueError("Unsafe archive entry link target.")
+        archive_handle.extractall(path=destination, filter="data")
 
 
 def _is_unsafe_archive_path(path: str) -> bool:

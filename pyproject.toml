@@ -81,4 +81,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# Curated from the flake8-bandit family: only rules that fire on a real defect
+# in this tree and leave no residual noise. S202 guards the archive extraction
+# filter in distroforge/ui/path_actions.py. Measured on 2026-07-26: the whole
+# S family reports 2050 findings, 2015 of them S101 (asserts in tests), and
+# S310/S105/S311/S314 are false positives here (hardcoded https schemes, loop
+# variables named token, palette shuffling, our own SVG).
+extend-select = ["S202"]
 ignore = ["E501"]

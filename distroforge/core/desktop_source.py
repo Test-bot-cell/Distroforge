@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import tomllib
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -9,6 +10,14 @@ from pathlib import Path
 from .chroot import ChrootService
 from .command import CommandRunner, CommandSpec, sudo
 from .integrity import IntegrityOptions, IntegrityService
+
+# Output directory for the .deb files built from upstream sources, relative to
+# each component build directory (see _deb_dir for the absolute location).
+_DEB_OUTPUT_DIR = "../distroforge-desktop-debs"
+# Kept in step with the Maintainer field of debian/control.
+_DEB_MAINTAINER = "DistroForge maintainers <maintainers@distroforge.invalid>"
+# DESTDIR the build systems install into before the .deb is assembled.
+_DEB_INSTALL_ROOT = "debroot"
 
 
 @dataclass(frozen=True)
@@ -225,37 +234,58 @@ class DesktopSourceService:
         )
 
     def _build_deb(self, component: DesktopSourceComponent, source_dir: Path) -> None:
-        build_dir = self._target_path(source_dir)
-        package = component.package_name or f"distroforge-{component.name}"
+        build_dir = shlex.quote(self._target_path(source_dir))
+        # jobs comes from an int field, so it never carries shell metacharacters;
+        # the "$(nproc)" fallback is an intentional expansion and stays unquoted.
         jobs = self.options.jobs if self.options.jobs > 0 else "$(nproc)"
+        configure_args = " ".join(shlex.quote(arg) for arg in component.configure_args)
+        assemble = self._assemble_deb_command(component)
         if component.build_system in {"debuild", "debian"}:
             command = f"cd {build_dir} && dpkg-buildpackage -us -uc -b -j{jobs}"
         elif component.build_system == "cmake":
             command = (
                 f"cd {build_dir} && cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr "
                 "&& cmake --build build "
-                f"&& cpack -G DEB -B ../distroforge-desktop-debs"
+                f"&& cpack -G DEB -B {shlex.quote(_DEB_OUTPUT_DIR)}"
             )
         elif component.build_system == "autotools":
             command = (
                 f"cd {build_dir} && ./configure --prefix=/usr "
-                f"{' '.join(component.configure_args)} "
+                f"{configure_args} "
                 f"&& make -j{jobs} "
-                f"&& make install DESTDIR=$PWD/build/root "
-                f"&& distroforge-debwrap --name {package} "
-                f"--version {component.version}+{self.options.local_suffix} "
-                "--root build/root --output ../distroforge-desktop-debs"
+                f"&& make install DESTDIR=$PWD/{_DEB_INSTALL_ROOT} "
+                f"&& {assemble}"
             )
         else:
             command = (
                 f"cd {build_dir} && meson setup build --prefix=/usr "
-                f"--buildtype=release {' '.join(component.configure_args)} "
+                f"--buildtype=release {configure_args} "
                 f"&& ninja -C build -j{jobs} "
-                f"&& distroforge-debwrap --name {package} "
-                f"--version {component.version}+{self.options.local_suffix} "
-                "--root build --output ../distroforge-desktop-debs"
+                f"&& DESTDIR=$PWD/{_DEB_INSTALL_ROOT} meson install -C build --no-rebuild "
+                f"&& {assemble}"
             )
         ChrootService(self.runner, self.root, self.use_sudo).run("/bin/bash", "-lc", command)
+
+    def _assemble_deb_command(self, component: DesktopSourceComponent) -> str:
+        """Build the binary .deb from the installed tree with dpkg-deb.
+
+        DistroForge ships no packaging helper of its own: the .deb is assembled
+        from the DESTDIR tree with dpkg-dev, which every build chroot installs
+        through _install_build_dependencies.
+        """
+        package = shlex.quote(component.package_name or f"distroforge-{component.name}")
+        version = shlex.quote(f"{component.version}+{self.options.local_suffix}")
+        synopsis = shlex.quote(f"DistroForge upstream build of {component.name}")
+        root = shlex.quote(_DEB_INSTALL_ROOT)
+        output = shlex.quote(_DEB_OUTPUT_DIR)
+        return (
+            f"mkdir -p {root}/DEBIAN {output} "
+            "&& printf 'Package: %s\\nVersion: %s\\nArchitecture: %s\\n"
+            "Maintainer: %s\\nDescription: %s\\n' "
+            f"{package} {version} \"$(dpkg --print-architecture)\" "
+            f"{shlex.quote(_DEB_MAINTAINER)} {synopsis} > {root}/DEBIAN/control "
+            f"&& dpkg-deb --build {root} {output}"
+        )
 
     def _install_debs(self) -> None:
         if not self.options.install_debs:
@@ -266,7 +296,7 @@ class DesktopSourceService:
                 )
             )
             return
-        target = self._target_path(self._deb_dir())
+        target = shlex.quote(self._target_path(self._deb_dir()))
         command = (
             f"set -e; debs=$(find {target} -maxdepth 1 -name '*.deb' -print | sort); "
             'test -n "$debs"; dpkg -i $debs || apt-get -f -y install'

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from typing import Protocol
 
 from distroforge.core.project import Project
@@ -55,7 +56,9 @@ def build_cli_equivalent(window: CliEquivalentWindow) -> str:
     if window.policy_strict_check.isChecked():
         args.append("--policy-strict")
     args.extend(["--brand-compliance-mode", str(window.brand_compliance_mode_combo.currentData())])
-    return " ".join(_shell_quote(part) for part in args)
+    # The panel offers this string for copy-paste into a shell, so every part is
+    # quoted unconditionally: a bare value would let the shell expand it.
+    return shlex.join(args)
 
 
 def _split_packages(text: str) -> list[str]:
@@ -65,9 +68,3 @@ def _split_packages(text: str) -> list[str]:
         if item and not item.startswith("#"):
             packages.append(item)
     return packages
-
-
-def _shell_quote(value: str) -> str:
-    if not value or any(char.isspace() for char in value):
-        return "'" + value.replace("'", "'\"'\"'") + "'"
-    return value
