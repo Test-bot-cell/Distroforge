@@ -67,6 +67,25 @@ entries naming modules that no longer exist. Adding a module to that list to mak
 a red check go green is how the `distroforge-typer explain` crash survived
 unnoticed; fix the type error instead.
 
+## `--json` is a contract, not a formatting preference
+
+A command that accepts `--json` writes **one** JSON document to stdout and ends it with
+**exactly one** newline. Same trailing-newline rule without `--json`. Messages for a human
+— hints, "pass `--write`", warnings — go to stderr, never into the document.
+
+Two conventions for the newline live in the tree and both are fine: a renderer returns the
+document without a trailing newline and `print()` adds it (53 of 59 `render_json`), or the
+renderer keeps it and the caller passes `end=""` (the rest). What is not fine is mixing
+them at one call site, which is how `explain` came to print a blank line, `capture` and
+`livefs-iso-plan` came to print none, `new --json` came to print prose, and
+`livefs-iso-build --json` came to append an English sentence after the closing brace. Every
+one of those exits 0 and looks right in a terminal.
+
+`tests/test_cli_output_contract.py` enumerates the `--json` commands from the parser, so a
+new command is covered the moment it exists. If it cannot be driven without a build, add it
+to `NOT_EXERCISED` **with the reason** — the test asserts the exact contents of that set, so
+an exclusion has to be argued once rather than accumulating.
+
 ## The Qt import shim, and why it is shaped the way it is
 
 `distroforge/ui/qt.py` is the only module that imports Qt directly. It types the tree

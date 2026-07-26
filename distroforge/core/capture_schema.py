@@ -34,7 +34,13 @@ class CapturedSystemProfile:
         }
 
     def render_yaml(self) -> str:
-        return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=False)
+        # safe_dump ends its output with a newline; render_json beside it does not, and
+        # every caller of either adds one -- print() for stdout, an explicit "\n" for a
+        # file. Returning the newline here made `capture` the one command printing a blank
+        # line, and made the file the GUI writes differ from the file the CLI writes.
+        return yaml.safe_dump(
+            self.to_dict(), sort_keys=False, allow_unicode=False
+        ).removesuffix("\n")
 
     def render_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)

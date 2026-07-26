@@ -189,6 +189,21 @@ Every build option should either map to a GUI widget or have a documented except
 Command Center shows the current GUI-to-CLI equivalent so users can learn the CLI while
 using the desktop app.
 
+## Machine-Readable Output
+
+Every command that accepts `--json` writes one JSON document to stdout and ends it with
+exactly one newline; in text mode the same trailing-newline rule holds. Renderers return a
+document with no trailing newline and `print()` supplies it — the inverse convention also
+exists in the tree, where a renderer keeps the newline and the caller passes `end=""`, and
+both are correct as long as exactly one newline reaches stdout. Advisories meant for a
+human go to stderr, never into the document: `livefs-iso-build` puts its "pass `--write`"
+hint there for that reason.
+
+This is a contract because callers depend on it — `jq`, a checksum over an archived
+report, a golden-file comparison — and because breaking it is invisible to a human reading
+the terminal. `tests/test_cli_output_contract.py` enumerates the `--json` commands from the
+parser itself and asserts the contract on each, so a new command is covered by existing.
+
 ## Responsive Layout
 
 The desktop shell must stay usable on every desktop environment and at narrow window

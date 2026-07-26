@@ -69,7 +69,12 @@ def test_cli_livefs_iso_build_requires_write_then_writes(tmp_path, capsys) -> No
     work_dir = tmp_path / "work"
 
     main(["livefs-iso-build", str(profile), "--work-dir", str(work_dir), "--dest", str(tmp_path / "out.iso")])
-    assert "Pass --write" in capsys.readouterr().out
+    # The advisory is on stderr and the document alone is on stdout. It used to be
+    # concatenated onto whatever was rendered, which meant `--json` printed an English
+    # sentence after the closing brace -- see tests/test_cli_output_contract.py.
+    streams = capsys.readouterr()
+    assert "Pass --write" in streams.err
+    assert "Pass --write" not in streams.out
     assert not work_dir.exists()
 
     main([

@@ -43,9 +43,10 @@ def render_livefs_iso(
         project=project,
         volume_id=volume_id,
     )
-    if command == "livefs-iso-build":
-        if not write:
-            rendered = plan.render_json() if json_output else plan.render_text()
-            return rendered + "\nPass --write to create the reviewable livefs ISO workspace.\n"
+    # Nothing but the document. The "pass --write" advisory used to be concatenated here,
+    # which appended an English sentence to the JSON and made `livefs-iso-build --json`
+    # unparseable; it is a message for a human, so the CLI now sends it to stderr and
+    # stdout stays a document in both modes.
+    if command == "livefs-iso-build" and write:
         planner.write_plan(plan)
     return plan.render_json() if json_output else plan.render_text()

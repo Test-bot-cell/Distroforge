@@ -53,8 +53,13 @@ class BuildExplainReport:
             },
         }
 
+    # No trailing newline, which is what the other 53 render_json in the tree return and
+    # what the caller expects: print() supplies it. These two were the only renderers in
+    # the tree whose newline nobody absorbed, so `explain` and `explain --json` both
+    # ended in a blank line while every other command ended in exactly one, and the GUI
+    # pasted that blank line into the plan view.
     def render_json(self) -> str:
-        return json.dumps(self.to_dict(), indent=2) + "\n"
+        return json.dumps(self.to_dict(), indent=2)
 
     def render_text(self) -> str:
         lines = [
@@ -86,7 +91,7 @@ class BuildExplainReport:
             lines.append("Rollback points:")
             for point in self.rollback_points:
                 lines.append(f"- {point}")
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
 
 
 def _to_phase_plan(steps: list[tuple[str, str]]) -> tuple[dict[str, object], ...]:

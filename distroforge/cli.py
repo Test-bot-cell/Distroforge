@@ -813,7 +813,7 @@ def _main(argv: list[str] | None = None) -> None:
             include_config_globs=args.include_config_glob,
             output=args.output,
             json_output=args.json,
-        ), end="")
+        ))
         return
 
     if args.command == "capture-diff":
@@ -875,7 +875,13 @@ def _main(argv: list[str] | None = None) -> None:
             disk_id=args.disk_id,
             project=args.project,
             volume_id=args.volume_id,
-        ), end="")
+        ))
+        if args.command == "livefs-iso-build" and not getattr(args, "write", False):
+            # stderr, so stdout carries only the document -- see commands/livefs.py.
+            print(
+                "Pass --write to create the reviewable livefs ISO workspace.",
+                file=sys.stderr,
+            )
         return
 
     if args.command == "upgrade-media":

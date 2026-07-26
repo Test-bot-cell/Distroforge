@@ -144,7 +144,9 @@ def export_capture_profile_action(window) -> None:
     def _work():
         profile = work()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(profile.render_yaml(), encoding="utf-8")
+        # The same "+ newline" the CLI adds in commands/capture.py, so a profile saved
+        # from the GUI is byte-identical to one saved from `distroforge capture --output`.
+        target.write_text(profile.render_yaml() + "\n", encoding="utf-8")
         return profile
 
     def _done(profile):

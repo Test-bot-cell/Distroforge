@@ -32,8 +32,10 @@ def run_capture(
     if not output:
         return rendered
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered, encoding="utf-8")
-    return f"Wrote {output}\n{profile.report.render_text()}\n"
+    # Trailing newline on the file, none on the returned message: the file is a text
+    # artifact other tools read, while the message is handed to print().
+    output.write_text(rendered + "\n", encoding="utf-8")
+    return f"Wrote {output}\n{profile.report.render_text()}"
 
 
 def render_capture_diff(profile: Path, json_output: bool = False) -> str:

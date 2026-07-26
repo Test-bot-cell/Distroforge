@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from distroforge.commands.build_options import apply_trust_args
 from distroforge.core.build_history import append_history
@@ -46,5 +47,18 @@ def run_new(args: argparse.Namespace) -> None:
         )
         print(report.render_json() if args.json else report.render_text(), end="")
         return
+    starter_label = project.source_starter.get("label") if project.source_starter else starter_key
+    if args.json:
+        # --json used to be accepted and ignored on this path: it is honoured only when
+        # --plan-only or --profile sends the run through plan_noob_profile, so plain
+        # `distroforge new NAME ROOT --json` printed two lines of prose and any caller
+        # piping it to a JSON reader got a parse error out of a command that exited 0.
+        print(json.dumps({
+            "project": project.name,
+            "root": str(project.root),
+            "release": args.release,
+            "source_starter": starter_label,
+        }, indent=2))
+        return
     print(f"Created {project.name} at {project.root}")
-    print(f"Source starter: {project.source_starter.get('label') if project.source_starter else starter_key}")
+    print(f"Source starter: {starter_label}")
