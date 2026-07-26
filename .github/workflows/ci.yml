@@ -4,25 +4,114 @@ on:
   push:
   pull_request:
 
+# A push that supersedes an in-flight run cancels it instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # 3.14 is not decoration. tarfile's extraction filter defaults to
+        # fully_trusted up to 3.13 and to data from 3.14 (PEP 706), so a matrix
+        # stopping at 3.13 tested the opposite behaviour from a 3.14 workstation
+        # -- which is why an archive escape stayed invisible locally.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # The Qt binding is chosen by a try/except shim, so CI used to exercise
+        # only PySide6 while the .deb and every developer venv run PyQt6.
+        qt-binding: [gui, pyqt6]
+    name: test (py${{ matrix.python-version }}, ${{ matrix.qt-binding }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install Qt runtime
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1
       - name: Install
-        run: python -m pip install -e ".[dev,typer,gui]"
+        run: python -m pip install -e ".[dev,typer,${{ matrix.qt-binding }}]"
       - name: Lint
         run: python -m ruff check .
+      - name: Typecheck
+        run: python -m mypy distroforge/
       - name: Test
-        run: python -m pytest
+        run: python -m pytest -q
+
+  packaging-static:
+    # Static packaging checks only: no package is built here. A build needs
+    # privilege and minutes, and every gate below is meaningful without one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging checkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lintian shellcheck
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Shellcheck the maintainer scripts
+        run: make shellcheck
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Packaging and policy guards
+        # Named explicitly so they cannot be lost in the noise of a full run, and
+        # so a collection error here is not mistaken for an unrelated failure.
+        run: |
+          python -m pytest -q \
+            tests/test_policy_compliance.py \
+            tests/test_platform_contracts.py \
+            tests/test_packaging_reports.py \
+            tests/test_pillar_contracts.py
+      - name: Lintian profile must be a vendor
+        # lintian profiles are vendors (debian, ubuntu), never suites: --profile
+        # resolute does not exist. An unpinned invocation makes the verdict depend
+        # on whichever vendor the host happens to be.
+        run: |
+          lintian --profile debian --version
+          ! grep -rn -- '--profile *resolute' distroforge/ debian/
+
+  distro-dependencies:
+    # The one job that answers "does it work with the Python and the libraries the
+    # distribution ships", which the matrix above cannot: setup-python installs an
+    # interpreter, while the package is built against the runner distribution's
+    # python3 and its python3-* packages. Adding 3.14 to the matrix does not cover
+    # this case.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install distribution packages only
+        # Deliberately no ruff: it has no version in the Ubuntu archive
+        # (apt-cache showpkg ruff lists the name with an empty Versions field),
+        # so a Build-Depends on it would make the package unbuildable. The
+        # one-statement-per-line guard is therefore implemented against ast
+        # rather than delegated to ruff, and needs nothing installed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pytest python3-pydantic python3-yaml python3-pluggy \
+            python3-rich python3-pyqt6 libegl1
+      - name: Report what the distribution provides
+        run: |
+          python3 --version
+          dpkg-query -W python3-pyqt6 python3-pydantic python3-pytest
+      - name: Run the suite the way debian/rules does
+        env:
+          DISTROFORGE_DEBIAN_BUILD: "1"
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m pytest -q
