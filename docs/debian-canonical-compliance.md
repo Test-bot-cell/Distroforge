@@ -57,16 +57,27 @@ the gap is part of the rule, not an exception to it:
   produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and `debian/control`
   lists it under `Suggests`; but no CI step runs it on a real `.deb`, `debian/rules` does
   not run it, and the rendered `sbuild` command passes `--no-run-lintian`. What *is*
-  enforced is the shape of the invocation: the profile is pinned to a vendor
-  (`lintian --profile debian`), because a profile is a vendor and never a suite --
+  enforced is the shape of the invocation, and it is always built by
+  `packaging.lintian_argv()`: the profile is a **vendor**, never a suite --
   `--profile resolute` does not exist -- and an unpinned run would take its verdict from
-  whichever vendor the host happens to be. CI asserts no such suite name is ever passed.
+  whichever vendor the host happens to be.
+  The vendor is resolved from the suite the package's own `debian/changelog` targets,
+  read out of lintian's own `vendors/<vendor>/main/data/changes-file/known-dists`, and
+  falls back to `debian` for a suite no installed vendor claims. It used to be pinned to
+  `debian` outright, which was wrong in one specific way: the vendor also decides which
+  values the `.changes` `Distribution` field may hold, so an Ubuntu-targeted package was
+  told `bad-distribution-in-changes-file` about a field that was correct -- and since the
+  verdict is graded from tags, DistroForge rated its own compliant package `failed`.
+  Resolving from the changelog keeps the verdict reproducible, because the changelog
+  travels with the source while the build host does not.
   The verdict is read from the emitted tags rather than the exit code, since `lintian`
   exits 0 on a package that carries warnings.
 - Tags are fixed, never overridden. The package ships no
   `usr/share/lintian/overrides/distroforge` and must not: silencing a tag is not the same
   thing as being clean, so a warning surfaces as `review required` with every tag kept in
-  the reason string.
+  the reason string. As of 0.3.5-3 the built package emits exactly one tag under its own
+  vendor profile -- `redundant-rules-requires-root-no-field`, pedantic and deliberate,
+  explained in `debian/README.source`.
 - Maintainer scripts are held to two rules, both executable. They may not spell a command
   with an absolute path, and they may not reach into a user session -- no `gsettings`,
   `dconf`, `runuser`, `/home`, `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS`: a script

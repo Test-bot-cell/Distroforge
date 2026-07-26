@@ -91,18 +91,25 @@ jobs:
             tests/test_packaging_reports.py \
             tests/test_pillar_contracts.py \
             tests/test_maintainer_scripts.py
-      - name: Lintian profile must be a vendor
-        # lintian profiles are vendors, never suites, and an unpinned invocation
-        # makes the verdict depend on whichever vendor the host happens to be. This
-        # was a grep for the exact argument pair, which was worse than useless: the
-        # only thing it ever matched was the comment explaining the rule, and it
-        # could not see the form the code actually builds, where the flag and its
-        # value are two separate argv strings. The check now lives in the suite,
-        # where it reads the constant and the suite names instead of guessing.
+      - name: Lintian profile must be a vendor, and the vendor the package targets
+        # lintian profiles are vendors, never suites, and an unpinned invocation makes
+        # the verdict depend on whichever vendor the host happens to be. This was a grep
+        # for the exact argument pair, which was worse than useless: the only thing it
+        # ever matched was the comment explaining the rule, and it could not see the form
+        # the code actually builds, where the flag and its value are two separate argv
+        # strings. The check now lives in the suite, where it reads the resolver and the
+        # suite names instead of guessing. It also covers the follow-up defect: pinning
+        # "debian" for a package targeting an Ubuntu suite made lintian reject a correct
+        # .changes Distribution field, and the tag-based verdict turned that into failed.
         run: |
           lintian --profile debian --version
+          lintian --profile ubuntu --version
           python -m pytest -q tests/test_packaging_reports.py \
-            -k "lintian_profile_is_a_vendor or lintian_is_never_invoked"
+            -k "lintian_profile_is_a_vendor \
+             or lintian_is_never_invoked \
+             or profile_follows_the_targeted_suite \
+             or resolves_to_the_vendor_it_actually_targets \
+             or changelog_suite_reader"
 
   distro-dependencies:
     # The one job that answers "does it work with the Python and the libraries the

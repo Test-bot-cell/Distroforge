@@ -37,17 +37,60 @@ IMPORTANT_DOCS = (
 
 # lintian profiles are vendors, never suites: /usr/share/lintian/profiles holds
 # debian, ubuntu, kali, pureos and friends, so passing the target suite name as the
-# profile simply aborts with "Could not find a profile matching: <suite>/main". The
-# suite name is deliberately not spelled here: CI greps the tree for that exact
-# argument pair, and a comment explaining the rule used to be the only match.
+# profile simply aborts with "Could not find a profile matching: <suite>/main".
 # Left unset, the profile comes from dpkg-vendor on whichever host happens to run
 # the check, so the same .dsc and .changes can pass on one machine and fail on the
-# next. Pinning the Debian profile makes the verdict reproducible and holds the
-# package to the upstream Policy baseline docs/debian-canonical-compliance.md claims.
-# --no-tag-display-limit matters just as much: without it lintian truncates
-# repeated tags, and a truncated report cannot be turned into a reason string.
+# next.
+#
+# Pinning "debian" outright was the first answer to that, and it was wrong in one
+# specific way: the vendor also decides which suite names the .changes Distribution
+# field may hold. Checking a package that targets an Ubuntu suite against the Debian
+# profile therefore raised bad-distribution-in-changes-file for a field that was
+# correct -- and because the verdict is graded from tags, DistroForge rated its own
+# compliant package "failed".
+#
+# So the profile is derived from the package's own changelog, which travels with the
+# source, rather than from the host, which does not. lintian records the suites each
+# vendor accepts under LINTIAN_VENDORS_ROOT, so the mapping is read from the checker
+# itself instead of being duplicated here. "debian" stays the fallback for a suite no
+# installed vendor claims, which keeps that verdict reproducible.
+#
+# --no-tag-display-limit matters just as much: without it lintian truncates repeated
+# tags, and a truncated report cannot be turned into a reason string.
 LINTIAN_PROFILE = "debian"
-LINTIAN_ARGV = ("lintian", "--profile", LINTIAN_PROFILE, "--no-tag-display-limit")
+LINTIAN_VENDORS_ROOT = Path("/usr/share/lintian/vendors")
+
+
+def lintian_vendor_for_suite(suite: str, *, vendors_root: Path | None = None) -> str:
+    """The lintian vendor whose profile knows ``suite``, else :data:`LINTIAN_PROFILE`.
+
+    A suite may be qualified (``resolute-updates``), so the base name is tried too.
+    """
+    root = LINTIAN_VENDORS_ROOT if vendors_root is None else vendors_root
+    candidates = [name for name in (suite.strip(), suite.strip().split("-", 1)[0]) if name]
+    if not candidates or not root.is_dir():
+        return LINTIAN_PROFILE
+    # sorted() so two vendors claiming one suite still resolve the same way everywhere.
+    for vendor in sorted(entry.name for entry in root.iterdir() if entry.is_dir()):
+        known = root / vendor / "main/data/changes-file/known-dists"
+        if not known.is_file():
+            continue
+        dists = {
+            line.strip()
+            for line in known.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        if any(candidate in dists for candidate in candidates):
+            return vendor
+    return LINTIAN_PROFILE
+
+
+def lintian_argv(suite: str = "", *, vendors_root: Path | None = None) -> tuple[str, ...]:
+    """The one lintian invocation every call site must use."""
+    return ("lintian", "--profile", lintian_vendor_for_suite(suite, vendors_root=vendors_root), "--no-tag-display-limit")
+
+
+LINTIAN_ARGV = lintian_argv()
 # E error, W warning, I info, P pedantic, X experimental, O overridden, N classification.
 _LINTIAN_TAG = re.compile(r"^[EWIPXON]: \S")
 
@@ -467,6 +510,21 @@ def debian_changelog_version(root: Path) -> str:
     return match.group(1)
 
 
+def debian_changelog_suite(root: Path) -> str:
+    """The suite the top changelog stanza targets, or "" when it cannot be read.
+
+    Unreadable is not an error here: the only caller feeds this to
+    :func:`lintian_vendor_for_suite`, which falls back to the pinned vendor.
+    A stanza may list several distributions, and the first one is the target.
+    """
+    changelog = root / "debian/changelog"
+    if not changelog.exists():
+        return ""
+    lines = changelog.read_text(encoding="utf-8").splitlines()
+    match = re.match(r"^\S+ \([^)]+\)\s+([^;]+);", lines[0] if lines else "")
+    return match.group(1).split()[0] if match else ""
+
+
 def _latest_build_log(artifact_dir: Path, version: str) -> Path | None:
     logs = sorted(artifact_dir.glob(f"distroforge_{version}_amd64-*.build"))
     return logs[-1] if logs else None
@@ -507,7 +565,7 @@ def _write_hermetic_bundle_reports(
     changes = artifact_dir / f"distroforge_{version}_amd64.changes"
     distroforge = (sys.executable, "-m", "distroforge")
     commands = {
-        "LINTIAN.txt": (*LINTIAN_ARGV, str(deb), str(dsc), str(changes)),
+        "LINTIAN.txt": (*lintian_argv(suite), str(deb), str(dsc), str(changes)),
         "BUILDINFO-REPORT.txt": (*distroforge, "buildinfo-report", str(buildinfo), "--changes", str(changes)),
         "PACKAGING-POLICY.txt": (
             *distroforge,
@@ -798,6 +856,10 @@ def _git_identity(root: Path) -> dict[str, str]:
 
 def _write_release_notes(path: Path, version: str, suite: str) -> None:
     installed = _run_capture(("dpkg-query", "-W", "-f=${Package} ${Version} ${Status}\\n", "distroforge"))
+    # The reader must be able to reproduce the verdict in the bundle, so the printed
+    # command carries the same profile the bundle was graded with. Spelled bare, it
+    # would take the reader's dpkg-vendor default and could disagree with LINTIAN.txt.
+    lintian_command = " ".join(lintian_argv(suite))
     path.write_text(
         f"""# DistroForge {version} Hermetic Local Release
 
@@ -813,7 +875,7 @@ Verification commands:
 
 ```sh
 sha256sum -c SHA256SUMS
-lintian distroforge_{version}_all.deb distroforge_{version}.dsc distroforge_{version}_amd64.changes
+{lintian_command} distroforge_{version}_all.deb distroforge_{version}.dsc distroforge_{version}_amd64.changes
 dpkg-source -x distroforge_{version}.dsc /tmp/distroforge-verify-source
 ```
 
@@ -960,7 +1022,7 @@ def build_debian_package(
             runner,
             root,
             "lintian",
-            (*LINTIAN_ARGV[1:], str(deb)) if deb else (),
+            (*lintian_argv(debian_changelog_suite(root))[1:], str(deb)) if deb else (),
             effective_execute,
             bool(deb),
         ),

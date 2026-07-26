@@ -9,15 +9,19 @@ from distroforge.core.command import CommandResult, CommandRunner
 from distroforge.core.packaging import (
     LINTIAN_ARGV,
     LINTIAN_PROFILE,
+    LINTIAN_VENDORS_ROOT,
     HermeticBuildPlan,
     _check_from_result,
     _write_deb_content_report,
     build_debian_package,
     create_hermetic_release_bundle,
+    debian_changelog_suite,
     diagnose_autopkgtest,
+    lintian_argv,
     lintian_reason,
     lintian_status,
     lintian_tags,
+    lintian_vendor_for_suite,
     packaging_policy_report,
 )
 
@@ -560,11 +564,12 @@ def test_lintian_verdict_reads_the_output_instead_of_trusting_exit_zero(tmp_path
     assert not lintian.failed
 
 
-def test_lintian_runs_with_a_pinned_vendor_profile(tmp_path) -> None:
+def test_lintian_falls_back_to_the_pinned_vendor_when_the_suite_is_unreadable(tmp_path) -> None:
     """Left unset, the profile comes from dpkg-vendor on whatever host runs the check.
 
     lintian profiles are vendors, never suites: `--profile resolute` aborts with
-    "Could not find a profile matching: resolute/main".
+    "Could not find a profile matching: resolute/main". _package_root ships no
+    debian/changelog, so this is the fallback path, and the fallback stays pinned.
     """
     runner = FakeLintianRunner()
 
@@ -574,6 +579,70 @@ def test_lintian_runs_with_a_pinned_vendor_profile(tmp_path) -> None:
     assert LINTIAN_PROFILE in {"debian", "ubuntu"}
     assert argv[1:4] == ("--profile", LINTIAN_PROFILE, "--no-tag-display-limit")
     assert argv[:4] == LINTIAN_ARGV
+
+
+def _vendors_root(tmp_path, mapping: dict[str, tuple[str, ...]]):
+    root = tmp_path / "vendors"
+    for vendor, dists in mapping.items():
+        known = root / vendor / "main/data/changes-file/known-dists"
+        known.parent.mkdir(parents=True)
+        # A comment and a blank line, because lintian's real files carry both.
+        known.write_text(f"# List of {vendor} distributions\n\n" + "\n".join(dists) + "\n", encoding="utf-8")
+    return root
+
+
+def test_the_profile_follows_the_targeted_suite_not_the_build_host(tmp_path) -> None:
+    """The vendor decides which Distribution values a .changes may hold.
+
+    Grading an Ubuntu-targeted package against the Debian profile raised
+    bad-distribution-in-changes-file for a field that was correct, and since the
+    verdict is graded from tags, that rated a compliant package "failed".
+    """
+    vendors = _vendors_root(tmp_path, {"debian": ("sid", "trixie"), "ubuntu": ("resolute", "questing")})
+
+    assert lintian_vendor_for_suite("resolute", vendors_root=vendors) == "ubuntu"
+    assert lintian_vendor_for_suite("sid", vendors_root=vendors) == "debian"
+    # A qualified suite resolves through its base name.
+    assert lintian_vendor_for_suite("resolute-updates", vendors_root=vendors) == "ubuntu"
+    # Anything no installed vendor claims keeps the reproducible pinned verdict.
+    assert lintian_vendor_for_suite("UNRELEASED", vendors_root=vendors) == LINTIAN_PROFILE
+    assert lintian_vendor_for_suite("", vendors_root=vendors) == LINTIAN_PROFILE
+    assert lintian_vendor_for_suite("resolute", vendors_root=tmp_path / "absent") == LINTIAN_PROFILE
+    assert lintian_argv("resolute", vendors_root=vendors)[:3] == ("lintian", "--profile", "ubuntu")
+
+
+def test_this_package_resolves_to_the_vendor_it_actually_targets() -> None:
+    """The regression that started this: DistroForge grading its own package failed.
+
+    Read from the shipped changelog rather than a fixture, so the day the target
+    suite changes vendor this test is what notices.
+    """
+    from pathlib import Path
+
+    suite = debian_changelog_suite(Path(__file__).resolve().parents[1])
+
+    assert suite, "the shipped debian/changelog names no suite"
+    assert suite not in LINTIAN_VENDORS, f"{suite!r} is a vendor name, not a suite"
+    if not LINTIAN_VENDORS_ROOT.is_dir():
+        return  # lintian's vendor data is absent, so only the fallback is testable here
+    resolved = lintian_vendor_for_suite(suite)
+    assert resolved in LINTIAN_VENDORS
+    claimed = LINTIAN_VENDORS_ROOT / resolved / "main/data/changes-file/known-dists"
+    assert suite in claimed.read_text(encoding="utf-8").split(), (
+        f"{resolved!r} was chosen for {suite!r} but does not list it"
+    )
+
+
+def test_the_changelog_suite_reader_takes_the_first_of_several(tmp_path) -> None:
+    root = tmp_path / "pkg"
+    (root / "debian").mkdir(parents=True)
+    assert debian_changelog_suite(root) == ""
+    (root / "debian/changelog").write_text("distroforge (0.3.5-3) resolute; urgency=medium\n", encoding="utf-8")
+    assert debian_changelog_suite(root) == "resolute"
+    (root / "debian/changelog").write_text("distroforge (1-1) resolute questing; urgency=low\n", encoding="utf-8")
+    assert debian_changelog_suite(root) == "resolute"
+    (root / "debian/changelog").write_text("nonsense\n", encoding="utf-8")
+    assert debian_changelog_suite(root) == ""
 
 
 def test_lintian_errors_block_and_a_silent_run_passes() -> None:
@@ -661,11 +730,13 @@ def _changelog_suites() -> set[str]:
     return {line.split()[2].rstrip(";") for line in _changelog_versions()}
 
 
-def test_lintian_is_never_invoked_without_the_pinned_profile() -> None:
+def test_lintian_is_never_invoked_without_the_resolved_profile() -> None:
     from pathlib import Path
 
-    # Two call sites build a lintian command, and both must go through LINTIAN_ARGV;
-    # a third spelling would silently take the host's dpkg-vendor default.
+    # Every call site must go through lintian_argv(), which is the only place the
+    # program name and the --profile pair are spelled. A fourth spelling would
+    # silently take the host's dpkg-vendor default, which is the whole bug this
+    # module's comment describes.
     source = (Path(__file__).resolve().parents[1] / "distroforge/core/packaging.py").read_text(encoding="utf-8")
     building = [
         line.strip()
@@ -673,4 +744,13 @@ def test_lintian_is_never_invoked_without_the_pinned_profile() -> None:
         if '"lintian"' in line and "LINTIAN_ARGV" not in line and "==" not in line and "which" not in line
     ]
 
-    assert building == ['"LINTIAN.txt": "lintian",', '"lintian",'], building
+    assert building == [
+        # the one builder ...
+        'return ("lintian", "--profile", lintian_vendor_for_suite(suite, vendors_root=vendors_root), "--no-tag-display-limit")',
+        # ... and two check *names*, which are labels rather than argv.
+        '"LINTIAN.txt": "lintian",',
+        '"lintian",',
+    ], building
+    # No call site may reach past the builder to hand-assemble an invocation.
+    assert 'lintian_argv(suite)' in source
+    assert 'lintian_argv(debian_changelog_suite(root))' in source
