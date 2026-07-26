@@ -13,7 +13,9 @@ from distroforge.core.secureboot_assistant import (
 
 def run_restore_snapshot(args: argparse.Namespace) -> None:
     runner = CommandRunner(dry_run=not args.execute)
-    RollbackService(runner).restore(RestoreRequest(args.root, args.snapshot))
+    RollbackService(runner, use_sudo=not args.no_sudo).restore(
+        RestoreRequest(args.root, args.snapshot)
+    )
     print_command_history(runner)
 
 

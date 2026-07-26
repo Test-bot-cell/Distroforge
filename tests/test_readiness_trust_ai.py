@@ -72,7 +72,10 @@ def test_build_dry_run_records_source_signature_verification(tmp_path: Path) -> 
 
     commands = [spec.argv for spec in runner.history]
     assert ("trust-report", "ok", "2") in commands
-    assert ("gpg", "--verify", str(sig), str(iso)) in commands
+    # --status-fd 1 is what makes the pinned-fingerprint check possible: gpg has to
+    # name the signer on a machine-readable channel, otherwise --verify only proves
+    # that some key in the keyring signed the ISO.
+    assert ("gpg", "--status-fd", "1", "--verify", str(sig), str(iso)) in commands
     assert ("gpg-fingerprint-check", "ABCDEF1234567890") in commands
 
 

@@ -94,18 +94,28 @@ class SnapshotService:
             )
         )
 
+    def restore(self, name: str) -> None:
+        """Extract one named snapshot over the target root.
+
+        The single restore path. Snapshots are written by `sudo tar -cpf` and the
+        target root comes out of `sudo unsquashfs`, so both are root-owned: an
+        unprivileged extraction fails on the first entry, and -p cannot restore
+        owners without root either.
+        """
+        snapshot = self.snapshots_dir / f"{name}.tar.zst"
+        self.runner.run(
+            CommandSpec(
+                argv=sudo(("tar", "--zstd", "-xpf", str(snapshot), "-C", str(self.root)), self.use_sudo),
+                needs_root=self.use_sudo,
+                description=f"Restore rollback snapshot {name}",
+            )
+        )
+
     def restore_latest(self) -> None:
         if not self.options.enabled:
             return
         for name in reversed(self.options.phases):
-            snapshot = self.snapshots_dir / f"{name}.tar.zst"
-            if not snapshot.exists():
+            if not (self.snapshots_dir / f"{name}.tar.zst").exists():
                 continue
-            self.runner.run(
-                CommandSpec(
-                    argv=sudo(("tar", "--zstd", "-xpf", str(snapshot), "-C", str(self.root)), self.use_sudo),
-                    needs_root=self.use_sudo,
-                    description=f"Restore rollback snapshot {name}",
-                )
-            )
+            self.restore(name)
             return

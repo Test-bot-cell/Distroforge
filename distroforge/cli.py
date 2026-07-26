@@ -206,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("root", type=Path)
     restore_parser.add_argument("snapshot")
     restore_parser.add_argument("--execute", action="store_true")
+    restore_parser.add_argument("--no-sudo", action="store_true")
 
     templates_parser = sub.add_parser("autoinstall-templates", help="List or render autoinstall templates")
     templates_parser.add_argument("--render", choices=list(TEMPLATES))

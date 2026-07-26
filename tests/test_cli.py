@@ -335,8 +335,19 @@ def test_cli_restore_snapshot_dry_run_emits_plan(capsys, tmp_path) -> None:
     main(["restore-snapshot", str(tmp_path / "proj"), "snap1"])
 
     out = capsys.readouterr().out
-    assert "- tar --zstd -xpf" in out
+    # The snapshot and the target tree are both root-owned, so the restore has to
+    # be privileged. This assertion used to pin the unprivileged argv instead.
+    assert out.startswith("- sudo")
+    assert "tar --zstd -xpf" in out
     assert "snap1.tar.zst" in out
+
+
+def test_cli_restore_snapshot_can_drop_sudo(capsys, tmp_path) -> None:
+    main(["restore-snapshot", str(tmp_path / "proj"), "snap1", "--no-sudo"])
+
+    out = capsys.readouterr().out
+    assert "- tar --zstd -xpf" in out
+    assert "sudo" not in out
 
 
 def test_cli_secureboot_assist_dry_run_emits_plan(capsys, tmp_path) -> None:

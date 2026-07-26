@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec, sudo
+from .gpg import assert_signer, verify_argv
 from .host_artifacts import HostArtifactWriter
 
 
@@ -58,24 +59,23 @@ class IntegrityService:
     def verify_gpg(self, signature: Path, payload: Path, description: str) -> None:
         if self.options.require_gpg and not signature:
             raise ValueError(f"Missing required GPG signature for {description}")
-        argv = ["gpg", "--verify"]
-        if self.options.keyring:
-            argv = ["gpg", "--no-default-keyring", "--keyring", self.options.keyring, "--verify"]
-        argv.extend([str(signature), str(payload)])
-        self.runner.run(
+        result = self.runner.run(
             CommandSpec(
-                argv=sudo(argv, self.options.use_sudo),
+                argv=sudo(verify_argv(signature, payload, self.options.keyring), self.options.use_sudo),
                 needs_root=self.options.use_sudo,
                 description=f"Verify GPG: {description}",
             )
         )
         if self.options.fingerprint:
+            # The plan keeps naming the assertion; execution now performs it.
             self.runner.run(
                 CommandSpec(
                     argv=("gpg-fingerprint-assert", str(signature), self.options.fingerprint),
                     description=f"Assert GPG fingerprint for {description}",
                 )
             )
+            if not self.runner.dry_run:
+                assert_signer(result.stdout, self.options.fingerprint, description)
 
     def write_manifest(self, target: Path, entries: dict[str, str]) -> None:
         lines = [f"{key}: {value}" for key, value in sorted(entries.items())]

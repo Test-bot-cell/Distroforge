@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
+from .gpg import assert_signer, verify_argv
 
 
 @dataclass
@@ -140,20 +141,26 @@ class TrustService:
         if errors:
             raise ValueError("; ".join(f"{check.code}: {check.message}" for check in errors))
         if source_iso and options.source_signature:
-            runner.run(
+            result = runner.run(
                 CommandSpec(
-                    argv=("gpg", "--verify", str(options.source_signature), str(source_iso)),
+                    argv=verify_argv(options.source_signature, source_iso),
                     description="Verify detached source ISO signature",
                 ),
                 check=not runner.dry_run,
             )
             if options.source_gpg_fingerprint:
+                # The plan keeps naming the check; execution now performs it, so the
+                # promise made in _trust_checks is one the build actually keeps.
                 runner.run(
                     CommandSpec(
                         argv=("gpg-fingerprint-check", options.source_gpg_fingerprint),
                         description="Require expected source ISO signer fingerprint",
                     )
                 )
+                if not runner.dry_run:
+                    assert_signer(
+                        result.stdout, options.source_gpg_fingerprint, "the source ISO"
+                    )
         return report
 
     def _check_sha256(self, path: Path, expected: str) -> list[TrustCheck]:
