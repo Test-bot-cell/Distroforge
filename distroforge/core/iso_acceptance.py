@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .project import Project
 from .release_gate import ReleaseGateService
@@ -68,7 +69,7 @@ def accept_iso(
     output_dir: Path | None = None,
 ) -> IsoAcceptanceReport:
     options = options or BuildOptions()
-    iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    iso = iso or options.output_iso or default_output_iso(project)
     output_dir = output_dir or iso.parent
     report_path = output_dir / "ISO-BUILD.json"
     items: list[IsoAcceptanceItem] = []

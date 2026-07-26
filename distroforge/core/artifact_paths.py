@@ -35,10 +35,21 @@ class HostArtifactPaths:
         return json.dumps(self.to_dict(), indent=2)
 
 
+def default_output_iso(project: Project) -> Path:
+    """Canonical default ISO path.
+
+    The single source of truth for the name the builder produces. Consumers used
+    to fall back on an unversioned {name}.iso while the builder wrote
+    {name}-{version}.iso, so boot-proof, release-pipeline, iso-acceptance and
+    publish-drill all reported a missing ISO for an ISO that was right there.
+    """
+    return project.output_dir / f"{project.name}-{project.release.version}.iso"
+
+
 def default_artifact_paths(project: Project) -> HostArtifactPaths:
     output = project.output_dir
     return HostArtifactPaths(
-        output_iso=output / f"{project.name}.iso",
+        output_iso=default_output_iso(project),
         reports_dir=output / "reports",
         livefs_work_dir=output / "livefs-iso",
         live_build_dir=output / "live-build",

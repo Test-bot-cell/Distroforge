@@ -95,6 +95,7 @@ def forgeadvisor_doctor_ai_action(window) -> None:
 def forgeadvisor_explain_evidence_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
+    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -102,7 +103,7 @@ def forgeadvisor_explain_evidence_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
 
     def _work():
@@ -125,6 +126,7 @@ def forgeadvisor_explain_evidence_action(window) -> None:
 def forgeadvisor_fix_plan_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
+    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -132,7 +134,7 @@ def forgeadvisor_fix_plan_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
 
     def _work():
@@ -205,6 +207,7 @@ def forgeadvisor_search_local_action(window) -> None:
 def forgeadvisor_copilot_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
+    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -212,7 +215,7 @@ def forgeadvisor_copilot_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
     query = window.terminal_input.text().strip() or "evidence release readiness"
 

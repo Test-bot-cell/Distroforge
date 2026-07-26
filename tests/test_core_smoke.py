@@ -5,6 +5,7 @@ import json
 
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
 from distroforge.core.apt_cache import AptCacheOptions, AptCacheService
+from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.bootstrap import BootstrapService
 from distroforge.core.build import BuildOptions, BuildReport
 from distroforge.core.build_reports import BuildReportArtifactService
@@ -102,7 +103,8 @@ def test_iso_build_dry_run_writes_iso_build_report(monkeypatch, tmp_path) -> Non
 
     assert report.status == "planned"
     assert report.execute is False
-    assert report.output_iso == project.output_dir / "IsoPath.iso"
+    # The builder writes {name}-{version}.iso, so every consumer defaults there.
+    assert report.output_iso == project.output_dir / "IsoPath-26.04.iso"
     assert (project.output_dir / "ISO-BUILD.json").exists()
 
 
@@ -195,7 +197,7 @@ def test_iso_accept_blocks_missing_iso(tmp_path) -> None:
 def test_iso_accept_accepts_built_iso_with_evidence(tmp_path) -> None:
     project = Project.create("AcceptIso", tmp_path / "accept-iso", "26.04")
     project.source_mode = "bootstrap"
-    iso = project.output_dir / "AcceptIso.iso"
+    iso = default_output_iso(project)
     iso.parent.mkdir(parents=True, exist_ok=True)
     iso.write_bytes(b"accepted iso")
     sha = hashlib.sha256(iso.read_bytes()).hexdigest()
@@ -232,7 +234,7 @@ def test_demo_iso_creates_minimal_bootstrap_project(monkeypatch, tmp_path) -> No
     assert report.status == "planned"
     assert report.created is True
     assert project.source_mode == "bootstrap"
-    assert report.output_iso == project.output_dir / f"{project.name}.iso"
+    assert report.output_iso == default_output_iso(project)
     assert (project.output_dir / "DEMO-ISO.json").exists()
 
 

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .beginner_iso import repair_beginner_iso_release_artifacts
 from .boot_proof import run_boot_proof
 from .build import BuildOptions
@@ -69,7 +70,7 @@ def run_release_pipeline(
     boot_proof_backend: str = "auto",
 ) -> ReleasePipelineReport:
     options = options or BuildOptions()
-    iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    iso = iso or options.output_iso or default_output_iso(project)
     output_dir = output_dir or iso.parent
     bundle_dir = bundle_dir or project.output_dir / "publish"
     stages: list[ReleasePipelineStage] = []

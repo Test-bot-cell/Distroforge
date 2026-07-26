@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .iso_acceptance import IsoAcceptanceReport, accept_iso
 from .iso_build import IsoBuildReport, run_iso_build
@@ -64,7 +65,7 @@ class DemoIsoReport:
 
 def run_demo_iso(root: Path, *, name: str | None = None, release: str = "26.04", execute: bool = False, boot_proof_backend: str = "auto") -> DemoIsoReport:
     project, created = _load_or_create(root, name, release)
-    options = BuildOptions(output_iso=project.output_dir / f"{project.name}.iso")
+    options = BuildOptions(output_iso=default_output_iso(project))
     doctor = diagnose_iso_build(project, options)
     build = None
     acceptance = None
@@ -107,4 +108,4 @@ def _next_command(project: Project, execute: bool, doctor: IsoDoctorReport, buil
         return f"distroforge iso-build {root} --execute --boot-proof auto"
     if acceptance and acceptance.blocked:
         return acceptance.next_command
-    return f"distroforge publish-bundle {root} --iso {project.output_dir / f'{project.name}.iso'}"
+    return f"distroforge publish-bundle {root} --iso {default_output_iso(project)}"

@@ -42,10 +42,13 @@ class ReleaseArtifactService:
             )
         else:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+            # --output-iso can point anywhere, so hash where the ISO actually
+            # is. Running in output_dir failed outright, or silently hashed a
+            # stale namesake left over in dist/.
             result = self.runner.run(
                 CommandSpec(
                     argv=("sha256sum", self.iso_path.name),
-                    cwd=self.output_dir,
+                    cwd=self.iso_path.parent,
                     description="Compute ISO SHA256",
                 )
             )

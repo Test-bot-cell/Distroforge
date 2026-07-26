@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .command import CommandRunner
 from .doctor import apt_install_command
@@ -64,7 +65,7 @@ class IsoDoctorReport:
 
 def diagnose_iso_build(project: Project, options: BuildOptions | None = None, *, definition: Path | None = None) -> IsoDoctorReport:
     options = options or BuildOptions()
-    output_iso = options.output_iso or project.output_dir / f"{project.name}.iso"
+    output_iso = options.output_iso or default_output_iso(project)
     findings: list[IsoDoctorFinding] = []
     if output_iso.exists():
         findings.append(IsoDoctorFinding("info", "iso-exists", f"Output ISO already exists at {output_iso}.", "Run boot proof or publish drill."))

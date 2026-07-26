@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .command import CommandError, CommandRunner
 from .prebuild_vm import QemuLabService
@@ -83,7 +84,7 @@ def run_boot_proof(
     execute: bool = False,
 ) -> BootProofReport:
     options = options or BuildOptions()
-    iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    iso = iso or options.output_iso or default_output_iso(project)
     proof = project.output_dir / "boot-proof.json"
     qemu_report = project.output_dir / options.prebuild_vm.report_name
     attempted = (backend,)

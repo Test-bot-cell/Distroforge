@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .project import Project
 
 
@@ -73,7 +74,7 @@ class ReleaseExplainReport:
 
 
 def explain_release(project: Project, *, iso: Path | None = None, bundle_dir: Path | None = None) -> ReleaseExplainReport:
-    iso = iso or project.output_dir / f"{project.name}.iso"
+    iso = iso or default_output_iso(project)
     output_dir = iso.parent
     bundle_dir = bundle_dir or project.output_dir / "publish"
     gate = _read_json(bundle_dir / "RELEASE-GATE.json") or _read_json(output_dir / "RELEASE-GATE.json")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from distroforge.core.artifact_paths import default_artifact_paths
+from distroforge.core.artifact_paths import default_artifact_paths, default_output_iso
 from distroforge.core.boot_proof import run_boot_proof
 from distroforge.core.command import CommandRunner
 from distroforge.core.interaction_plan import available_interaction_plans, resolve_interaction_plan
@@ -287,7 +287,7 @@ def render_preview(root: Path, definition: Path | None, iso: Path | None, displa
 
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    target_iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    target_iso = iso or options.output_iso or default_output_iso(project)
     runner = CommandRunner(dry_run=not execute)
     report = QemuPreviewService(runner, target_iso, project.workdir, project.output_dir, QemuPreviewOptions(display=display)).run()
     return report.render_json() if json_output else report.render_text()
@@ -302,7 +302,7 @@ def render_qemu_interaction(root: Path | None, definition: Path | None, iso: Pat
     assert root is not None
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    target_iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    target_iso = iso or options.output_iso or default_output_iso(project)
     resolved = resolve_interaction_plan(plan, target_iso)
     runner = CommandRunner(dry_run=not execute)
     report = QemuInteractionService(runner, target_iso, project.workdir, project.output_dir, resolved, QemuInteractionOptions(display=display)).run()

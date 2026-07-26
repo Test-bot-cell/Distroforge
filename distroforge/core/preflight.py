@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .artifact_paths import default_output_iso
 from .command import CommandRunner, privilege_backend, sudo_askpass_program
 from .customize import desktop_conflicting_packages
 from .project import Project
@@ -39,7 +40,7 @@ def _validate_paths(project: Project, options: BuildOptions, execute: bool) -> l
             issues.append(ValidationIssue("warning", "source-extension", "Source image does not end with .iso"))
         if execute and not project.source_iso.exists():
             issues.append(ValidationIssue("error", "source-missing", f"Source ISO does not exist: {project.source_iso}"))
-    output_iso = options.output_iso or project.output_dir / f"{project.name}-{project.release.version}.iso"
+    output_iso = options.output_iso or default_output_iso(project)
     if output_iso.exists() and execute:
         issues.append(ValidationIssue("warning", "output-overwrite", f"Output ISO will be overwritten: {output_iso}"))
     root = project.root if project.root.exists() else project.root.parent

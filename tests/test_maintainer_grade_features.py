@@ -5,7 +5,7 @@ import json
 import pytest
 
 from distroforge.cli import main
-from distroforge.core.artifact_paths import default_artifact_paths
+from distroforge.core.artifact_paths import default_artifact_paths, default_output_iso
 from distroforge.core.boot_proof import run_boot_proof
 from distroforge.core.build import BuildOptions
 from distroforge.core.capture_diff import diff_capture_profile
@@ -73,7 +73,10 @@ def test_artifact_paths_are_host_paths_for_project(tmp_path) -> None:
 
     paths = default_artifact_paths(project)
 
-    assert paths.output_iso == project.output_dir / "ForgeLab.iso"
+    # The unversioned name was the defect: the builder writes ForgeLab-26.04.iso,
+    # so boot-proof and the release stages used to look for an ISO that never
+    # existed and reported it missing while it sat right next to them.
+    assert paths.output_iso == project.output_dir / "ForgeLab-26.04.iso"
     assert paths.reports_dir == project.output_dir / "reports"
     assert "livefs_work_dir" in paths.to_dict()
 
@@ -274,7 +277,7 @@ def test_verify_release_bundle_blocks_manifest_mismatch(tmp_path) -> None:
 def test_release_pipeline_runs_publish_sign_notes_and_verify(tmp_path) -> None:
     project = Project.create("PipelineBundle", tmp_path / "pipeline-bundle", "26.04")
     project.source_mode = "bootstrap"
-    iso = project.output_dir / "PipelineBundle.iso"
+    iso = default_output_iso(project)
     iso.write_bytes(b"iso")
     options = BuildOptions()
     options.prebuild_vm.enabled = True
@@ -350,7 +353,7 @@ def test_publish_drill_runs_safe_rehearsal_without_signing(monkeypatch, tmp_path
     monkeypatch.setattr("distroforge.core.boot_proof.CommandRunner.has_binary", lambda name: False)
     project = Project.create("DrillMe", tmp_path / "drill-me", "26.04")
     project.source_mode = "bootstrap"
-    iso = project.output_dir / "DrillMe.iso"
+    iso = default_output_iso(project)
     _write_bootable_iso(iso)
     digest = __import__("hashlib").sha256(iso.read_bytes()).hexdigest()
     (project.output_dir / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")

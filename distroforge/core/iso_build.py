@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
 from .command import CommandRunner
@@ -82,7 +83,7 @@ def run_iso_build(
     log_path: Path | None = None,
 ) -> IsoBuildReport:
     options = options or BuildOptions()
-    options.output_iso = options.output_iso or project.output_dir / f"{project.name}.iso"
+    options.output_iso = options.output_iso or default_output_iso(project)
     doctor = diagnose_iso_build(project, options, definition=definition)
     boot_report = None
     steps: tuple[str, ...] = ()

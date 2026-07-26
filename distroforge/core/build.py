@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .apt import PackagePlan
 from .apt_cache import AptCacheOptions
+from .artifact_paths import default_output_iso
 from .autoinstall import AutoinstallOptions
 from .bootcheck import BootCheckOptions
 from .bootstrap import BootstrapOptions
@@ -196,6 +197,16 @@ class BuildOrchestrator:
                 fs.copy_file(script, target / script.name, f"Stage chroot hook {script.name}", mode="0755")
         return True
 
+    def _unstage_chroot_hooks(self) -> None:
+        # Staged hooks are project scripts that may carry credentials or build
+        # logic. REPACK_FILESYSTEM repacks squashfs_root with no exclusions, so
+        # anything left here ships inside filesystem.squashfs. Removed the same
+        # way policy-rc.d is, in a finally so a failing hook cannot keep it.
+        FileSystemOps(self.runner, self.options.use_sudo).remove_tree(
+            self.project.squashfs_root / "distroforge-hooks",
+            "Remove staged chroot hooks from target root",
+        )
+
     def _merged_package_plan(self) -> PackagePlan:
         desktop_plan = desktop_package_plan(self.project.customization, family=self.project.release.family)
         project_packages, project_conflicts = split_desktop_packages(
@@ -258,7 +269,7 @@ class BuildOrchestrator:
     def _output_iso(self) -> Path:
         if self.options.output_iso:
             return self.options.output_iso
-        return self.project.output_dir / f"{self.project.name}-{self.project.release.version}.iso"
+        return default_output_iso(self.project)
 
     def _require_source_iso(self) -> Path:
         if not self.project.source_iso:

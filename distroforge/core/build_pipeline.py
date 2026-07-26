@@ -575,7 +575,10 @@ def customize_target(orch: BuildOrchestrator, services: BuildServices) -> None:
         orch._step(BuildPhase.RUN_HOOKS, "Run customization hooks", "hooks")
         hooks.run_phase(orch.project.root / "hooks", "pre-host")
         if orch._stage_chroot_hooks():
-            chroot.run("run-parts", "/distroforge-hooks")
+            try:
+                chroot.run("run-parts", "/distroforge-hooks")
+            finally:
+                orch._unstage_chroot_hooks()
 
         orch._step(
             BuildPhase.SANITIZE_TARGET,

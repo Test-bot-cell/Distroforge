@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .artifact_paths import default_output_iso
 from .command import CommandRunner, privilege_backend, sudo_askpass_program
 from .diff_preview import DiffPreviewService
 from .doctor import REQUIRED_TOOLS, run_doctor
@@ -277,7 +278,7 @@ def _add_artifact_findings(project: Project, options: BuildOptions, add) -> None
             f"Output directory is not empty: {project.output_dir}",
             "Review or clean old artifacts before publishing new media.",
         )
-    output_iso = options.output_iso or project.output_dir / f"{project.name}-{project.release.version}.iso"
+    output_iso = options.output_iso or default_output_iso(project)
     if output_iso.exists():
         add(
             "warning",

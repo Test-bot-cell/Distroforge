@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .host_artifacts import write_host_artifact
 from .project import Project
@@ -78,7 +79,7 @@ def run_publish_drill(
     boot_backend: str = "auto",
 ) -> PublishDrillReport:
     options = options or BuildOptions()
-    iso = iso or options.output_iso or project.output_dir / f"{project.name}.iso"
+    iso = iso or options.output_iso or default_output_iso(project)
     bundle_dir = bundle_dir or project.output_dir / "publish"
     pipeline = run_release_pipeline(
         project,

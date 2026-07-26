@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.command import CommandRunner
 from distroforge.core.doctor import (
     install_packages_for_debian_dev,
@@ -105,7 +106,7 @@ def run_preview_action(window) -> None:
     assert window.project
     project, options = window.project, window._build_options()
     display = window.preview_display_combo.currentData() or "gtk"
-    target_iso = options.output_iso or project.output_dir / f"{project.name}.iso"
+    target_iso = options.output_iso or default_output_iso(project)
 
     def _work():
         runner = CommandRunner(dry_run=True)
@@ -129,7 +130,7 @@ def run_interaction_action(window) -> None:
     assert window.project
     project, options = window.project, window._build_options()
     plan_name = window.interaction_plan_combo.currentData() or "boot-capture"
-    target_iso = options.output_iso or project.output_dir / f"{project.name}.iso"
+    target_iso = options.output_iso or default_output_iso(project)
 
     def _work():
         runner = CommandRunner(dry_run=True)
