@@ -401,23 +401,32 @@ class KernelModuleService:
         return filename.removeprefix("linux-").removesuffix(".tar.xz")
 
 
-def _version_key(text: str) -> tuple[object, ...]:
-    parts: list[object] = []
+def _version_key(text: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort key for a /lib/modules directory name, orderable against any other.
+
+    Entries there are not all kernel versions: an ext4 target root carries
+    lost+found, and vendor trees add their own. The parts used to be bare ints and
+    strs, so sorting raised "'<' not supported between instances of 'str' and
+    'int'" as soon as one non-numeric name appeared. Each part now carries a rank,
+    so text never meets an int; text ranks below numbers, which keeps a real
+    kernel version above a stray directory.
+    """
+    parts: list[tuple[int, int | str]] = []
     buf = ""
     is_digit = False
     for ch in text:
         if ch.isdigit():
             if buf and not is_digit:
-                parts.append(buf)
+                parts.append((0, buf))
                 buf = ""
             is_digit = True
             buf += ch
         else:
             if buf and is_digit:
-                parts.append(int(buf))
+                parts.append((1, int(buf)))
                 buf = ""
             is_digit = False
             buf += ch
     if buf:
-        parts.append(int(buf) if is_digit else buf)
+        parts.append((1, int(buf)) if is_digit else (0, buf))
     return tuple(parts)
