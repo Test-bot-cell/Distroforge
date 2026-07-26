@@ -38,8 +38,11 @@ class BuildPageWindow(Protocol):
     workflow_level_status_label: QWidget
     privilege_status_label: QWidget
     snapshot_status_label: QWidget
+    preset_status_label: QWidget
     plan_steps_list: QWidget
     plan_view: QWidget
+
+    def _clear_build_preset(self) -> None: ...
 
     def _show_plan(self) -> None: ...
 
@@ -138,6 +141,16 @@ def build_build_page(window: BuildPageWindow) -> QWidget:
     runtime.addWidget(window.workflow_level_status_label)
     runtime.addWidget(window.privilege_status_label)
     runtime.addWidget(window.snapshot_status_label)
+    # The imported-preset state is the one thing on this page a user cannot read
+    # off the fields, so it gets a single status line in words plus the local
+    # escape hatch, next to the flags it used to override silently.
+    runtime.addWidget(
+        responsive_row(
+            window.preset_status_label,
+            button("Clear preset", window._clear_build_preset, "clear"),
+            breakpoint=720,
+        )
+    )
     runtime.addWidget(sanitize_flags)
     runtime.addWidget(cache_flags)
     release = QVBoxLayout()

@@ -11,6 +11,7 @@ from distroforge.core.derivative_profile import DerivativeProfileService
 from distroforge.core.distro_profile import DistroProfileService
 from distroforge.core.project import Project
 from distroforge.ui.qt import QFileDialog
+from distroforge.ui.recipe_actions import load_build_preset_into_window
 
 
 def _selected_derivative_dockerfile(window) -> Path | None:
@@ -100,9 +101,7 @@ def create_derivative_project_action(window) -> None:
     target = project.root / f"{profile}-derivative.yaml"
     write_definition(definition_from_project(project, options, {"derivative": str(profile)}), target)
     window.project = project
-    window.loaded_preset_options = options
-    window.loaded_preset_path = target
-    window._refresh()
+    load_build_preset_into_window(window, options, target)
     window.profile_view.setPlainText(plan.render_text() + f"\nCreated {root}\nWrote {target}")
     window._log(f"Created derivative project {root}")
     window._open_surface("packages")

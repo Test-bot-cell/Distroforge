@@ -5,6 +5,7 @@ from pathlib import Path
 from distroforge.core.apt import PackagePlan
 from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.build import BuildOptions
+from distroforge.core.build_diagnosis import classify_log
 from distroforge.core.build_journey import JOURNEY_STEPS
 from distroforge.core.customize import load_desktops
 from distroforge.core.derivative_profile import DerivativeProfileService
@@ -56,6 +57,7 @@ from distroforge.ui.branding_actions import (
 )
 from distroforge.ui.build_controller import BuildController
 from distroforge.ui.build_guidance import (
+    preset_status_text,
     privilege_status_text,
 )
 from distroforge.ui.build_options_mapper import build_options_from_window
@@ -507,6 +509,11 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
             privilege_status_text(self.sudo_check.isChecked(), self.pkexec_check.isChecked())
         )
 
+    def _refresh_preset_status(self) -> None:
+        if not hasattr(self, "preset_status_label"):
+            return
+        self.preset_status_label.setText(preset_status_text(self.loaded_preset_path))
+
     def _customization_page(self) -> QWidget:
         return build_customization_page(self)
 
@@ -910,7 +917,7 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
                 continue
             if event.kind == "error":
                 self._log(f"ERROR: {event.message}")
-                QMessageBox.critical(self, "DistroForge", event.message)
+                self._show_build_failure(event.message)
             elif event.kind == "journey":
                 self.journey_view.setPlainText(event.message)
             else:
@@ -922,6 +929,26 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
                 self.job_timer.stop()
         if not self.build_job.running and not self.job_timer.isActive():
             self.build_job = None
+
+    def _show_build_failure(self, message: str) -> None:
+        """Name the failure and its next action; keep the raw text one click away.
+
+        GuiJob flattens any exception into ``str(exc)`` and this dialog used to
+        show exactly that: descriptive, with nothing to do about it. The canonical
+        taxonomy in ``core/build_diagnosis.py`` already gives the beginner path a
+        title, a plain-language detail and a remediation for the same log, so the
+        standard Execute path reads its verdict from there too. Progressive
+        disclosure: one status point in words, the log behind Show Details.
+        """
+        log_tail = "\n".join([self.logs.toPlainText(), message])[-12000:]
+        rule = classify_log(log_tail)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("DistroForge")
+        box.setText(f"Build failed: {rule.title}")
+        box.setInformativeText(f"{rule.detail}\n\nNext: {rule.remediation}")
+        box.setDetailedText(message)
+        box.exec()
 
     def _cancel_job(self) -> None:
         if not self.build_job or not self.build_job.running:
@@ -1026,6 +1053,7 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         # Start cards all render the same (project, options, level) triple, so
         # computing it three times only multiplied the engine's per-step checks.
         report = journey_report(self)
+        self._refresh_preset_status()
         if hasattr(self, "journey_spine"):
             self.journey_spine.refresh(report)
         for header in getattr(self, "_step_focus_headers", ()):

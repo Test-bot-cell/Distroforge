@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 
@@ -50,6 +50,8 @@ from .users import UserOptions, UserSpec
 from .vulnscan import VulnScanOptions
 
 PRESET_SCHEMA_VERSION = "distroforge.preset.v1"
+
+GroupT = TypeVar("GroupT")
 
 
 def load_definition(path: Path) -> dict[str, object]:
@@ -104,7 +106,7 @@ def definition_from_project(
         "customization": project.customization.to_dict(),
         "bootstrap": _clean(options.bootstrap),
         "sanitize": _clean(options.sanitize),
-        "snaps": [_snap_spec(value) for value in options.snaps.specs],
+        "snaps": [value.spec() for value in options.snaps.specs],
         "drivers": _clean(options.drivers),
         "release_track": _clean(options.release_track),
         "system_sync": _clean(options.system_sync),
@@ -154,41 +156,9 @@ def apply_definition(project: Project, data: dict[str, object]) -> BuildOptions:
     if customization := data.get("customization"):
         project.customization = IsoCustomization.from_dict(customization)  # type: ignore[arg-type]
 
-    snaps = [SnapSpec.parse(str(value)) for value in data.get("snaps", [])]
     qa = data.get("qa", {})
-    release_track = data.get("release_track", {})
-    system_sync = data.get("system_sync", {})
-    sanitize = data.get("sanitize", {})
-    autoinstall = data.get("autoinstall", {})
-    branding = data.get("branding", {})
-    drivers = data.get("drivers", {})
-    seeds = data.get("seeds", {})
-    ppa = data.get("ppa", {})
-    apt_cache = data.get("apt_cache", {})
-    snapshots = data.get("snapshots", {})
-    oem = data.get("oem", {})
-    systemd = data.get("systemd", {})
-    users = data.get("users", [])
-    network = data.get("network", {})
-    mirrors = data.get("mirrors", {})
-    kiosk = data.get("kiosk", {})
-    bootcheck = data.get("bootcheck", {})
-    prebuild_vm = data.get("prebuild_vm", {})
-    qemu_screenshot = data.get("qemu_screenshot", {})
-    policy = data.get("policy", {})
-    size_analysis = data.get("size_analysis", {})
-    reproducible = data.get("reproducible", {})
-    kernel = data.get("kernel", {})
-    desktop_source = data.get("desktop_source", {})
     plugins = data.get("plugins", {})
-    release_artifacts = data.get("release_artifacts", {})
-    html_report = data.get("html_report", {})
     import_scripts = data.get("import_scripts", [])
-    trust = data.get("trust", {})
-    bootstrap = data.get("bootstrap", {})
-    secure_boot = data.get("secure_boot", {})
-    provenance = data.get("provenance", {})
-    vuln_scan = data.get("vuln_scan", {})
     return BuildOptions(
         output_iso=Path(str(data["output_iso"])) if data.get("output_iso") else None,
         package_plan=PackagePlan(
@@ -197,76 +167,68 @@ def apply_definition(project: Project, data: dict[str, object]) -> BuildOptions:
         ),
         run_preview=bool(data.get("preview", False)),
         run_synaptic=bool(data.get("synaptic", False)),
-        sanitize=SanitizeOptions(**sanitize) if isinstance(sanitize, dict) else SanitizeOptions(),
-        bootstrap=BootstrapOptions(**bootstrap)
-        if isinstance(bootstrap, dict)
-        else BootstrapOptions(),
-        snaps=SnapOptions(snaps),
-        drivers=DriverOptions(**drivers) if isinstance(drivers, dict) else DriverOptions(),
-        autoinstall=AutoinstallOptions(**autoinstall) if isinstance(autoinstall, dict) else AutoinstallOptions(),
-        branding=BrandingOptions(**branding) if isinstance(branding, dict) else BrandingOptions(),
-        secure_boot=SecureBootOptions(**secure_boot)
-        if isinstance(secure_boot, dict)
-        else SecureBootOptions(),
-        provenance=ProvenanceOptions(**provenance)
-        if isinstance(provenance, dict)
-        else ProvenanceOptions(),
-        seeds=SeedOptions(**seeds) if isinstance(seeds, dict) else SeedOptions(),
+        sanitize=_group(data, "sanitize", SanitizeOptions),
+        bootstrap=_group(data, "bootstrap", BootstrapOptions),
+        snaps=SnapOptions([SnapSpec.parse(str(value)) for value in data.get("snaps", [])]),
+        drivers=_group(data, "drivers", DriverOptions),
+        autoinstall=_group(data, "autoinstall", AutoinstallOptions),
+        branding=_group(data, "branding", BrandingOptions),
+        secure_boot=_group(data, "secure_boot", SecureBootOptions),
+        provenance=_group(data, "provenance", ProvenanceOptions),
+        seeds=_group(data, "seeds", SeedOptions),
         qa=QaOptions(list(qa.get("scenarios", []))) if isinstance(qa, dict) else QaOptions(),
-        release_track=ReleaseTrackOptions(**release_track)
-        if isinstance(release_track, dict)
-        else ReleaseTrackOptions(),
-        system_sync=SystemSyncOptions(**system_sync)
-        if isinstance(system_sync, dict)
-        else SystemSyncOptions(),
-        ppa=_ppa_options(ppa),
-        apt_cache=AptCacheOptions(**apt_cache)
-        if isinstance(apt_cache, dict)
-        else AptCacheOptions(),
-        snapshots=SnapshotOptions(**snapshots)
-        if isinstance(snapshots, dict)
-        else SnapshotOptions(),
-        oem=OemOptions(**oem) if isinstance(oem, dict) else OemOptions(),
-        systemd=SystemdOptions(**systemd) if isinstance(systemd, dict) else SystemdOptions(),
-        users=UserOptions(_user_specs(users)),
-        network=NetworkOptions(**network) if isinstance(network, dict) else NetworkOptions(),
-        mirrors=MirrorOptions(**mirrors) if isinstance(mirrors, dict) else MirrorOptions(),
-        kiosk=KioskOptions(**kiosk) if isinstance(kiosk, dict) else KioskOptions(),
-        bootcheck=BootCheckOptions(**bootcheck)
-        if isinstance(bootcheck, dict)
-        else BootCheckOptions(),
-        prebuild_vm=PrebuildVmOptions(**prebuild_vm)
-        if isinstance(prebuild_vm, dict)
-        else PrebuildVmOptions(),
-        qemu_screenshot=QemuScreenshotOptions(**qemu_screenshot)
-        if isinstance(qemu_screenshot, dict)
-        else QemuScreenshotOptions(),
-        policy=PolicyOptions(**policy) if isinstance(policy, dict) else PolicyOptions(),
-        size_analysis=SizeAnalysisOptions(**size_analysis)
-        if isinstance(size_analysis, dict)
-        else SizeAnalysisOptions(),
-        reproducible=ReproducibleOptions(**reproducible)
-        if isinstance(reproducible, dict)
-        else ReproducibleOptions(),
-        kernel_module=KernelModuleOptions(**kernel)
-        if isinstance(kernel, dict)
-        else KernelModuleOptions(),
-        desktop_source=_desktop_source_options(desktop_source),
+        release_track=_group(data, "release_track", ReleaseTrackOptions),
+        system_sync=_group(data, "system_sync", SystemSyncOptions),
+        ppa=_ppa_options(data.get("ppa", {})),
+        apt_cache=_group(data, "apt_cache", AptCacheOptions),
+        snapshots=_group(data, "snapshots", SnapshotOptions),
+        oem=_group(data, "oem", OemOptions),
+        systemd=_group(data, "systemd", SystemdOptions),
+        users=UserOptions(_user_specs(data.get("users", []))),
+        network=_group(data, "network", NetworkOptions),
+        mirrors=_group(data, "mirrors", MirrorOptions),
+        kiosk=_group(data, "kiosk", KioskOptions),
+        bootcheck=_group(data, "bootcheck", BootCheckOptions),
+        prebuild_vm=_group(data, "prebuild_vm", PrebuildVmOptions),
+        qemu_screenshot=_group(data, "qemu_screenshot", QemuScreenshotOptions),
+        policy=_group(data, "policy", PolicyOptions),
+        size_analysis=_group(data, "size_analysis", SizeAnalysisOptions),
+        reproducible=_group(data, "reproducible", ReproducibleOptions),
+        kernel_module=_group(data, "kernel", KernelModuleOptions),
+        desktop_source=_desktop_source_options(data.get("desktop_source", {})),
         plugins=PluginOptions(Path(str(plugins["plugins_dir"])))
         if isinstance(plugins, dict) and plugins.get("plugins_dir")
         else PluginOptions(),
-        release_artifacts=ReleaseArtifactOptions(**release_artifacts)
-        if isinstance(release_artifacts, dict)
-        else ReleaseArtifactOptions(),
-        html_report=HtmlReportOptions(**html_report)
-        if isinstance(html_report, dict)
-        else HtmlReportOptions(),
+        release_artifacts=_group(data, "release_artifacts", ReleaseArtifactOptions),
+        html_report=_group(data, "html_report", HtmlReportOptions),
         import_scripts=ImportOptions([Path(str(path)) for path in import_scripts])
         if isinstance(import_scripts, list)
         else ImportOptions([]),
-        trust=_trust_options(trust),
-        vuln_scan=VulnScanOptions(**vuln_scan) if isinstance(vuln_scan, dict) else VulnScanOptions(),
+        trust=_trust_options(data.get("trust", {})),
+        vuln_scan=_group(data, "vuln_scan", VulnScanOptions),
     )
+
+
+def _group(data: dict[str, object], key: str, cls: type[GroupT]) -> GroupT:
+    """Build one options group from a definition mapping, validating its keys.
+
+    ``schema.py`` models only eight nested groups, so a typo in any other group
+    reached the dataclass constructor as an unexpected keyword. That raises
+    ``TypeError``, which ``cli.py`` does not catch: the user got a Python
+    traceback instead of ``distroforge: error: ...``. Re-raising as ``ValueError``
+    puts the group back on the friendly path while keeping the interpreter's own
+    "Did you mean 'logs'?" suggestion in the message.
+
+    Groups needing more than keyword unpacking (``qa``, ``ppa``, ``trust``,
+    ``desktop_source``, ``users``, ``plugins``) keep their dedicated handlers.
+    """
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        return cls()
+    try:
+        return cls(**value)
+    except TypeError as exc:
+        raise ValueError(f"Invalid definition group {key!r}: {exc}") from exc
 
 
 def _trust_options(data: object) -> TrustOptions:
@@ -371,24 +333,9 @@ def _without_base(values: list[str], base: list[str]) -> list[str]:
     return [value for value in values if value not in base_set]
 
 
-def _snap_spec(value: SnapSpec) -> str:
-    parts = [value.name]
-    if value.channel != "stable" or value.classic:
-        parts.append(value.channel)
-    if value.classic:
-        parts.append("classic")
-    return ":".join(parts)
-
-
 def _ppa_definition(options: PpaOptions) -> dict[str, object]:
-    values = []
-    for ppa in options.ppas:
-        value = f"ppa:{ppa.owner}/{ppa.name}"
-        if ppa.fingerprint:
-            value = f"{value}@{ppa.fingerprint}"
-        values.append(value)
     return {
-        "ppas": values,
+        "ppas": [ppa.spec() for ppa in options.ppas],
         "require_fingerprint": options.require_fingerprint,
         "auto_fetch_fingerprint": options.auto_fetch_fingerprint,
         "keyserver": options.keyserver,

@@ -11,6 +11,7 @@ from distroforge.core.definition import (
 )
 from distroforge.core.education import render_guided_recipes
 from distroforge.core.recipe import export_recipe, load_recipe
+from distroforge.ui.build_options_mapper import apply_build_options_to_window
 from distroforge.ui.qt import QFileDialog
 
 
@@ -95,14 +96,27 @@ def import_build_preset_action(window) -> None:
     try:
         data = load_definition(Path(path))
         assert window.project
-        window.loaded_preset_options = apply_definition(window.project, data)
-        window.loaded_preset_path = Path(path)
+        options = apply_definition(window.project, data)
     except Exception as exc:
         window._error(str(exc))
         return
-    window._refresh()
+    load_build_preset_into_window(window, options, Path(path))
     window.recipe_view.setPlainText(json.dumps(data, indent=2))
     window._log(f"Imported build preset {path}")
+
+
+def load_build_preset_into_window(window, options, path: Path) -> None:
+    """Adopt an applied definition the way the CLI does: hydrate, then let edits win.
+
+    ``build_options_from_window`` used to return the preset verbatim, so every
+    widget it normally reads became decorative. Hydrating the widgets here is the
+    GUI twin of ``build.py`` applying ``--definition`` before ``apply_cli_overrides``
+    re-applies the explicit flags.
+    """
+    window.loaded_preset_options = options
+    window.loaded_preset_path = path
+    apply_build_options_to_window(window, options)
+    window._refresh()
 
 
 def clear_build_preset_action(window) -> None:
@@ -110,6 +124,7 @@ def clear_build_preset_action(window) -> None:
     window.loaded_preset_path = None
     if hasattr(window, "recipe_view"):
         window.recipe_view.clear()
+    window._refresh()
     window._log("Cleared imported build preset")
 
 

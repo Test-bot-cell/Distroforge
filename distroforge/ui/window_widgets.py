@@ -7,7 +7,11 @@ from distroforge.core.interaction_plan import available_interaction_plans
 from distroforge.core.source_starter import list_source_starters
 from distroforge.core.workflows import WORKFLOW_LEVELS, get_workflow_level
 from distroforge.ui import preferences
-from distroforge.ui.build_guidance import SNAPSHOT_STATUS_TEXT, WORKFLOW_LEVEL_STATUS_TEXT
+from distroforge.ui.build_guidance import (
+    NO_PRESET_STATUS_TEXT,
+    SNAPSHOT_STATUS_TEXT,
+    WORKFLOW_LEVEL_STATUS_TEXT,
+)
 from distroforge.ui.qt import (
     QCheckBox,
     QComboBox,
@@ -231,6 +235,8 @@ def build_window_widgets(window) -> None:
     window.privilege_status_label.setWordWrap(True)
     window.snapshot_status_label = QLabel(SNAPSHOT_STATUS_TEXT)
     window.snapshot_status_label.setWordWrap(True)
+    window.preset_status_label = QLabel(NO_PRESET_STATUS_TEXT)
+    window.preset_status_label.setWordWrap(True)
     window.sudo_check.toggled.connect(window._refresh_privilege_status)
     window.pkexec_check.toggled.connect(window._refresh_privilege_status)
     window._refresh_privilege_status()

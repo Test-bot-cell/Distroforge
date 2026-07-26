@@ -20,6 +20,15 @@ class SnapSpec:
         classic = "classic" in parts[2:] if len(parts) > 2 else False
         return cls(name=name, channel=channel, classic=classic)
 
+    def spec(self) -> str:
+        """The ``--snap`` / definition text form, the inverse of :meth:`parse`."""
+        parts = [self.name]
+        if self.channel != "stable" or self.classic:
+            parts.append(self.channel)
+        if self.classic:
+            parts.append("classic")
+        return ":".join(parts)
+
 
 @dataclass
 class SnapOptions:

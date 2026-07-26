@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -65,73 +66,32 @@ def test_tar_relative_symlink_cannot_escape_the_destination(tmp_path: Path) -> N
         path_actions._safe_extract_tar(archive, destination)
 
 
-class _Text:
-    def __init__(self, value: str = "") -> None:
-        self._value = value
+@pytest.fixture(scope="module")
+def qt_app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from distroforge.ui.qt import QApplication
 
-    def toPlainText(self) -> str:
-        return self._value
-
-    def text(self) -> str:
-        return self._value
-
-
-class _Check:
-    def __init__(self, checked: bool = False) -> None:
-        self._checked = checked
-
-    def isChecked(self) -> bool:
-        return self._checked
-
-
-class _Combo:
-    def __init__(self, data: object = None) -> None:
-        self._data = data
-
-    def currentData(self) -> object:
-        return self._data
-
-
-class _Project:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.source_iso: Path | None = None
-        self.source_mode = "iso"
-
-
-class _Window:
-    """Minimal stand-in for the Command Center window."""
-
-    def __init__(self, root: Path, install: str) -> None:
-        self.project = _Project(root)
-        self.install_edit = _Text(install)
-        self.remove_edit = _Text()
-        self.desktop_combo = _Combo()
-        self.source_iso_sha256_edit = _Text()
-        self.source_iso_signature_edit = _Text()
-        self.source_iso_gpg_fingerprint_edit = _Text()
-        self.require_source_checksum_check = _Check()
-        self.require_source_signature_check = _Check()
-        self.mirrors_check = _Check()
-        self.mirror_archive_edit = _Text()
-        self.mirror_security_edit = _Text()
-        self.mirror_country_edit = _Text()
-        self.mirror_allow_http_check = _Check()
-        self.mirror_override_security_check = _Check()
-        self.policy_strict_check = _Check()
-        self.brand_compliance_mode_combo = _Combo("advisory")
-
-    def _sync_project_from_ui(self) -> None:
-        return None
+    return QApplication.instance() or QApplication([])
 
 
 # The Command Center offers this string for copy-paste into a shell, so the
 # oracle has to be a real shell round-trip. A shlex.split oracle would pass
 # even when the string expands, because shlex performs no expansion at all.
-def test_cli_equivalent_survives_a_shell_round_trip(tmp_path: Path) -> None:
+# The preview now renders every build option, so the window has to be the real
+# one: a hand-written stand-in would only cover the fields it happened to define.
+def test_cli_equivalent_survives_a_shell_round_trip(tmp_path: Path, qt_app) -> None:
+    from distroforge.core.project import Project
     from distroforge.ui.cli_equivalent import build_cli_equivalent
+    from distroforge.ui.main_window import MainWindow
 
-    window = _Window(tmp_path / "project", "\n".join(HOSTILE_TOKENS))
+    window = MainWindow()
+    window.project = Project.create("Hostile", tmp_path / "project", "26.04")
+    window.install_edit.setPlainText("\n".join(HOSTILE_TOKENS))
+    # Hostile text also has to survive the fields the preview used to drop.
+    window.kiosk_check.setChecked(True)
+    window.kiosk_url_edit.setText(HOSTILE_TOKENS[0])
+    window.brand_pretty_name_edit.setText(HOSTILE_TOKENS[3])
+    window.snap_specs_edit.setPlainText(HOSTILE_TOKENS[1])
     rendered = build_cli_equivalent(window)
 
     # Give the shell a directory with files so an unquoted "*" would expand.

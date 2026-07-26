@@ -32,6 +32,11 @@ class PpaSpec:
     def slug(self) -> str:
         return f"{self.owner}-{self.name}".replace("/", "-")
 
+    def spec(self) -> str:
+        """The ``--ppa`` / definition text form, the inverse of :meth:`parse`."""
+        value = f"ppa:{self.owner}/{self.name}"
+        return f"{value}@{self.fingerprint}" if self.fingerprint else value
+
 
 @dataclass
 class PpaOptions:

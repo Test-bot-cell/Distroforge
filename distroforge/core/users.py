@@ -15,6 +15,16 @@ class UserSpec:
     groups: list[str] = field(default_factory=lambda: ["sudo", "audio", "video"])
     shell: str = "/bin/bash"
 
+    def spec(self) -> str:
+        """The ``--user`` / GUI text form, ``name[:group,group[:password_hash]]``.
+
+        The groups are always written out, so a non-default group list survives a
+        round trip instead of falling back to the parser's default triple.
+        """
+        return ":".join(
+            [self.name, ",".join(self.groups), self.password_hash or ""]
+        ).rstrip(":")
+
 
 @dataclass
 class UserOptions:

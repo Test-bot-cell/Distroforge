@@ -15,6 +15,7 @@ from distroforge.core.project import Project
 from distroforge.core.systemd_image import SystemdImagePlan
 from distroforge.core.upgrade_media import UpgradeMediaPreflight
 from distroforge.ui.qt import QFileDialog
+from distroforge.ui.recipe_actions import load_build_preset_into_window
 
 
 def _split_values(text: str) -> list[str]:
@@ -183,9 +184,7 @@ def rebuild_from_capture_action(window) -> None:
     window.project.save()
     preset = root / "captured-profile.yaml"
     write_definition(definition_from_project(window.project, options, {"source": str(profile_path)}), preset)
-    window.loaded_preset_options = options
-    window.loaded_preset_path = preset
-    window._refresh()
+    load_build_preset_into_window(window, options, preset)
     window.capture_view.setPlainText(f"Created rebuild project {root}\nPreset: {preset}")
     window._log(f"Created rebuild project from capture: {root}")
 

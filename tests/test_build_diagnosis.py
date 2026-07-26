@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 import distroforge.core.beginner_iso as beginner_iso_module
 from distroforge.ai.forgeadvisor import ForgeAdvisor
@@ -54,6 +57,78 @@ def test_both_consumers_agree_on_the_same_log(tmp_path: Path) -> None:
     advisor_codes = {finding.code for finding in ForgeAdvisor().explain_log(log).findings}
     assert "squashfs" in advisor_codes
     assert beginner.category in advisor_codes
+
+
+class _RecordingMessageBox:
+    """Captures what the failure dialog would show, without opening one."""
+
+    instances: list[_RecordingMessageBox] = []
+
+    class Icon:
+        Critical = "critical"
+
+    def __init__(self, _parent=None) -> None:
+        self.text = ""
+        self.informative = ""
+        self.detailed = ""
+        _RecordingMessageBox.instances.append(self)
+
+    def setIcon(self, _icon) -> None:
+        return None
+
+    def setWindowTitle(self, _title: str) -> None:
+        return None
+
+    def setText(self, text: str) -> None:
+        self.text = text
+
+    def setInformativeText(self, text: str) -> None:
+        self.informative = text
+
+    def setDetailedText(self, text: str) -> None:
+        self.detailed = text
+
+    def exec(self) -> None:
+        return None
+
+
+@pytest.fixture(scope="module")
+def qt_app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from distroforge.ui.qt import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+def test_standard_build_failure_offers_the_canonical_remediation(qt_app, monkeypatch) -> None:
+    """The Execute path used to show GuiJob's raw str(exc) and nothing to do next.
+
+    It now reads its verdict from the same taxonomy the beginner path consumes:
+    a named failure plus its remediation, with the raw text behind Show Details.
+    """
+    from distroforge.ui import main_window as main_window_module
+    from distroforge.ui.jobs import JobEvent
+    from distroforge.ui.main_window import MainWindow
+
+    monkeypatch.setattr(main_window_module, "QMessageBox", _RecordingMessageBox)
+    _RecordingMessageBox.instances.clear()
+
+    class _Job:
+        running = False
+
+        def poll(self):
+            return [JobEvent("error", "mksquashfs failed: cannot write filesystem.squashfs")]
+
+    window = MainWindow()
+    window.build_job = _Job()
+    window._poll_job()
+
+    shown = _RecordingMessageBox.instances[-1]
+    assert "Squashfs packaging issue" in shown.text
+    assert "squashfs-tools" in shown.informative
+    assert "mksquashfs failed" in shown.detailed
+    # Progressive disclosure: the headline is the verdict, not the raw exception.
+    assert "cannot write filesystem.squashfs" not in shown.text
 
 
 def test_advisor_log_findings_carry_canonical_level_and_citation(tmp_path: Path) -> None:
