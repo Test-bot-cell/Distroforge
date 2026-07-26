@@ -35,12 +35,14 @@ IMPORTANT_DOCS = (
 )
 
 # lintian profiles are vendors, never suites: /usr/share/lintian/profiles holds
-# debian, ubuntu, kali, pureos and friends, and `--profile resolute` simply aborts
-# with "Could not find a profile matching: resolute/main". Left unset, the profile
-# comes from dpkg-vendor on whichever host happens to run the check, so the same
-# .dsc and .changes can pass on one machine and fail on the next. Pinning the
-# Debian profile makes the verdict reproducible and holds the package to the
-# upstream Policy baseline that docs/debian-canonical-compliance.md claims.
+# debian, ubuntu, kali, pureos and friends, so passing the target suite name as the
+# profile simply aborts with "Could not find a profile matching: <suite>/main". The
+# suite name is deliberately not spelled here: CI greps the tree for that exact
+# argument pair, and a comment explaining the rule used to be the only match.
+# Left unset, the profile comes from dpkg-vendor on whichever host happens to run
+# the check, so the same .dsc and .changes can pass on one machine and fail on the
+# next. Pinning the Debian profile makes the verdict reproducible and holds the
+# package to the upstream Policy baseline docs/debian-canonical-compliance.md claims.
 # --no-tag-display-limit matters just as much: without it lintian truncates
 # repeated tags, and a truncated report cannot be turned into a reason string.
 LINTIAN_PROFILE = "debian"

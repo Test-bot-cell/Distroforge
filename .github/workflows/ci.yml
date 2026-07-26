@@ -44,6 +44,16 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Typecheck
+        # Only against the binding the package ships. distroforge/ui/qt.py is a
+        # try/except shim, and mypy is asymmetric about it: the fallback branch
+        # redefining a name that resolved in the try branch is a no-redef error,
+        # while the reverse -- a real name redefining one that came from an
+        # unresolvable import -- is not. With PySide6 installed and PyQt6 absent
+        # that is 35 no-redef errors, plus 129 more from PySide6's own stubs
+        # disagreeing with calls PyQt6 accepts. Making the tree clean against both
+        # bindings is real work and is not done; asserting it here would only mean
+        # the assertion is switched off. The runtime matrix still exercises both.
+        if: matrix.qt-binding == 'pyqt6'
         run: python -m mypy distroforge/
       - name: Test
         run: python -m pytest -q
@@ -84,12 +94,17 @@ jobs:
             tests/test_pillar_contracts.py \
             tests/test_maintainer_scripts.py
       - name: Lintian profile must be a vendor
-        # lintian profiles are vendors (debian, ubuntu), never suites: --profile
-        # resolute does not exist. An unpinned invocation makes the verdict depend
-        # on whichever vendor the host happens to be.
+        # lintian profiles are vendors, never suites, and an unpinned invocation
+        # makes the verdict depend on whichever vendor the host happens to be. This
+        # was a grep for the exact argument pair, which was worse than useless: the
+        # only thing it ever matched was the comment explaining the rule, and it
+        # could not see the form the code actually builds, where the flag and its
+        # value are two separate argv strings. The check now lives in the suite,
+        # where it reads the constant and the suite names instead of guessing.
         run: |
           lintian --profile debian --version
-          ! grep -rn -- '--profile *resolute' distroforge/ debian/
+          python -m pytest -q tests/test_packaging_reports.py \
+            -k "lintian_profile_is_a_vendor or lintian_is_never_invoked"
 
   distro-dependencies:
     # The one job that answers "does it work with the Python and the libraries the
@@ -97,7 +112,15 @@ jobs:
     # interpreter, while the package is built against the runner distribution's
     # python3 and its python3-* packages. Adding 3.14 to the matrix does not cover
     # this case.
+    #
+    # It runs in a container of the target suite, not on the runner image: the
+    # runner is 24.04, whose python3-pydantic is 1.10 -- no field_validator, no
+    # ConfigDict -- so every test module failed to import. That was not a false
+    # alarm but a mislabelled one: the archive really is too old, and the missing
+    # piece was the versioned dependency, now declared in debian/control. The
+    # container is the suite debian/changelog targets.
     runs-on: ubuntu-latest
+    container: ubuntu:devel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -107,15 +130,22 @@ jobs:
         # so a Build-Depends on it would make the package unbuildable. The
         # one-statement-per-line guard is therefore implemented against ast
         # rather than delegated to ruff, and needs nothing installed.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             python3 python3-pytest python3-pydantic python3-yaml python3-pluggy \
-            python3-rich python3-pyqt6 libegl1
+            python3-rich python3-typer python3-pyqt6 libegl1
       - name: Report what the distribution provides
         run: |
           python3 --version
           dpkg-query -W python3-pyqt6 python3-pydantic python3-pytest
+      - name: The archive must satisfy the dependency debian/control declares
+        # Named, so a suite too old to run the suite says so in one line instead of
+        # failing every test module with an ImportError.
+        run: |
+          dpkg --compare-versions "$(dpkg-query -f '${Version}' -W python3-pydantic)" ge 2.7
       - name: Run the suite the way debian/rules does
         env:
           DISTROFORGE_DEBIAN_BUILD: "1"

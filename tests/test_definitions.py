@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from distroforge.core.definition import apply_definition, load_definition
@@ -82,13 +84,41 @@ def test_unknown_key_in_any_option_group_is_a_friendly_error(tmp_path, group: st
         apply_definition(project, {group: {"__not_an_option__": True}})
 
 
-def test_group_error_keeps_the_interpreter_suggestion(tmp_path) -> None:
+def _interpreter_suggests_keyword_arguments() -> bool:
+    """Whether this CPython appends "Did you mean" to an unexpected-keyword TypeError.
+
+    It does from 3.13 on, and not before. Probed rather than version-compared: the
+    assertion is about the interpreter's behaviour, so let the interpreter answer.
+    """
+
+    @dataclass
+    class Probe:
+        logs: bool = False
+
+    try:
+        Probe(logz=True)  # type: ignore[call-arg]
+    except TypeError as error:
+        return "Did you mean" in str(error)
+    return False
+
+
+def test_group_error_keeps_whatever_the_interpreter_says(tmp_path) -> None:
     # The whole value of routing through ValueError instead of pre-validating each
-    # group is that Python's own "Did you mean" hint survives to the user.
+    # group is that the interpreter's own message survives to the user -- including
+    # its "Did you mean" hint where the interpreter offers one. What is guaranteed on
+    # every supported interpreter is the group name and the offending key, so that is
+    # asserted unconditionally and the hint only where it exists. Asserting the hint
+    # everywhere failed on 3.11 and 3.12, which is the matrix earning its keep.
     project = Project.create("GroupHint", tmp_path / "group-hint", "26.04")
 
-    with pytest.raises(ValueError, match="Did you mean 'logs'"):
+    with pytest.raises(ValueError) as raised:
         apply_definition(project, {"sanitize": {"logz": True}})
+
+    message = str(raised.value)
+    assert "'sanitize'" in message
+    assert "logz" in message
+    if _interpreter_suggests_keyword_arguments():
+        assert "Did you mean 'logs'" in message
 
 
 def test_definition_typo_exits_two_with_a_friendly_message(tmp_path, capsys) -> None:

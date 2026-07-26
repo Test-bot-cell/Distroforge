@@ -630,3 +630,47 @@ def test_deb_content_does_not_require_a_lintian_override_that_is_never_shipped(t
     assert check.status == "passed"
     assert check.reason == ""
     assert "lintian/overrides" not in (tmp_path / "DEB-CONTENT-REPORT.txt").read_text(encoding="utf-8")
+
+
+# lintian ships its profiles as directories under /usr/share/lintian/profiles, one per
+# vendor. Passing a suite name instead aborts the run outright, and CI used to guard
+# that with a grep for the exact argument pair -- which matched only the comment
+# explaining the rule, and missed the form this code actually builds, where the flag
+# and its value are two separate argv strings.
+LINTIAN_VENDORS = frozenset({"debian", "dpkg", "elxr", "kali", "pardus", "pureos", "ubuntu"})
+
+
+def test_the_lintian_profile_is_a_vendor_and_not_a_suite() -> None:
+    assert LINTIAN_PROFILE in LINTIAN_VENDORS, f"{LINTIAN_PROFILE!r} is not a lintian vendor"
+    assert LINTIAN_ARGV[:3] == ("lintian", "--profile", LINTIAN_PROFILE)
+    # The suite names DistroForge targets live in debian/changelog and are read from
+    # there rather than spelled here, so this test cannot become its own offender.
+    suites = _changelog_suites()
+    assert suites, "no changelog stanza was parsed, so this assertion proves nothing"
+    assert LINTIAN_VENDORS.isdisjoint(suites), f"a suite name collides with a vendor: {suites}"
+
+
+def _changelog_versions() -> list[str]:
+    from pathlib import Path
+
+    changelog = Path(__file__).resolve().parents[1] / "debian/changelog"
+    return [line for line in changelog.read_text(encoding="utf-8").splitlines() if line.startswith("distroforge (")]
+
+
+def _changelog_suites() -> set[str]:
+    return {line.split()[2].rstrip(";") for line in _changelog_versions()}
+
+
+def test_lintian_is_never_invoked_without_the_pinned_profile() -> None:
+    from pathlib import Path
+
+    # Two call sites build a lintian command, and both must go through LINTIAN_ARGV;
+    # a third spelling would silently take the host's dpkg-vendor default.
+    source = (Path(__file__).resolve().parents[1] / "distroforge/core/packaging.py").read_text(encoding="utf-8")
+    building = [
+        line.strip()
+        for line in source.splitlines()
+        if '"lintian"' in line and "LINTIAN_ARGV" not in line and "==" not in line and "which" not in line
+    ]
+
+    assert building == ['"LINTIAN.txt": "lintian",', '"lintian",'], building
