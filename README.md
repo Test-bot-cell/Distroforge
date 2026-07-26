@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="debian/distroforge.svg" width="128" height="128" alt="DistroForge logo">
+  <img src="share/icons/distroforge.svg" width="128" height="128" alt="DistroForge logo">
 </p>
 
 <h1 align="center">DistroForge</h1>

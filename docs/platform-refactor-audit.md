@@ -4,14 +4,73 @@ This audit records the current structural debt and the target refactor path. It 
 
 ## Current Shape
 
-| Surface | Current state | Risk |
-| --- | --- | --- |
-| CLI entrypoint | `distroforge/cli.py` is about 972 lines after build option extraction and command-handler extraction into `distroforge/commands/*`, including the catalog-listing, advisory, and privileged-plan adapters and a single `commands/output_policy.py` helper for dry-run command-history output | routing delegates per command; the remaining inline handlers are thin core delegations, so new command families must land as `commands/*` adapters rather than re-growing the router |
-| GUI shell | `distroforge/ui/main_window.py` is about 1143 lines after Build & Release page, build controller, build option mapper, CLI-equivalent extraction, workflow-level centralization, the extraction of every remaining domain page (ISO, customization, recipes, plugins, logs, advanced, maintainer, quality, virtualization) into `distroforge/ui/*_page.py`, the move of shared widget construction into the `distroforge/ui/window_widgets.py` factory, and the extraction of every domain action handler (terminal, capture, artifacts, mirror, branding, profile, recipe, project, advisor, service, recommendation) into `distroforge/ui/*_actions.py` modules | the shell now owns only its Track-3 surface — navigation, shared state, job dispatch and global logs — plus the thin delegators that wire those page and `*_actions.py` handlers back onto the page and toolbar surfaces; widget construction is delegated to the `window_widgets` factory while the shell keeps the shared-state references, and job dispatch stays shell-owned on the reusable `ServiceRunnerMixin` boundary rather than being a further extraction target; the live risk is keeping new features from re-growing the shell |
-| Build core | `distroforge/core/build.py` is about 317 lines after the source-to-ISO path moved to `distroforge/core/build_pipeline.py` (about 741 lines) | `BuildOrchestrator.run` now delegates ordered stages; per-phase declarative metadata now lives in `distroforge/core/phase_contracts.py` |
-| Protected writes | centralized through `FileSystemOps` and the sudo-wrapped ISO/squashfs/snapshot services, with the in-build host-side report/preview writers centralized through the `HostArtifactWriter` boundary | audited: every protected rootfs/ISO mutation flows through these boundaries, and the in-build host-side reports/previews flow through `HostArtifactWriter`; raw writes remain allowed only for host-side reports, plans, previews and output scaffolding, and each boundary stays dry-run-pure — now locked by a test that plans a full build and asserts zero host filesystem side effects |
-| Rollback | now transactional in `SnapshotService` | must remain part of the reliability contract, not a cosmetic option |
-| Docs | broad but scattered | product architecture, user levels, module gates, and parity need one canonical source |
+Each surface below records what it is today and the live risk. These entries were once a
+three-column table, but the cells grew into paragraphs: a Markdown table row cannot be
+wrapped, so they became single lines over a thousand characters wide — unreadable in an
+editor and flagged by `lintian` as a source line long enough to hide anything.
+
+### CLI entrypoint
+
+**Current state:** `distroforge/cli.py` is about 972 lines after build option extraction
+and command-handler extraction into `distroforge/commands/*`, including the
+catalog-listing, advisory, and privileged-plan adapters and a single
+`commands/output_policy.py` helper for dry-run command-history output.
+
+**Risk:** routing delegates per command; the remaining inline handlers are thin core
+delegations, so new command families must land as `commands/*` adapters rather than
+re-growing the router.
+
+### GUI shell
+
+**Current state:** `distroforge/ui/main_window.py` is about 1143 lines after Build &
+Release page, build controller, build option mapper, CLI-equivalent extraction,
+workflow-level centralization, the extraction of every remaining domain page (ISO,
+customization, recipes, plugins, logs, advanced, maintainer, quality, virtualization) into
+`distroforge/ui/*_page.py`, the move of shared widget construction into the
+`distroforge/ui/window_widgets.py` factory, and the extraction of every domain action
+handler (terminal, capture, artifacts, mirror, branding, profile, recipe, project,
+advisor, service, recommendation) into `distroforge/ui/*_actions.py` modules.
+
+**Risk:** the shell now owns only its Track-3 surface — navigation, shared state, job
+dispatch and global logs — plus the thin delegators that wire those page and
+`*_actions.py` handlers back onto the page and toolbar surfaces; widget construction is
+delegated to the `window_widgets` factory while the shell keeps the shared-state
+references, and job dispatch stays shell-owned on the reusable `ServiceRunnerMixin`
+boundary rather than being a further extraction target; the live risk is keeping new
+features from re-growing the shell.
+
+### Build core
+
+**Current state:** `distroforge/core/build.py` is about 317 lines after the source-to-ISO
+path moved to `distroforge/core/build_pipeline.py` (about 741 lines).
+
+**Risk:** `BuildOrchestrator.run` now delegates ordered stages; per-phase declarative
+metadata now lives in `distroforge/core/phase_contracts.py`.
+
+### Protected writes
+
+**Current state:** centralized through `FileSystemOps` and the sudo-wrapped
+ISO/squashfs/snapshot services, with the in-build host-side report/preview writers
+centralized through the `HostArtifactWriter` boundary.
+
+**Risk:** audited: every protected rootfs/ISO mutation flows through these boundaries, and
+the in-build host-side reports/previews flow through `HostArtifactWriter`; raw writes
+remain allowed only for host-side reports, plans, previews and output scaffolding, and
+each boundary stays dry-run-pure — now locked by a test that plans a full build and
+asserts zero host filesystem side effects.
+
+### Rollback
+
+**Current state:** now transactional in `SnapshotService`.
+
+**Risk:** must remain part of the reliability contract, not a cosmetic option.
+
+### Docs
+
+**Current state:** broad but scattered.
+
+**Risk:** product architecture, user levels, module gates, and parity need one canonical
+source.
 
 ## Non-Negotiable Contracts
 

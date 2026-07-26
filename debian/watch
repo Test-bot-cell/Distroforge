@@ -1,0 +1,12 @@
+# No watch rule, on purpose, and this file exists to say why rather than to be
+# missing.
+#
+# Upstream and this packaging are the same Git repository. No upstream tarball
+# has ever been published and there is no release tag: the orig tarball is
+# generated from the tree at build time, as debian/README.source describes. So
+# there is no location uscan could poll, which is the situation uscan(1) and
+# lintian expect a comments-only watch file to document.
+#
+# When upstream starts publishing release tags, replace this with a mode=git
+# rule against refs/tags. Do not add one before then -- a rule that resolves to
+# nothing is worse than a file that states the truth.

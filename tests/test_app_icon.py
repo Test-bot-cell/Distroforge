@@ -4,12 +4,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Anchored at the source root, not the working directory: pybuild runs the test
-# phase from the staged build tree, where "debian/distroforge.svg" does not exist
-# and "distroforge/ui/app.py" resolves to the installed copy instead of the file
-# these assertions are about.
+# phase from the staged build tree, where "share/icons/distroforge.svg" does not
+# exist and "distroforge/ui/app.py" resolves to the installed copy instead of the
+# file these assertions are about.
 ROOT = Path(__file__).resolve().parents[1]
-LAUNCHER_ICON = ROOT / "debian" / "distroforge.svg"
-DESKTOP_ENTRY = ROOT / "debian" / "distroforge.desktop"
+LAUNCHER_ICON = ROOT / "share" / "icons" / "distroforge.svg"
+DESKTOP_ENTRY = ROOT / "share" / "applications" / "distroforge.desktop"
 GUI_APP = ROOT / "distroforge" / "ui" / "app.py"
 
 

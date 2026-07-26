@@ -1,9 +1,11 @@
 Source: distroforge
 Section: admin
-Priority: optional
 Maintainer: DistroForge maintainers <maintainers@distroforge.invalid>
 Rules-Requires-Root: no
 Standards-Version: 4.7.3
+Homepage: https://github.com/Test-bot-cell/Distroforge
+Vcs-Browser: https://github.com/Test-bot-cell/Distroforge
+Vcs-Git: https://github.com/Test-bot-cell/Distroforge.git
 Build-Depends:
  debhelper-compat (= 13),
  dh-sequence-python3,

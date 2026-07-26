@@ -9,6 +9,32 @@ binary release artifact described in PROVENANCE.md, while retaining later
 repository CI fixes. The Ubuntu resolute Standards-Version adjustment is
 carried directly in the source, with no active Quilt patches.
 
+Deliberate deviations from lintian
+---------------------------------
+
+The package carries no lintian overrides. One pedantic tag is left standing on
+purpose rather than silenced:
+
+  redundant-rules-requires-root-no-field
+    Rules-Requires-Root: no has been the dpkg default since 1.22.13, so the field
+    is redundant on a current toolchain. It stays because "this package never
+    needs root to build" is a contract here, not a side effect of which dpkg ran
+    the build: two tests assert the field and four modules cite it to justify
+    staying rootless. Deleting it to quiet a pedantic tag would make the contract
+    depend on the builder's dpkg version.
+
+Manual pages, the desktop entry and the launcher icon live in share/ in the
+upstream tree, not in debian/, because upstream and the packaging are the same
+project -- which is what maintainer-manual-page and maintainer-desktop-entry ask
+for.
+
+debian/watch carries comments and no rule. Upstream publishes no tarball and has
+no release tag, so uscan has nothing to poll; a rule resolving to nothing would
+be worse than a file stating the situation. Note that pgpmode=gittag, the
+obvious way to verify a signed release tag, is not implemented by the devscripts
+in resolute (uscan 2.26.7), so a git-mode rule could not be signature-checked
+here even once tags exist.
+
 Standalone development remains driven by pyproject.toml and a local virtual
 environment. Debian package builds should use distribution Python packages from
 debian/control instead of pip-installed dependencies.

@@ -1,6 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: DistroForge
-Source: local source tree
+Upstream-Contact: DistroForge maintainers <maintainers@distroforge.invalid>
+Source: https://github.com/Test-bot-cell/Distroforge
 
 Files: *
 Copyright: 2026 DistroForge maintainers

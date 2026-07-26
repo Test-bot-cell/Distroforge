@@ -47,6 +47,21 @@ distroforge (0.3.5-3) resolute; urgency=medium
     bundle, with a matching Artifacts page field. Six call sites hardcoded the
     parent of the source tree, so an archive kept elsewhere produced a clean
     report about an empty directory.
+  * Clear every lintian tag that was a real defect, without adding a single
+    override. Move the manual pages, desktop entry and launcher icon out of
+    debian/ into share/ in the upstream tree, since upstream and the packaging
+    are the same project; declare Homepage, Vcs-Git, Vcs-Browser, a DEP-12
+    debian/upstream/metadata and a comments-only debian/watch recording that
+    upstream publishes no tarball and no release tag, so there is nothing for
+    uscan to poll; name the repository in debian/copyright instead of "local
+    source tree"; drop the
+    Priority field, redundant since dpkg 1.22.13. Rules-Requires-Root: no
+    stays: two tests assert it, so the rootless build contract must not depend
+    on which dpkg ran the build. That leaves exactly one pedantic tag, and
+    debian/README.source records why.
+  * Split the Current Shape table in docs/platform-refactor-audit.md into
+    sections. A Markdown table row cannot be wrapped, so two cells had grown to
+    1189 and 600 characters on one line.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 26 Jul 2026 19:58:02 +0200
 
