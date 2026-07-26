@@ -53,6 +53,25 @@ include this doctor signal, detect recent package artifacts from the source tree
 parent directory, and turn `/usr/local` buildinfo taint into a hermetic rebuild
 next action.
 
+## Where the artifacts are looked for
+
+`dpkg-buildpackage` writes the `.deb`, `.changes` and `.buildinfo` into the **parent of
+the source tree**, so that is where `debian-package`, `evidence-status` and the hermetic
+bundle look by default. Pass `--artifact-dir DIR` when the archive is kept somewhere else:
+
+```bash
+distroforge debian-package . --artifact-dir ~/packages/distroforge
+distroforge evidence-status . --profile package --artifact-dir ~/packages/distroforge
+distroforge hermetic-release-bundle . --output ../bundle --artifact-dir ~/packages/distroforge
+```
+
+Without it, a maintainer who moves the archive gets a report that looks clean because the
+directory it read was empty — the one failure mode indistinguishable from success. The GUI
+equivalent is the **Package artifact dir** field on the Artifacts page, empty by default.
+`packaging-policy` deliberately has no such flag: `--buildinfo` and `--changes` already
+name the files it reads, and a second way to say the same thing is a second thing to keep
+in agreement.
+
 `debian-package` is the maintainer wrapper around `dpkg-buildpackage -us -uc -b`.
 Without `--execute` it renders the build and check plan. With `--execute` it collects
 produced `.deb`, `.changes` and `.buildinfo` artifacts, records file sizes and SHA256

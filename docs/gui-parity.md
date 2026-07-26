@@ -247,6 +247,10 @@ Artifact parity:
 - CLI `qemu-smoke-plan` maps to **QEMU Smoke Plan**.
 - CLI `buildinfo-report` and `packaging-policy` map to **Packaging Policy** with
   optional **Buildinfo** and **Changes** selectors.
+- CLI `--artifact-dir` on `debian-package` and `evidence-status` maps to the
+  **Package artifact dir** field. Empty means the parent of the source tree, which is
+  where `dpkg-buildpackage` writes; the field only has to be filled when the archive was
+  moved elsewhere.
 - CLI `autopkgtest-doctor` maps to **Autopkgtest Doctor**. The GUI action renders the
   planned run and classification surface in the artifact report; the mutating `--execute
   --output` evidence run stays an explicit CLI command.

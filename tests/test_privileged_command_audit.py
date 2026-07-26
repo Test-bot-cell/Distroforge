@@ -46,7 +46,10 @@ APPROVED_EXECUTION_GATES = {
         "execute_signing",
     ),
     "distroforge/commands/packaging.py": (
-        "build_debian_package(root, execute=execute)",
+        # No closing paren: what this guards is that the call still routes through an
+        # explicit execute gate, not that the argument list never grows. It used to break
+        # when --artifact-dir was added, which is a false alarm about a real guard.
+        "build_debian_package(root, execute=execute",
         "HermeticBuildPlan(",
     ),
 }

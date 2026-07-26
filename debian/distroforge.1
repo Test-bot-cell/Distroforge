@@ -283,6 +283,22 @@ and assemble a local release evidence bundle.
 .BR evidence\-status " \fIPROJECT\fR, " evidence\-verify " \fIPATH\fR, " ci " \fIPROJECT\fR"
 Summarize maintainer evidence without building, validate a bundle contract, and
 run the lint/test/dry\-run CI plan.
+.TP
+.B \-\-artifact\-dir \fIDIR\fR
+Directory holding the built
+.IR .deb ,
+.I .changes
+and
+.IR .buildinfo .
+Accepted by
+.BR debian\-package ,
+.B evidence\-status
+and
+.BR hermetic\-release\-bundle .
+Defaults to the parent of the source tree, which is where
+.B dpkg\-buildpackage
+writes them; set it when the archive is kept elsewhere, or the reports read an
+empty directory and look clean.
 .SS Advisory
 .TP
 .BR forgeadvisor " {\fBcopilot\fR|\fBexplain\-evidence\fR|\fBfix\-plan\fR|\fBreview\-build\fR|\fBpropose\-fixes\fR|\fBreview\-definition\fR|\fBsearch\-local\fR|\fBexplain\-log\fR|\fBtriage\-log\fR|\fBdoctor\-ai\fR|\fBmemory\fR}"

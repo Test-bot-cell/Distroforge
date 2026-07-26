@@ -31,6 +31,22 @@ distroforge (0.3.5-3) resolute; urgency=medium
     inside the image, the missing dpkg-deb packaging step, the unprivileged
     snapshot restore, the unversioned ISO name, the accepted all-zero GPG
     fingerprint, and the kernel selection crash on a non-numeric directory.
+  * Type the tree against one Qt binding under TYPE_CHECKING while keeping the
+    PySide6-then-PyQt6 fallback at runtime. The try/except shim made
+    QMainWindow resolve to Any, and an Any base class made every attribute
+    access legal, so the main window was never type-checked; turning it on
+    surfaced 136 errors, including two window protocols whose loose
+    annotations rejected the window implementing them.
+  * Make --json mean one JSON document and exactly one trailing newline on
+    every command that offers it. "explain" ended with a blank line, "capture"
+    and "livefs-iso-plan" with none, "new --json" printed prose, and
+    "livefs-iso-build --json" appended an English sentence after the closing
+    brace; that advisory now goes to stderr. The GUI and the CLI also wrote
+    different bytes for the same captured profile.
+  * Add --artifact-dir to debian-package, evidence-status and the hermetic
+    bundle, with a matching Artifacts page field. Six call sites hardcoded the
+    parent of the source tree, so an archive kept elsewhere produced a clean
+    report about an empty directory.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 26 Jul 2026 19:58:02 +0200
 

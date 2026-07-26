@@ -46,6 +46,22 @@ def default_output_iso(project: Project) -> Path:
     return project.output_dir / f"{project.name}-{project.release.version}.iso"
 
 
+def package_artifact_dir(root: Path, override: Path | None = None) -> Path:
+    """Canonical location of the Debian artifacts built from ``root``.
+
+    dpkg-buildpackage writes the .deb, .changes and .buildinfo into the parent of the
+    source tree, so that stays the default. What did not exist was any way to say
+    otherwise: six call sites across packaging.py and evidence.py hardcoded
+    ``root.resolve().parent``, so a maintainer who keeps the archive anywhere else got a
+    clean report about an empty directory from debian-package, packaging-policy,
+    evidence-status and the hermetic bundle alike -- the one failure mode that reads
+    exactly like success.
+    """
+    if override is not None:
+        return override.expanduser().resolve()
+    return root.resolve().parent
+
+
 def default_artifact_paths(project: Project) -> HostArtifactPaths:
     output = project.output_dir
     return HostArtifactPaths(

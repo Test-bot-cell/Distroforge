@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .artifact_paths import default_artifact_paths, default_output_iso
+from .artifact_paths import default_artifact_paths, default_output_iso, package_artifact_dir
 from .build import BuildOptions
 from .chroot import detect_chroot_backends
 from .command import CommandRunner
@@ -184,6 +184,7 @@ class EvidenceStatusService:
         iso: Path | None = None,
         output_dir: Path | None = None,
         profile: str = "publish",
+        artifact_dir: Path | None = None,
     ) -> EvidenceStatusReport:
         profile = _normalize_profile(profile)
         options = options or BuildOptions()
@@ -197,9 +198,9 @@ class EvidenceStatusService:
             report.items.extend(_backend_items())
         if profile in {"package", "publish"}:
             report.items.extend(_debian_dev_items(project.root))
-        report.items.extend(_packaging_items(project.root))
+        report.items.extend(_packaging_items(project.root, artifact_dir))
         if profile in {"package", "publish"}:
-            report.items.extend(_package_artifact_items(output_dir, project.root))
+            report.items.extend(_package_artifact_items(output_dir, project.root, artifact_dir))
             report.items.extend(_autopkgtest_run_items(project.root, output_dir))
         if profile in {"iso", "publish"}:
             report.items.extend(_artifact_items(output_dir))
@@ -218,6 +219,7 @@ class EvidenceStatusService:
         iso: Path | None = None,
         output_dir: Path | None = None,
         profile: str = "publish",
+        artifact_dir: Path | None = None,
     ) -> EvidenceStatusReport:
         profile = _normalize_profile(profile)
         root = root.resolve()
@@ -231,9 +233,9 @@ class EvidenceStatusService:
             report.items.extend(_backend_items())
         if profile in {"package", "publish"}:
             report.items.extend(_debian_dev_items(root))
-        report.items.extend(_packaging_items(root))
+        report.items.extend(_packaging_items(root, artifact_dir))
         if profile in {"package", "publish"}:
-            report.items.extend(_package_artifact_items(output_dir, root))
+            report.items.extend(_package_artifact_items(output_dir, root, artifact_dir))
             report.items.extend(_autopkgtest_run_items(root, output_dir))
         if profile in {"iso", "publish"}:
             report.items.extend(_artifact_items(output_dir))
@@ -445,8 +447,12 @@ def _artifact_items(output_dir: Path) -> list[EvidenceItem]:
     return items
 
 
-def _package_artifact_items(output_dir: Path, root: Path | None = None) -> list[EvidenceItem]:
-    search_dirs = (output_dir,) if root is None else (output_dir, root.resolve().parent)
+def _package_artifact_items(
+    output_dir: Path, root: Path | None = None, artifact_dir: Path | None = None
+) -> list[EvidenceItem]:
+    search_dirs = (
+        (output_dir,) if root is None else (output_dir, package_artifact_dir(root, artifact_dir))
+    )
     checks = (
         ("package:deb", "Debian package", _any_exists_anywhere(search_dirs, "*.deb")),
         ("package:buildinfo", "Debian buildinfo", _any_exists_anywhere(search_dirs, "*.buildinfo") or (output_dir / "BUILDINFO-REPORT.txt").exists()),
@@ -530,11 +536,12 @@ def _any_exists_anywhere(roots: tuple[Path, ...], pattern: str) -> bool:
     return any(_any_exists(root, pattern) for root in roots if root.exists())
 
 
-def _packaging_items(root: Path) -> list[EvidenceItem]:
+def _packaging_items(root: Path, artifact_dir: Path | None = None) -> list[EvidenceItem]:
     if not (root / "debian/control").exists():
         return [EvidenceItem("packaging", "review", "No Debian packaging metadata in project root.")]
-    buildinfo = _latest_package_artifact(root, "distroforge_*_*.buildinfo")
-    changes = _latest_package_artifact(root, "distroforge_*_*.changes")
+    archive = package_artifact_dir(root, artifact_dir)
+    buildinfo = _latest_package_artifact(archive, "distroforge_*_*.buildinfo")
+    changes = _latest_package_artifact(archive, "distroforge_*_*.changes")
     policy = packaging_policy_report(root, buildinfo, changes)
     items = [
         EvidenceItem(
@@ -561,8 +568,8 @@ def _packaging_items(root: Path) -> list[EvidenceItem]:
     return items
 
 
-def _latest_package_artifact(root: Path, pattern: str) -> Path | None:
-    values = list(root.resolve().parent.glob(pattern))
+def _latest_package_artifact(artifact_dir: Path, pattern: str) -> Path | None:
+    values = list(artifact_dir.glob(pattern))
     if not values:
         return None
     return max(values, key=lambda path: (path.stat().st_mtime_ns, path.name))

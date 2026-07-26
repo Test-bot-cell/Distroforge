@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from distroforge.commands.packaging import ARTIFACT_DIR_HELP
 from distroforge.core.evidence import (
     EVIDENCE_PROFILES,
     EvidenceStatusService,
@@ -17,6 +18,7 @@ def register_evidence_commands(subparsers) -> None:
     status.add_argument("--iso", type=Path)
     status.add_argument("--output-dir", type=Path)
     status.add_argument("--profile", choices=EVIDENCE_PROFILES, default="publish")
+    status.add_argument("--artifact-dir", type=Path, help=ARTIFACT_DIR_HELP)
     status.add_argument("--fix-plan", action="store_true")
     status.add_argument("--verbose", action="store_true")
     status.add_argument("--json", action="store_true")
@@ -37,6 +39,7 @@ def render_evidence_command(args) -> tuple[str, bool] | None:
             args.fix_plan,
             args.verbose,
             args.json,
+            artifact_dir=args.artifact_dir,
         )
     if args.command == "evidence-verify":
         return render_evidence_verify(args.path, args.json)
@@ -52,6 +55,8 @@ def render_evidence_status(
     fix_plan: bool = False,
     verbose: bool = False,
     json_output: bool = False,
+    *,
+    artifact_dir: Path | None = None,
 ) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
@@ -61,10 +66,15 @@ def render_evidence_status(
     except FileNotFoundError:
         if definition:
             raise
-        report = EvidenceStatusService().check_source_tree(root, iso=iso, output_dir=output_dir, profile=profile)
+        report = EvidenceStatusService().check_source_tree(
+            root, iso=iso, output_dir=output_dir, profile=profile, artifact_dir=artifact_dir
+        )
     else:
         options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-        report = EvidenceStatusService().check(project, options, iso=iso, output_dir=output_dir, profile=profile)
+        report = EvidenceStatusService().check(
+            project, options, iso=iso, output_dir=output_dir, profile=profile,
+            artifact_dir=artifact_dir,
+        )
     if json_output:
         return report.render_json(), report.blocked
     if fix_plan:

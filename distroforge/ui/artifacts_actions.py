@@ -95,10 +95,14 @@ def run_evidence_status_action(window, *, verbose: bool = False, fix_plan: bool 
     assert window.project
     iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
+    package_dir_text = window.artifacts_package_dir_edit.text().strip()
+    artifact_dir = Path(package_dir_text) if package_dir_text else None
     project, options = window.project, window._build_options()
 
     def _work():
-        return EvidenceStatusService().check(project, options, iso=iso, output_dir=output_dir)
+        return EvidenceStatusService().check(
+            project, options, iso=iso, output_dir=output_dir, artifact_dir=artifact_dir
+        )
 
     def _done(report):
         counts = report.counts()

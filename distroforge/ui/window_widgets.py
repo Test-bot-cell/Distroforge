@@ -361,6 +361,14 @@ def build_window_widgets(window) -> None:
     window.artifacts_serial_log_edit = QLineEdit()
     window.artifacts_buildinfo_edit = QLineEdit()
     window.artifacts_changes_edit = QLineEdit()
+    window.artifacts_package_dir_edit = QLineEdit()
+    window.artifacts_package_dir_edit.setPlaceholderText("Parent of the source tree")
+    window.artifacts_package_dir_edit.setToolTip(
+        "Where the built .deb, .changes and .buildinfo are kept. Left empty this is the "
+        "parent of the source tree, which is where dpkg-buildpackage writes them; set it "
+        "when the archive lives somewhere else, or evidence status reports on an empty "
+        "directory. Same as --artifact-dir on the command line."
+    )
     window.boot_proof_backend_combo = QComboBox()
     [window.boot_proof_backend_combo.addItem(label, value) for label, value in (("Auto", "auto"), ("QEMU", "qemu"), ("ISO scan", "iso-scan"))]
     window.hermetic_backend_combo = QComboBox()

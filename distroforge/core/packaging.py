@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from .artifact_paths import package_artifact_dir
 from .buildinfo import AutopkgtestPolicy, PackagingPolicyReport, read_buildinfo, read_changes
 from .command import CommandRunner, CommandSpec
 from .qemu_smoke import QemuSmokePlanner
@@ -371,7 +372,7 @@ def create_hermetic_release_bundle(
     replace: bool = False,
 ) -> HermeticReleaseBundleReport:
     root = root.resolve()
-    artifact_dir = (artifact_dir or root.parent).resolve()
+    artifact_dir = package_artifact_dir(root, artifact_dir)
     version = version or debian_changelog_version(root)
     output_dir = output_dir.resolve()
     autopkgtest_report = _resolve_autopkgtest_report(root, artifact_dir, autopkgtest_report)
@@ -931,8 +932,10 @@ def build_debian_package(
     *,
     execute: bool = False,
     runner: CommandRunner | None = None,
+    artifact_dir: Path | None = None,
 ) -> DebianPackageBuildReport:
     root = root.resolve()
+    artifacts_in = package_artifact_dir(root, artifact_dir)
     runner = runner or CommandRunner(dry_run=not execute)
     effective_execute = execute and not runner.dry_run
     build_spec = CommandSpec(
@@ -948,8 +951,10 @@ def build_debian_package(
         returncode=build_result.returncode if effective_execute else None,
         reason=_result_reason(build_result.stdout, build_result.stderr) if effective_execute else "",
     )
-    artifacts = tuple(PackageBuildArtifact.from_path(path) for path in _package_artifact_paths(root))
-    deb = _latest_deb(root)
+    artifacts = tuple(
+        PackageBuildArtifact.from_path(path) for path in _package_artifact_paths(artifacts_in)
+    )
+    deb = _latest_deb(artifacts_in)
     checks = (
         _run_package_tool_check(
             runner,
@@ -967,12 +972,22 @@ def build_debian_package(
         build=build_check,
         checks=checks,
         artifacts=artifacts,
-        policy=packaging_policy_report(root, _latest_buildinfo(root), _latest_changes(root)),
+        policy=packaging_policy_report(
+            root, _latest_buildinfo(artifacts_in), _latest_changes(artifacts_in)
+        ),
     )
 
 
-def run_packaging_ci(runner: CommandRunner, root: Path, *, execute: bool = False) -> PackagingPolicyReport:
-    return build_debian_package(root, execute=execute, runner=runner).policy
+def run_packaging_ci(
+    runner: CommandRunner,
+    root: Path,
+    *,
+    execute: bool = False,
+    artifact_dir: Path | None = None,
+) -> PackagingPolicyReport:
+    return build_debian_package(
+        root, execute=execute, runner=runner, artifact_dir=artifact_dir
+    ).policy
 
 
 def diagnose_autopkgtest(
@@ -1316,16 +1331,16 @@ def _autopkgtest_evidence_lines(output: str) -> tuple[str, ...]:
     return tuple(lines[:8])
 
 
-def _latest_deb(root: Path) -> Path | None:
-    return _newest_path(root.resolve().parent.glob("distroforge_*.deb"))
+def _latest_deb(artifact_dir: Path) -> Path | None:
+    return _newest_path(artifact_dir.glob("distroforge_*.deb"))
 
 
-def _latest_buildinfo(root: Path) -> Path | None:
-    return _newest_path(root.resolve().parent.glob("distroforge_*_*.buildinfo"))
+def _latest_buildinfo(artifact_dir: Path) -> Path | None:
+    return _newest_path(artifact_dir.glob("distroforge_*_*.buildinfo"))
 
 
-def _latest_changes(root: Path) -> Path | None:
-    return _newest_path(root.resolve().parent.glob("distroforge_*_*.changes"))
+def _latest_changes(artifact_dir: Path) -> Path | None:
+    return _newest_path(artifact_dir.glob("distroforge_*_*.changes"))
 
 
 def _newest_path(paths) -> Path | None:
@@ -1335,11 +1350,11 @@ def _newest_path(paths) -> Path | None:
     return max(values, key=lambda path: (path.stat().st_mtime_ns, path.name))
 
 
-def _package_artifact_paths(root: Path) -> list[Path]:
+def _package_artifact_paths(artifact_dir: Path) -> list[Path]:
     patterns = ("distroforge_*.deb", "distroforge_*_*.buildinfo", "distroforge_*_*.changes")
     values: list[Path] = []
     for pattern in patterns:
-        values.extend(root.resolve().parent.glob(pattern))
+        values.extend(artifact_dir.glob(pattern))
     return sorted(set(values))
 
 

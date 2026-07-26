@@ -11,6 +11,12 @@ from distroforge.core.packaging import (
     packaging_policy_report,
 )
 
+# One sentence, one place: evidence-status uses it too.
+ARTIFACT_DIR_HELP = (
+    "Directory holding the built .deb/.changes/.buildinfo. Defaults to the parent of the "
+    "source tree, which is where dpkg-buildpackage writes them."
+)
+
 
 def register_packaging_commands(sub) -> None:
     buildinfo_parser = sub.add_parser(
@@ -33,6 +39,7 @@ def register_packaging_commands(sub) -> None:
     )
     debian_package_parser.add_argument("root", type=Path)
     debian_package_parser.add_argument("--execute", action="store_true")
+    debian_package_parser.add_argument("--artifact-dir", type=Path, help=ARTIFACT_DIR_HELP)
     debian_package_parser.add_argument("--json", action="store_true")
 
     autopkgtest_parser = sub.add_parser(
@@ -77,7 +84,9 @@ def render_packaging_command(args) -> str | None:
     if args.command == "packaging-policy":
         return render_packaging_policy(args.root, args.buildinfo, args.json, args.changes)
     if args.command == "debian-package":
-        return render_debian_package_build(args.root, execute=args.execute, json_output=args.json)
+        return render_debian_package_build(
+            args.root, execute=args.execute, json_output=args.json, artifact_dir=args.artifact_dir
+        )
     if args.command == "autopkgtest-doctor":
         return render_autopkgtest_doctor(
             args.root,
@@ -128,8 +137,9 @@ def render_debian_package_build(
     *,
     execute: bool = False,
     json_output: bool = False,
+    artifact_dir: Path | None = None,
 ) -> str:
-    report = build_debian_package(root, execute=execute)
+    report = build_debian_package(root, execute=execute, artifact_dir=artifact_dir)
     return report.render_json() if json_output else report.render_text()
 
 

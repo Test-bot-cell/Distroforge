@@ -91,6 +91,19 @@ def build_artifacts_page(window) -> QWidget:
         "Changes",
         _responsive_row(window.artifacts_changes_edit, _button("Select", window._browse_changes, "open"), breakpoint=680),
     )
+    form.addRow(
+        "Package artifact dir",
+        _responsive_row(
+            window.artifacts_package_dir_edit,
+            picker(
+                window,
+                window.artifacts_package_dir_edit,
+                title="Select the directory holding the built package",
+                mode="dir",
+            ),
+            breakpoint=680,
+        ),
+    )
     form.addRow("Hermetic backend", window.hermetic_backend_combo)
     form.addRow("Hermetic suite", window.hermetic_suite_edit)
     readiness = _button_group(
