@@ -4,6 +4,8 @@ import hashlib
 import re
 from pathlib import Path
 
+import pytest
+
 from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.build import BuildOptions, BuildOrchestrator
 from distroforge.core.command import CommandRunner
@@ -156,3 +158,32 @@ def test_evidence_source_tree_prefers_the_canonical_name_for_a_real_project(
 
     assert _source_tree_iso(project.root, project.output_dir).name == "TreeScan-26.04.iso"
     assert _source_tree_iso(tmp_path / "not-a-project", tmp_path).name == "not-a-project.iso"
+
+
+# snap install inside the chroot talks to the host snapd, because chroot.py
+# bind-mounts the host /run for the whole phase. The snaps landed on the build
+# machine as root and the ISO shipped without them, silently.
+def test_snap_install_plans_but_refuses_to_mutate_the_build_host(tmp_path: Path) -> None:
+    from distroforge.core.snaps import SnapOptions, SnapService, SnapSpec
+
+    options = SnapOptions(specs=[SnapSpec(name="firefox")])
+    planner = CommandRunner(dry_run=True)
+
+    SnapService(planner, tmp_path / "root", options).install()
+    planned = [spec.argv for spec in planner.history]
+    assert any("snap" in argv and "install" in argv for argv in planned)
+
+    with pytest.raises(ValueError, match="build machine instead of the image"):
+        SnapService(CommandRunner(dry_run=False), tmp_path / "root", options).install()
+
+
+def test_snap_seeds_still_reach_the_manifest(tmp_path: Path) -> None:
+    from distroforge.core.seeds import SeedOptions, SeedService
+
+    project = _bootstrap_project(tmp_path, "SeedSnaps")
+    manifest = SeedService(
+        CommandRunner(dry_run=True), project, SeedOptions(snaps=["firefox:stable"])
+    ).render_manifest()
+
+    assert "[snaps]" in manifest
+    assert "firefox:stable" in manifest

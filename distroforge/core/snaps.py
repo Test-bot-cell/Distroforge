@@ -36,6 +36,22 @@ class SnapService:
     def install(self) -> None:
         if not self.options.specs:
             return
+        # `snap install` inside the chroot talks to the HOST snapd: chroot.py
+        # bind-mounts the host /run for the whole phase, so /run/snapd.socket is
+        # the build machine's, and policy-rc.d exit 101 keeps the chroot's own
+        # snapd from ever starting. The snaps therefore landed in the build host's
+        # /var/lib/snapd and /snap, as root, with no polkit barrier -- while the
+        # ISO shipped without them. Refused before anything runs, so the phase
+        # cannot touch the host at all. Planning still records the intent and
+        # SeedService still writes them to the manifest.
+        if not self.runner.dry_run:
+            names = ", ".join(spec.name for spec in self.options.specs)
+            raise ValueError(
+                f"Cannot install snaps ({names}) into the target root: a chroot "
+                "shares the host snapd socket, so this would install them on the "
+                "build machine instead of the image. Seed them from the host with "
+                "`snap download` into <root>/var/lib/snapd/seed/, or drop --snap."
+            )
         chroot = ChrootService(self.runner, self.root, self.use_sudo)
         chroot.run("apt-get", "-y", "install", "snapd")
         for snap in self.options.specs:
