@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from distroforge import __version__
 from distroforge.ui.qt import QFileDialog, QInputDialog, QMessageBox
 from distroforge.ui.widgets import button
 
@@ -36,7 +37,7 @@ _IMAGE_MIME_TO_EXT = {
 _UNSPLASH_SEARCH_URL = "https://unsplash.com/s/photos/wallpaper"
 _PLYMOUTH_SPINNER_GALLERY_URL = "https://www.gnome-look.org/s/Gnome/find/?f=tags&lic=gplv2-later&page=1&search=plymouth"
 _GRUB_THEME_GALLERY_URL = "https://www.gnome-look.org/s/Gnome/find/?f=tags&lic=gplv2-later&page=1&search=grub"
-_DOWNLOAD_USER_AGENT = "DistroForge/0.3.5 (image browser)"
+_DOWNLOAD_USER_AGENT = f"DistroForge/{__version__} (image browser)"
 _CACHE_MAX_BYTES = 35 * 1024 * 1024  # Keep downloads bounded in the UI helper.
 _THEME_ARCHIVE_CACHE_MAX_BYTES = 250 * 1024 * 1024
 

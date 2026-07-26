@@ -6,11 +6,11 @@ from distroforge.core.capture_diff import CaptureDiff
 from distroforge.core.live_build import LiveBuildPlan
 from distroforge.core.livefs_iso import LivefsIsoPlan
 
-# Six report sections used to read `lines.extend(gen) or lines.append("-")`.
-# list.extend returns None, so the `or` fired unconditionally and a stray dash
-# followed every populated section. The placeholder now only shows up when the
-# section really is empty, and matches the "- none" spelling used by the other
-# report modules.
+# Six report sections extended a list and then, on the same logical line, fell
+# through to appending a placeholder. list.extend returns None, so that fallback
+# fired unconditionally and a stray dash followed every populated section, while
+# an empty section looked identical. The placeholder now shows up only when the
+# section really is empty, spelled "- none" like the other report modules.
 PLACEHOLDER = "- none"
 
 

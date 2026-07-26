@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "distroforge"
-version = "0.3.5"
+# Single source of truth: distroforge/__init__.py. The number also lives in
+# debian/changelog, which dpkg owns and packaging.py cross-checks.
+dynamic = ["version"]
 description = "DistroForge builds and customizes Ubuntu/Debian live ISO images."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +25,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: System :: Installation/Setup",
 ]
 dependencies = [
@@ -34,6 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "mypy>=1.11",
   "pytest>=8.2",
   "ruff>=0.5",
 ]
@@ -47,6 +51,7 @@ pyqt6 = [
   "PyQt6>=6.7",
 ]
 all = [
+  "mypy>=1.11",
   "pytest>=8.2",
   "ruff>=0.5",
   "typer>=0.12",
@@ -57,6 +62,9 @@ all = [
 distroforge = "distroforge.cli:main"
 distroforge-typer = "distroforge.typer_cli:run"
 distroforge-gui = "distroforge.ui.app:run"
+
+[tool.setuptools.dynamic]
+version = { attr = "distroforge.__version__" }
 
 [tool.setuptools]
 packages = [
@@ -74,6 +82,72 @@ distroforge = ["data/*.toml", "data/vulndb.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# These are ini keys on purpose: pytest 9 ignores --strict-markers and
+# --strict-config when they are passed through addopts, so putting them there
+# would look like a guard and enforce nothing.
+strict_markers = true
+strict_config = true
+filterwarnings = [
+  "error::DeprecationWarning",
+  "error::PendingDeprecationWarning",
+  # Not an error: a leaked descriptor must be visible without failing an
+  # unrelated test, and it is how the run_streaming leak surfaced.
+  "default::ResourceWarning",
+]
+
+[tool.mypy]
+# The floor of requires-python, not the interpreter that happens to be installed:
+# the tarfile extraction filter and other defaults differ across 3.11 to 3.14.
+python_version = "3.11"
+ignore_missing_imports = true
+# 209 of 247 modules are clean and stay clean. The 41 below are a debt list that
+# only shrinks; ignore_errors is per-module, so a regression anywhere else fails.
+# Entries were measured, not guessed -- see tests/test_typing_ratchet.py.
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+  "distroforge.ai.backend",
+  "distroforge.ai.forgeadvisor",
+  "distroforge.commands.beginner_iso",
+  "distroforge.commands.doctor",
+  "distroforge.commands.forgeadvisor",
+  "distroforge.commands.profile",
+  "distroforge.core.boot_proof",
+  "distroforge.core.bootstrap",
+  "distroforge.core.brand_identity",
+  "distroforge.core.build_history",
+  "distroforge.core.build_pipeline",
+  "distroforge.core.capture",
+  "distroforge.core.capture_diff",
+  "distroforge.core.casper",
+  "distroforge.core.customize",
+  "distroforge.core.definition",
+  "distroforge.core.demo_iso",
+  "distroforge.core.derivative_profile",
+  "distroforge.core.explain",
+  "distroforge.core.html_report",
+  "distroforge.core.interaction_plan",
+  "distroforge.core.live_build",
+  "distroforge.core.livefs_iso",
+  "distroforge.core.policy",
+  "distroforge.core.profile_resolver",
+  "distroforge.core.publish_drill",
+  "distroforge.core.publish_drill_diff",
+  "distroforge.core.readiness",
+  "distroforge.core.release_explain",
+  "distroforge.core.release_notes",
+  "distroforge.core.release_verification",
+  "distroforge.core.rich_console",
+  "distroforge.core.systemd_image",
+  "distroforge.core.terminal",
+  "distroforge.ui.build_controller",
+  "distroforge.ui.build_options_mapper",
+  "distroforge.ui.build_page",
+  "distroforge.ui.cli_equivalent",
+  "distroforge.ui.service_runner",
+  "distroforge.ui.terminal_actions",
+  "distroforge.ui.window_widgets",
+]
 
 [tool.ruff]
 line-length = 100

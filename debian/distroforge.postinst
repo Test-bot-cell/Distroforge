@@ -5,7 +5,6 @@ set -eu
 _user_favorite_apps_file() {
     user="$1"
     uid="$2"
-    desktop_file="distroforge.desktop"
     bus_path="/run/user/$uid/bus"
 
     if [ ! -S "$bus_path" ] || [ ! -x /usr/bin/gsettings ] || [ ! -x /usr/bin/python3 ]; then

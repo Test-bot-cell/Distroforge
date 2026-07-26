@@ -1,0 +1,49 @@
+# Deliberately offline. Every hook is `repo: local` with `language: system` or
+# `language: pygrep`, which declares install_environment = no_install: nothing is
+# cloned and no virtualenv is provisioned. A single `repo: https://` entry would
+# clone on first run, and any `language: python` hook would pip-install, so this
+# file would stop working on a machine without network and would violate the
+# project's rule that nothing installs itself.
+#
+# The pygrep hooks are ratchets against defects this tree actually shipped. Each
+# expression was checked to match the code before its fix and nothing after it.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: shellcheck
+        name: shellcheck (maintainer scripts)
+        entry: shellcheck
+        language: system
+        files: ^debian/(distroforge\.(postinst|preinst|prerm|postrm)|tests/smoke)$
+
+      - id: no-extend-or-append
+        name: "list.extend returns None, so `or append` always fires"
+        entry: '\.extend\([^)]*\)\s+or\s+\w+\.append'
+        language: pygrep
+        types: [python]
+
+      - id: no-unfiltered-extractall
+        name: "extractall without filter= follows symlinks out of the destination"
+        entry: 'extractall\((?![^)]*filter=)'
+        language: pygrep
+        types: [python]
+
+      - id: no-unversioned-iso-fallback
+        name: "the ISO name comes from artifact_paths.default_output_iso"
+        entry: '\{\s*(?:\w+\.)*name\s*\}\.iso'
+        language: pygrep
+        types: [python]
+        exclude: ^distroforge/core/(artifact_paths|evidence)\.py$
+
+      - id: no-inert-pytest-strictness
+        name: "--strict-markers and --strict-config are inert inside addopts on pytest 9"
+        entry: 'addopts.*--strict-(markers|config)'
+        language: pygrep
+        files: ^(pyproject\.toml|pytest\.ini|setup\.cfg|tox\.ini)$
