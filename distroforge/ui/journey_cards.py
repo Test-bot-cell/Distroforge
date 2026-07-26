@@ -96,8 +96,7 @@ class JourneyCardsGrid(QWidget):
         if not force and compact == self._compact:
             return
         self._compact = compact
-        while self._grid.count():
-            item = self._grid.takeAt(0)
+        while (item := self._grid.takeAt(0)) is not None:
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)

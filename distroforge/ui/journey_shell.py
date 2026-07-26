@@ -107,8 +107,7 @@ class JourneySpine(QWidget):
 
     def refresh(self, report=None) -> None:
         """Redraw the spine, reusing ``report`` when the caller already has one."""
-        while self._rows.count():
-            item = self._rows.takeAt(0)
+        while (item := self._rows.takeAt(0)) is not None:
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)

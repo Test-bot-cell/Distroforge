@@ -35,6 +35,10 @@ def button(text: str, slot: Callable[[], None], icon: str = "", primary: bool = 
 
 def toolbar_action(toolbar: QToolBar, text: str, slot: Callable[[], None], icon: str = "") -> None:
     action = toolbar.addAction(standard_icon(icon), text)
+    if action is None:
+        # Loud rather than silent: swallowing this would ship a toolbar button that
+        # looks right and does nothing, which is the hardest kind of defect to notice.
+        raise RuntimeError(f"Qt refused to add the toolbar action {text!r}")
     action.triggered.connect(slot)
 
 
@@ -54,9 +58,13 @@ class ElidingLabel(QLabel):
         self._full_text = text
         self.setToolTip(text)
 
-    def setText(self, text: str) -> None:  # noqa: N802
-        self._full_text = text
-        self.setToolTip(text)
+    def setText(self, text: str | None) -> None:  # noqa: N802
+        # QLabel.setText accepts None to clear the label, so narrowing the parameter to
+        # str broke substitutability: any code holding a QLabel could pass None and land
+        # here. Normalising to "" keeps _full_text a str for _elide().
+        value = text or ""
+        self._full_text = value
+        self.setToolTip(value)
         self._elide()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -140,8 +148,11 @@ class ResponsiveRow(QWidget):
         if columns == self._columns:
             return
         self._columns = columns
-        while self._grid.count():
-            item = self._grid.takeAt(0)
+        # takeAt() returning None is the documented terminator. Driving the loop from it
+        # rather than from count() removes the assumption that the two agree: the old
+        # form dereferenced whatever takeAt handed back, so a disagreement would have
+        # been an AttributeError inside a resize handler.
+        while (item := self._grid.takeAt(0)) is not None:
             widget = item.widget()
             if widget is not None:
                 widget.setParent(self)

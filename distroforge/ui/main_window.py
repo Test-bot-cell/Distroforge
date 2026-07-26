@@ -120,6 +120,7 @@ from distroforge.ui.project_actions import (
 )
 from distroforge.ui.project_page import build_project_page
 from distroforge.ui.qt import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -127,9 +128,13 @@ from distroforge.ui.qt import (
     QHBoxLayout,
     QKeySequence,
     QLabel,
+    QLineEdit,
+    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QShortcut,
     QSplitter,
     QStackedWidget,
@@ -176,6 +181,9 @@ from distroforge.ui.terminal_actions import (
 )
 from distroforge.ui.virtualization_page import build_virtualization_page
 from distroforge.ui.widgets import (
+    ElidingLabel,
+)
+from distroforge.ui.widgets import (
     button as _button,
 )
 from distroforge.ui.widgets import (
@@ -194,6 +202,102 @@ from distroforge.ui.window_widgets import build_window_widgets
 
 
 class MainWindow(ServiceRunnerMixin, QMainWindow):
+    # Widgets this window reads but does not create: build_window_widgets() and the
+    # page builders attach them from the outside, so nothing here assigns them and a
+    # type checker has no way to infer them. They were invisible rather than inferred
+    # until now -- the Qt shim made QMainWindow resolve to Any on a PyQt6 machine, an
+    # Any base class makes every attribute access legal, and the whole class went
+    # unchecked. Declaring them is what turns the checking back on.
+    #
+    # The list is deliberately the ones this module reads or must expose to satisfy a
+    # protocol it is passed to, not all 277 the builders attach: the rest belong to the
+    # modules that read them, which is what the
+    # BuildPageWindow / BuildControllerWindow / CliEquivalentWindow protocols already
+    # express. It needs no manual upkeep in that direction either -- reading an
+    # attribute that is not declared here is a mypy error, so the list grows when a
+    # reader needs it to. tests/test_qt_shim.py covers the other direction, where a
+    # builder renames a widget and leaves a declaration pointing at nothing.
+    header_project_label: ElidingLabel
+    project_label: ElidingLabel
+    source_starter_summary: ElidingLabel
+    summary_desktop: ElidingLabel
+    summary_packages: ElidingLabel
+    summary_release: ElidingLabel
+    summary_source: ElidingLabel
+
+    preset_status_label: QLabel
+    privilege_status_label: QLabel
+    snapshot_status_label: QLabel
+    workflow_level_status_label: QLabel
+
+    apt_cache_check: QCheckBox
+    auto_recovery_check: QCheckBox
+    backports_check: QCheckBox
+    from_scratch_check: QCheckBox
+    html_report_check: QCheckBox
+    pkexec_check: QCheckBox
+    prebuild_vm_check: QCheckBox
+    preview_check: QCheckBox
+    proposed_check: QCheckBox
+    prune_packages_check: QCheckBox
+    purge_remove_check: QCheckBox
+    release_artifacts_check: QCheckBox
+    reproducible_check: QCheckBox
+    rolling_full_upgrade_check: QCheckBox
+    rolling_upgrades_check: QCheckBox
+    sanitize_apt_lists_check: QCheckBox
+    sanitize_check: QCheckBox
+    sanitize_ssh_keys_check: QCheckBox
+    skip_deps_check: QCheckBox
+    snapshots_check: QCheckBox
+    sudo_check: QCheckBox
+    synaptic_check: QCheckBox
+    system_sync_check: QCheckBox
+    system_sync_fallback_check: QCheckBox
+    system_sync_post_install_only_check: QCheckBox
+    system_sync_post_install_tool_check: QCheckBox
+
+    desktop_combo: QComboBox
+    display_manager_combo: QComboBox
+    keyboard_combo: QComboBox
+    locale_combo: QComboBox
+    mode_combo: QComboBox
+    profile_combo: QComboBox
+    release_track_combo: QComboBox
+    source_starter_combo: QComboBox
+    system_sync_strategy_combo: QComboBox
+    terminal_backend_combo: QComboBox
+    timezone_combo: QComboBox
+
+    apt_cache_dir_edit: QLineEdit
+    apt_proxy_edit: QLineEdit
+    autologin_edit: QLineEdit
+    derivative_dockerfile_edit: QLineEdit
+    desktop_source_version_edit: QLineEdit
+    devel_suite_edit: QLineEdit
+    hostname_edit: QLineEdit
+    log_file_edit: QLineEdit
+    log_filter_edit: QLineEdit
+    output_iso_edit: QLineEdit
+    proposed_pin_edit: QLineEdit
+    source_iso_edit: QLineEdit
+    system_sync_hold_edit: QLineEdit
+    wallpaper_edit: QLineEdit
+
+    command_center_view: QPlainTextEdit
+    desktop_source_components_edit: QPlainTextEdit
+    install_edit: QPlainTextEdit
+    journey_view: QPlainTextEdit
+    logs: QPlainTextEdit
+    plan_view: QPlainTextEdit
+    plugins_view: QPlainTextEdit
+    remove_edit: QPlainTextEdit
+    repositories_edit: QPlainTextEdit
+
+    plan_steps_list: QListWidget
+    progress: QProgressBar
+    job_timer: QTimer
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("DistroForge")
@@ -259,7 +363,7 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         root_layout.addWidget(self._header())
         root_layout.addWidget(splitter, 1)
         self.setCentralWidget(root)
-        self.statusBar().showMessage("Ready")
+        self._show_status("Ready")
         self._restore_workflow_level()
         self._open_surface("start")
         self._refresh()
@@ -382,11 +486,17 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         combo.addItem("Open tool…", None)
         for label, payload in self._palette_entries():
             combo.addItem(label, payload)
-        combo.lineEdit().setPlaceholderText("Open tool…")
+        # setEditable(True) above is what creates both the line edit and the completer,
+        # so neither is None here; Qt annotates them as optional because they are absent
+        # on a non-editable combo.
+        line_edit = combo.lineEdit()
+        if line_edit is not None:
+            line_edit.setPlaceholderText("Open tool…")
         completer = combo.completer()
-        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        if completer is not None:
+            completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         _tame_combo(combo, visible_chars=16)
         combo.activated.connect(lambda _index: self._palette_navigate(combo))
         self._palette_combo = combo
@@ -1104,10 +1214,17 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         self._error("Create or open a project first.")
         return False
 
+    def _show_status(self, message: str) -> None:
+        # statusBar() builds the bar on its first call, so it is never None in practice.
+        # Narrowing once here beats repeating the check at every call site.
+        bar = self.statusBar()
+        if bar is not None:
+            bar.showMessage(message)
+
     def _log(self, text: str) -> None:
         self.logs.appendPlainText(text)
         first_line = text.splitlines()[0] if text else "Ready"
-        self.statusBar().showMessage(first_line[:160])
+        self._show_status(first_line[:160])
 
     def _error(self, text: str) -> None:
         self._log(f"ERROR: {text}")

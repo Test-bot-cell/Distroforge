@@ -107,9 +107,12 @@ filterwarnings = [
 # the tarfile extraction filter and other defaults differ across 3.11 to 3.14.
 python_version = "3.11"
 ignore_missing_imports = true
-# 209 of 247 modules are clean and stay clean. The 41 below are a debt list that
+# 209 of 250 modules are clean and stay clean. The 41 below are a debt list that
 # only shrinks; ignore_errors is per-module, so a regression anywhere else fails.
-# Entries were measured, not guessed -- see tests/test_typing_ratchet.py.
+# Entries were measured, not guessed -- see tests/test_typing_ratchet.py. Re-measured
+# on 2026-07-26 by dropping each entry in turn and re-running: all 41 are still dirty,
+# so none could be retired even after the ui/qt.py TYPE_CHECKING seam turned real
+# checking on for distroforge.ui.main_window and its neighbours.
 [[tool.mypy.overrides]]
 ignore_errors = true
 module = [

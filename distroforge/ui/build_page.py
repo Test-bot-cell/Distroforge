@@ -3,44 +3,59 @@ from __future__ import annotations
 from typing import Protocol
 
 from distroforge.ui.path_actions import picker
-from distroforge.ui.qt import QLabel, QVBoxLayout, QWidget
+from distroforge.ui.qt import (
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPlainTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 from distroforge.ui.step_focus import StepFocusHeader
 from distroforge.ui.widgets import button, button_group, responsive_form, responsive_row, section
 
 
+# Each member carries the widget class the builder really attaches, not QWidget. A
+# protocol attribute is invariant -- it can be read and written -- so QWidget here does
+# not mean "any widget will do", it means only a plain QWidget matches, and a window
+# declaring sudo_check as the QCheckBox it is would fail to satisfy this protocol. The
+# loose annotation was invisible while MainWindow itself was unchecked; the moment it
+# gained real types it became the thing rejecting them.
 class BuildPageWindow(Protocol):
-    sudo_check: QWidget
-    pkexec_check: QWidget
-    synaptic_check: QWidget
-    preview_check: QWidget
-    sanitize_check: QWidget
-    prune_packages_check: QWidget
-    sanitize_apt_lists_check: QWidget
-    sanitize_ssh_keys_check: QWidget
-    release_track_combo: QWidget
-    devel_suite_edit: QWidget
-    backports_check: QWidget
-    proposed_check: QWidget
-    proposed_pin_edit: QWidget
-    rolling_upgrades_check: QWidget
-    rolling_full_upgrade_check: QWidget
-    system_sync_check: QWidget
-    system_sync_strategy_combo: QWidget
-    system_sync_hold_edit: QWidget
-    system_sync_fallback_check: QWidget
-    system_sync_post_install_only_check: QWidget
-    system_sync_post_install_tool_check: QWidget
-    apt_cache_dir_edit: QWidget
-    apt_proxy_edit: QWidget
-    apt_cache_check: QWidget
-    snapshots_check: QWidget
-    auto_recovery_check: QWidget
-    workflow_level_status_label: QWidget
-    privilege_status_label: QWidget
-    snapshot_status_label: QWidget
-    preset_status_label: QWidget
-    plan_steps_list: QWidget
-    plan_view: QWidget
+    sudo_check: QCheckBox
+    pkexec_check: QCheckBox
+    synaptic_check: QCheckBox
+    preview_check: QCheckBox
+    sanitize_check: QCheckBox
+    prune_packages_check: QCheckBox
+    sanitize_apt_lists_check: QCheckBox
+    sanitize_ssh_keys_check: QCheckBox
+    release_track_combo: QComboBox
+    devel_suite_edit: QLineEdit
+    backports_check: QCheckBox
+    proposed_check: QCheckBox
+    proposed_pin_edit: QLineEdit
+    rolling_upgrades_check: QCheckBox
+    rolling_full_upgrade_check: QCheckBox
+    system_sync_check: QCheckBox
+    system_sync_strategy_combo: QComboBox
+    system_sync_hold_edit: QLineEdit
+    system_sync_fallback_check: QCheckBox
+    system_sync_post_install_only_check: QCheckBox
+    system_sync_post_install_tool_check: QCheckBox
+    apt_cache_dir_edit: QLineEdit
+    apt_proxy_edit: QLineEdit
+    apt_cache_check: QCheckBox
+    snapshots_check: QCheckBox
+    auto_recovery_check: QCheckBox
+    workflow_level_status_label: QLabel
+    privilege_status_label: QLabel
+    snapshot_status_label: QLabel
+    preset_status_label: QLabel
+    plan_steps_list: QListWidget
+    plan_view: QPlainTextEdit
 
     def _clear_build_preset(self) -> None: ...
 

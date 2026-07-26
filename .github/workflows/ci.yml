@@ -44,16 +44,14 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Typecheck
-        # Only against the binding the package ships. distroforge/ui/qt.py is a
-        # try/except shim, and mypy is asymmetric about it: the fallback branch
-        # redefining a name that resolved in the try branch is a no-redef error,
-        # while the reverse -- a real name redefining one that came from an
-        # unresolvable import -- is not. With PySide6 installed and PyQt6 absent
-        # that is 35 no-redef errors, plus 129 more from PySide6's own stubs
-        # disagreeing with calls PyQt6 accepts. Making the tree clean against both
-        # bindings is real work and is not done; asserting it here would only mean
-        # the assertion is switched off. The runtime matrix still exercises both.
-        if: matrix.qt-binding == 'pyqt6'
+        # On both legs of the matrix, which it could not be while distroforge/ui/qt.py
+        # was a plain try/except shim: mypy is asymmetric about those, so the same tree
+        # was clean with PyQt6 installed and had 35 "Incompatible import" errors with
+        # PySide6 installed. This step was pinned to pyqt6 to stay green, and pinning it
+        # hid something worse -- with PySide6 unresolvable, QMainWindow resolved to Any,
+        # an Any base class makes every attribute access legal, and MainWindow was not
+        # being checked at all. The shim now types against PyQt6 under TYPE_CHECKING and
+        # keeps the fallback at runtime, so this result no longer depends on the binding.
         run: python -m mypy distroforge/
       - name: Test
         run: python -m pytest -q

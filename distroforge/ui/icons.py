@@ -157,7 +157,13 @@ class IconRegistry:
         if not themed.isNull():
             return themed
         fallback = _STANDARD_FALLBACK.get(name, QStyle.StandardPixmap.SP_FileIcon)
-        return QApplication.style().standardIcon(fallback)
+        # style() is only None before an application object exists, which cannot happen
+        # on the way to painting an icon; an empty icon is the right degradation anyway,
+        # since the caller is already in a fallback path.
+        style = QApplication.style()
+        if style is None:
+            return QIcon()
+        return style.standardIcon(fallback)
 
     def phase_icon(self, phase: BuildPhase | str) -> QIcon:
         value = phase if isinstance(phase, BuildPhase) else BuildPhase(str(phase))

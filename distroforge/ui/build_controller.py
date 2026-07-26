@@ -12,19 +12,22 @@ from distroforge.core.doctor import (
     missing_required,
     run_doctor,
 )
+from distroforge.core.project import Project
 from distroforge.core.snapshots import SnapshotService
 from distroforge.ui.jobs import GuiJob
-from distroforge.ui.qt import QMessageBox
+from distroforge.ui.qt import QCheckBox, QLineEdit, QMessageBox, QProgressBar, QTimer
 
 
+# See the note on BuildPageWindow: protocol attributes are invariant, so `object` is not
+# a permissive annotation but an exact one, and it rejected the window that implements it.
 class BuildControllerWindow(Protocol):
     build_job: GuiJob | None
-    job_timer: object
-    progress: object
-    project: object | None
-    skip_deps_check: object
-    pkexec_check: object
-    log_file_edit: object
+    job_timer: QTimer
+    progress: QProgressBar
+    project: Project | None
+    skip_deps_check: QCheckBox
+    pkexec_check: QCheckBox
+    log_file_edit: QLineEdit
     _job_step_total: int
     _job_step_done: int
 

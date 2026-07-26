@@ -67,6 +67,37 @@ entries naming modules that no longer exist. Adding a module to that list to mak
 a red check go green is how the `distroforge-typer explain` crash survived
 unnoticed; fix the type error instead.
 
+## The Qt import shim, and why it is shaped the way it is
+
+`distroforge/ui/qt.py` is the only module that imports Qt directly. It types the tree
+against **PyQt6** — the binding `python3-distroforge` depends on — inside
+`if TYPE_CHECKING`, and keeps the runtime preference for PySide6 with a PyQt6 fallback
+in the `else`. Do not flatten that back into a plain `try`/`except` import.
+
+`mypy` treats the two arrangements very differently. With a plain `try`/`except`, the
+branch that redefines names the other branch already resolved is 35 errors — so the
+tree was clean on a PyQt6 machine, red on a PySide6 one, and the CI Typecheck step had
+to be pinned to one binding to stay green. Pinning it hid the worse half: with PySide6
+unresolvable, `ignore_missing_imports` made `QMainWindow` an `Any`, an `Any` base class
+makes every attribute access legal, and `MainWindow` was not being type-checked at all.
+
+Two consequences worth knowing before you touch the UI:
+
+- Widgets are attached to the window from the outside by `build_window_widgets()` and
+  the page builders, so `MainWindow` **declares** the ones it reads or has to expose to
+  satisfy a protocol. Read an undeclared one and `mypy` says so; that is the signal to
+  add the declaration, with the widget's own class and not `QWidget`.
+- A `Protocol` attribute is invariant. `sudo_check: QWidget` in a window protocol does
+  not mean "any widget will do" — it means only a plain `QWidget` matches, and it will
+  reject a window that declares the `QCheckBox` it actually holds. Annotate protocol
+  members with the real class too.
+
+`tests/test_qt_shim.py` covers what neither tool can see: that the typing branch and the
+runtime branches still export the same names, and that no declaration on `MainWindow`
+points at a widget no builder assigns any more. Type-checking against PyQt6 only is a
+deliberate trade — a call PyQt6 accepts and PySide6 rejects is not a type error here, and
+the eight-way runtime matrix is what covers it.
+
 ## Tests must be able to fail
 
 A new test has to fail against the code it is meant to guard. Check it: apply the

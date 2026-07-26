@@ -93,8 +93,12 @@ class StepFocusHeader(QFrame):
     def _set_status(self, status: str, text: str) -> None:
         self._status.setText(text)
         self.setProperty("focusStatus", status)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        # The unpolish/polish pair is what makes the new focusStatus property repaint;
+        # both calls have to reach the same style object, so it is fetched once.
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
 
     def set_step(self, step_id: str) -> None:
         """Retarget this banner to another journey step.
