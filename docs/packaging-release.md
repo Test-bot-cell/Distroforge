@@ -59,6 +59,19 @@ produced `.deb`, `.changes` and `.buildinfo` artifacts, records file sizes and S
 digests, runs `lintian` and `autopkgtest` when available, and embeds the packaging policy
 verdict in one reviewable report.
 
+`lintian` is always invoked as `lintian --profile debian --no-tag-display-limit`. The
+profile is pinned because a lintian profile is a **vendor**, never a suite: there is no
+`resolute` profile, and an unpinned run takes its verdict from whichever vendor the host
+happens to be, so the same `.dsc` could pass on one machine and fail on the next. The
+display limit is lifted because a truncated report cannot be turned into a reason string.
+The verdict is graded from the tags rather than the exit code — `lintian` exits 0 on a
+package carrying warnings — so any tag reads as `review required` with every tag kept in
+the reason, an `E:` tag as `failed`, and `127` as `missing`. `--fail-on warning` is the
+wrong lever here: it turns the exit code into 2 for a healthy artifact without blocking
+anything and still says nothing about which tag to fix. Tags get fixed, never overridden:
+the package ships no `lintian/overrides/distroforge`, because silencing a tag is not the
+same thing as being clean.
+
 Before running the normal test suite outside a package build, clean generated Debian
 artifacts with:
 

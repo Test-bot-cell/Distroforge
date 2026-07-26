@@ -62,6 +62,70 @@ def session(tmp_path, monkeypatch):
     return bus
 
 
+class _Args:
+    """The argparse namespace ``distroforge dock`` receives."""
+
+    command = "dock"
+
+    def __init__(self, pin: bool = False, unpin: bool = False, dry_run: bool = False) -> None:
+        self.pin = pin
+        self.unpin = unpin
+        self.dry_run = dry_run
+
+
+def test_the_cli_half_reports_the_dock_without_changing_it(session, tmp_path, monkeypatch, capsys) -> None:
+    # Parity is a release requirement, so the setting the First Run dialog owns has to
+    # be reachable without a display -- and reading it must stay a read.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    runner = FakeGsettingsRunner()
+    monkeypatch.setattr("distroforge.commands.dock.CommandRunner", lambda dry_run=True: runner)
+
+    from distroforge.commands.dock import render_dock_command
+
+    output = render_dock_command(_Args())
+
+    assert "not pinned to the dock" in output
+    assert "not answered yet" in output
+    assert [spec.argv[:2] for spec in runner.history] == [("gsettings", "get")]
+
+
+def test_the_cli_half_plans_the_write_under_dry_run(session, tmp_path, monkeypatch) -> None:
+    # A dry-run built on an unread dock would propose replacing every favorite with a
+    # single entry, so the read executes and only the write is planned.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    real = FakeGsettingsRunner()
+    planned = CommandRunner(dry_run=True)
+    monkeypatch.setattr(
+        "distroforge.commands.dock.CommandRunner",
+        lambda dry_run=True: planned if dry_run else real,
+    )
+
+    from distroforge.commands.dock import render_dock_command
+
+    output = render_dock_command(_Args(pin=True, dry_run=True))
+
+    assert "gsettings set" in output
+    assert LAUNCHER in output
+    assert "org.gnome.Nautilus.desktop" in output
+    # Nothing was written and nothing was remembered: a plan is not an answer.
+    assert [spec.argv[:2] for spec in real.history] == [("gsettings", "get")]
+    assert preferences.load_dock_pin_choice() is None
+
+
+def test_the_cli_half_records_the_answer_when_it_acts(session, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    runner = FakeGsettingsRunner()
+    monkeypatch.setattr("distroforge.commands.dock.CommandRunner", lambda dry_run=True: runner)
+
+    from distroforge.commands.dock import render_dock_command
+
+    render_dock_command(_Args(pin=True))
+    assert preferences.load_dock_pin_choice() is True
+
+    render_dock_command(_Args(unpin=True))
+    assert preferences.load_dock_pin_choice() is False
+
+
 def test_pin_appends_without_disturbing_the_existing_dock(session) -> None:
     runner = FakeGsettingsRunner()
 

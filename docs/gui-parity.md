@@ -13,7 +13,49 @@ Adding a CLI command without a GUI mapping must fail tests.
 
 Build options must map to widgets where practical; documented exceptions are allowed only
 for argparse help, execution confirmation, and workflows covered by import/export actions.
+That last exception covers `--definition` as a *workflow*: the import and export actions
+are the GUI equivalent of passing a definition file. It does not extend to the CLI-equivalent
+preview, whose title promises the command for the current settings.
 GUI screens should expose a readable CLI equivalent for the current settings.
+
+The GUI-to-CLI preview is **generated**, not curated. `ui/cli_equivalent.py` renders the
+`BuildOptions` returned by `ui/build_options_mapper.py` — the very object the build
+consumes — as a diff against the `BuildOptions()` defaults a flagless `distroforge build`
+produces, so every option the screen can set appears in the command. Three options are
+deliberately absent and listed with their reason in `UNRENDERED_OPTIONS`: `--help` and
+`--execute`, the parser's own documented exceptions, and `--profile`, which is expanded
+into the `--install`/`--remove` entries it resolves to. `--profile` is not a
+`BUILD_OPTION_EXCEPTIONS` entry, because it does have a widget. A round-trip test in
+`tests/test_gui_cli_parity.py` parses the rendered command back through argparse and
+asserts the resulting `BuildOptions` is identical, so the preview cannot drift from the
+build again.
+
+An imported build preset follows the CLI's `--definition` semantics: the definition is
+applied first, then the widgets override it, exactly as `commands/build.py` applies the
+definition before `apply_cli_overrides` re-applies the explicit flags. Importing a preset
+therefore hydrates the widgets through `apply_build_options_to_window`; it never bypasses
+them. Six settings no widget can hold — apt-cache cleanup during sanitize, the PPA
+fingerprint requirement and keyserver, the SBOM switch, the seed file name and switch, and
+desktop-source component configure arguments — are carried over from the preset and named,
+in words, by the single preset status line on **Build & Release**, next to a local
+**Clear preset** action. When a preset is loaded the rendered CLI equivalent emits
+`--definition PATH` first, then the overriding flags.
+
+- CLI `--install` and `--snap` also populate `SeedOptions`, so the GUI and the CLI write
+  the same `manifests/distroforge.txt` for the same settings. The GUI stores the raw
+  `name:channel:classic` snap specs, matching the CLI, and a preset exported from the GUI
+  keeps them in its `seeds` block.
+- CLI `dock --pin|--unpin` maps to the dock checkbox in the First Run dialog; both call
+  `core/gnome_favorites.py`, write `org.gnome.shell favorite-apps` for the invoking user
+  only, and never escalate privilege. The dialog is reachable from the **First Run**
+  toolbar action, so the answer stays revocable. Reading the dock executes even under
+  `--dry-run`: a plan built on an unread dock would propose replacing every favorite with
+  a single entry.
+
+Every mapping's `gui_surface` must name a surface the window actually registers. The five
+that are deliberately not stacked pages — the **Doctor**, **Plan** and **Explain** toolbar
+actions, the First Run dialog, and the application entry point — are listed in
+`NON_PAGE_SURFACES`, so an exception is a decision on the record rather than a silent pass.
 The CLI `readiness` output and GUI Readiness panels must both include next recommended
 actions from the same `core/workflows.py` recommendation engine.
 The CLI `journey` output and GUI Command Center must both render the guided build journey

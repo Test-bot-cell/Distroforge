@@ -1,3 +1,39 @@
+distroforge (0.3.5-3) resolute; urgency=medium
+
+  * Remove debian/distroforge.postinst. Its embedded python3 payload raised
+    SyntaxError on every invocation from 0.3.4-4 onward, and the absence of
+    #DEBHELPER# meant dh_python3's py3compile fragment was dropped, so the
+    installed package never byte-compiled its modules. The generated postinst
+    is restored by dropping the override.
+  * Add "distroforge dock --pin/--unpin", and a dock checkbox in the First Run
+    dialog, as the consenting replacement for that hook: the GNOME favorites
+    are written for the invoking user, in that user's own session, without
+    privilege escalation, and can be revoked the same way.
+  * Grade lintian from its tags instead of its exit code, which reported a
+    package carrying warnings as clean, and keep every tag in the reason. Pin
+    the invocation to "--profile debian": a lintian profile is a vendor, never
+    a suite. Stop requiring a lintian overrides file the package does not ship.
+  * Run the test phase against the staged build tree via PYBUILD_TEST_ARGS, so
+    a file missing from package-data fails the build instead of passing it
+    against the source checkout.
+  * Drop debootstrap, qemu-system-x86 and squashfs-tools from Build-Depends:
+    the offline rootless test suite never invokes them and they are already
+    runtime Depends. Drop the qemu-kvm Recommends, a virtual package with no
+    candidate; doctor now names qemu-system-x86 so its apt line can be pasted.
+  * Give each autopkgtest its own $AUTOPKGTEST_TMP scratch directory instead of
+    fixed /tmp names, assert the packaged example rather than falling back to
+    the source tree, exercise distroforge-typer, and add a GUI import test that
+    declares python3-pyqt6 rather than relying on the @ expansion.
+  * Reject archive members whose symlink target escapes the destination, and
+    quote every argument of the generated desktop-source and printed-plan
+    commands, closing three untrusted-input paths.
+  * Fix the checksum manifest naming the wrong file, the chroot hooks shipped
+    inside the image, the missing dpkg-deb packaging step, the unprivileged
+    snapshot restore, the unversioned ISO name, the accepted all-zero GPG
+    fingerprint, and the kernel selection crash on a non-numeric directory.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Sun, 26 Jul 2026 19:58:02 +0200
+
 distroforge (0.3.5-2) resolute; urgency=medium
 
   * Stabilize profile diff UX for no-regression compatibility while preserving

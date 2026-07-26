@@ -34,6 +34,7 @@ CLI_GUI_COMMANDS: tuple[CommandGuiMapping, ...] = (
     CommandGuiMapping("doctor", "Check host/Python dependencies", "Toolbar Doctor", True),
     CommandGuiMapping("host", "Show host build capabilities", "Command Center"),
     CommandGuiMapping("chroot-backends", "Show maintainer chroot backend availability", "Maintainer page"),
+    CommandGuiMapping("dock", "Pin or unpin the launcher in the GNOME dock", "First Run / docs"),
     CommandGuiMapping("presets", "List/export presets", "Presets page"),
     CommandGuiMapping("compat", "Check release compatibility", "Command Center", True),
     CommandGuiMapping("ci", "Run CI checks", "Build & Release page", True),

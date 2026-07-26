@@ -88,7 +88,17 @@ shell so it can be fact-checked, not merely asserted.
 5. **Teach by showing state.** The GUI teaches by surfacing readiness,
    privilege state, snapshot behavior, the current GUI-to-CLI equivalent, and
    the next recommended action — not by dumping logs. Logs stay available for
-   diagnosis but are never the primary teaching surface.
+   diagnosis but are never the primary teaching surface. A failed build states
+   one verdict in words — the canonical failure title from
+   `core/build_diagnosis.py` — plus the single next action that rule carries,
+   with the raw command output folded behind **Show Details**. The standard
+   Execute path and the beginner ISO path read that verdict from the same
+   taxonomy, so one log is never labelled two different ways.
+   An imported build preset is disclosed by exactly one status line on
+   **Build & Release**, stating in words what the preset still controls, with a
+   local **Clear preset** action beside it. No section is greyed out and no extra
+   panel appears: the widgets stay live and any edit wins, so the disclosure adds
+   a sentence rather than a mode to keep track of.
 
 6. **No control is ever clipped.** At any window width and on any desktop
    environment, every control stays reachable: panels reflow and scroll rather

@@ -305,6 +305,17 @@ and
 .B gui
 Launch the Qt desktop interface; equivalent to
 .BR distroforge\-gui (1).
+.TP
+.BR dock " [" \-\-pin " | " \-\-unpin "] [" \-\-dry\-run ]
+Report or change whether the DistroForge launcher is pinned in the GNOME dock.
+Without an action the current favorites are printed and nothing is changed. This
+is the command-line half of the First Run dialog's dock checkbox: it writes
+.I org.gnome.shell favorite\-apps
+for the invoking user only, through that user's own session bus, and never
+escalates privilege. Reading the dock always executes, including under
+.BR \-\-dry\-run ,
+because a plan built on an unread dock would propose replacing every favorite
+with a single entry.
 .SH OPTIONS
 .SS Global
 .TP

@@ -177,9 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--python", action="store_true", help="Check Python package dependencies")
     doctor_parser.add_argument("--debian-dev", action="store_true", help="Check Debian/Ubuntu maintainer tooling")
     doctor_parser.add_argument("--fix-python", action="store_true", help="Print venv install commands")
+    from .commands.dock import register_dock_commands
     from .commands.host import register_host_commands
 
     register_host_commands(sub)
+    register_dock_commands(sub)
 
     preset_parser = sub.add_parser("presets", help="List or export built-in customization presets")
     preset_parser.add_argument("--export", choices=list(BUILTIN_PRESETS))
@@ -608,6 +610,12 @@ def _main(argv: list[str] | None = None) -> None:
     host_output = render_host_command(args)
     if host_output is not None:
         print(host_output)
+        return
+
+    from .commands.dock import render_dock_command
+    dock_output = render_dock_command(args)
+    if dock_output is not None:
+        print(dock_output)
         return
 
     if args.command == "profiles":

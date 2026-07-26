@@ -100,17 +100,21 @@ def parse_favorites(raw: str) -> tuple[str, ...]:
     return tuple(str(item) for item in entries if isinstance(item, str))
 
 
-def pin_launcher(runner: CommandRunner) -> FavoritesState:
-    """Append the launcher to the dock. Idempotent, and a no-op when already pinned."""
-    state = read_favorites(runner)
+def pin_launcher(runner: CommandRunner, reader: CommandRunner | None = None) -> FavoritesState:
+    """Append the launcher to the dock. Idempotent, and a no-op when already pinned.
+
+    ``reader`` exists for ``--dry-run``: the read has to be real for the plan to mean
+    anything -- ``gsettings get`` changes nothing -- while the write stays planned only.
+    """
+    state = read_favorites(reader or runner)
     if not state.available or state.pinned:
         return state
     return _write_favorites(runner, (*state.entries, LAUNCHER))
 
 
-def unpin_launcher(runner: CommandRunner) -> FavoritesState:
+def unpin_launcher(runner: CommandRunner, reader: CommandRunner | None = None) -> FavoritesState:
     """Remove the launcher from the dock, leaving every other entry in place."""
-    state = read_favorites(runner)
+    state = read_favorites(reader or runner)
     if not state.available or not state.pinned:
         return state
     return _write_favorites(runner, tuple(item for item in state.entries if item != LAUNCHER))
