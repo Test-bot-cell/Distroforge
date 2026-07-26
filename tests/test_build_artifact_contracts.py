@@ -115,26 +115,22 @@ def test_default_output_iso_carries_the_release_version(tmp_path: Path) -> None:
 
 
 # The builder writes {name}-{version}.iso. Every consumer that invented its own
-# unversioned fallback reported a missing ISO for an ISO that existed. One
-# helper now owns the name; these modules still hold their own copy and are
-# rewritten by the pending responsiveness work.
-PENDING_UNVERSIONED_FALLBACKS = {
-    "distroforge/ui/artifacts_page.py": "moved to a worker by the responsiveness fix",
-    "distroforge/ui/artifacts_actions.py": "moved to a worker by the responsiveness fix",
-    "distroforge/ui/main_window.py": "moved to a worker by the responsiveness fix",
-    "distroforge/core/evidence.py": "memoised by the responsiveness fix",
-}
-
+# unversioned fallback reported a missing ISO for an ISO that existed, so
+# artifact_paths.default_output_iso is the only place allowed to spell the name.
 _UNVERSIONED = re.compile(r"""\{\s*(?:\w+\.)*name\s*\}\.iso""")
-# The module that owns the canonical name describes the old shape in its docstring.
-_NAME_OWNER = "distroforge/core/artifact_paths.py"
+# The owner of the canonical name describes the old shape in its docstring, and
+# check_source_tree keeps a directory-name guess for trees that are not projects.
+_ALLOWED_TO_SPELL_IT = {
+    "distroforge/core/artifact_paths.py": "defines the canonical name",
+    "distroforge/core/evidence.py": "check_source_tree accepts non-project directories",
+}
 
 
 def test_no_module_invents_its_own_unversioned_iso_fallback() -> None:
     offenders = {}
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
-        if rel in PENDING_UNVERSIONED_FALLBACKS or rel == _NAME_OWNER:
+        if rel in _ALLOWED_TO_SPELL_IT:
             continue
         hits = _UNVERSIONED.findall(path.read_text(encoding="utf-8"))
         if hits:
@@ -143,8 +139,20 @@ def test_no_module_invents_its_own_unversioned_iso_fallback() -> None:
     assert offenders == {}, f"use default_output_iso instead: {offenders}"
 
 
-def test_the_pending_list_stays_honest() -> None:
-    # An entry that no longer offends must be removed, or the list becomes a lie.
-    for rel in PENDING_UNVERSIONED_FALLBACKS:
+def test_the_allow_list_stays_honest() -> None:
+    # An entry that no longer spells the name must be dropped, or it becomes a lie.
+    for rel in _ALLOWED_TO_SPELL_IT:
         text = (ROOT / rel).read_text(encoding="utf-8")
-        assert _UNVERSIONED.search(text), f"{rel} is fixed, drop it from the pending list"
+        assert _UNVERSIONED.search(text), f"{rel} no longer needs the exemption"
+
+
+def test_evidence_source_tree_prefers_the_canonical_name_for_a_real_project(
+    tmp_path: Path,
+) -> None:
+    from distroforge.core.evidence import _source_tree_iso
+
+    project = _bootstrap_project(tmp_path, "TreeScan")
+    project.save()
+
+    assert _source_tree_iso(project.root, project.output_dir).name == "TreeScan-26.04.iso"
+    assert _source_tree_iso(tmp_path / "not-a-project", tmp_path).name == "not-a-project.iso"

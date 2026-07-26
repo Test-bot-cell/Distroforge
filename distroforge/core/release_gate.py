@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 from .artifact_paths import default_artifact_paths
 from .build import BuildOptions
 from .diff_preview import DiffPreviewService
+from .hashing import sha256_file, sha256_from_sums
 from .packaging import packaging_policy_report
 from .project import Project
 from .provenance import CYCLONEDX_FILENAME, SPDX_FILENAME
@@ -79,17 +79,28 @@ class ReleaseGateService:
         *,
         iso: Path | None = None,
         output_dir: Path | None = None,
+        verify_checksums: bool = True,
     ) -> ReleaseGateReport:
+        """Report the maintainer publish gate for ``project``.
+
+        ``verify_checksums=False`` answers the SHA256 items from the SHA256SUMS
+        sidecar instead of re-reading the ISO, which is what the guided journey
+        status needs: it is recomputed on every refresh and must not hash a
+        multi-gigabyte artifact on the Qt thread. The verifying default stays on
+        every authoritative path (``distroforge release-gate``, the Artifacts
+        page, ``check_journey_step``), so the gate is never self-confirming
+        where its verdict is the answer.
+        """
         paths = default_artifact_paths(project)
         iso = iso or options.output_iso or paths.output_iso
         output_dir = output_dir or iso.parent
         report = ReleaseGateReport(project.root, iso, output_dir)
         _check_source_trust(report, project, options)
         _check_vuln_policy(report, project, options)
-        _check_iso_and_checksums(report, iso, output_dir)
+        _check_iso_and_checksums(report, iso, output_dir, verify_checksums)
         _check_release_files(report, output_dir, options)
         _check_boot_proof(report, output_dir, options)
-        _check_release_readiness(report, iso, output_dir)
+        _check_release_readiness(report, iso, output_dir, verify_checksums)
         _check_packaging_policy(report, project.root)
         _check_publish_signing(report, project.root, options)
         return report
@@ -128,7 +139,9 @@ def _check_vuln_policy(report: ReleaseGateReport, project: Project, options: Bui
         report.items.append(ReleaseGateItem("vuln-scan", "ready", f"No known advisories matched: {summary}"))
 
 
-def _check_iso_and_checksums(report: ReleaseGateReport, iso: Path, output_dir: Path) -> None:
+def _check_iso_and_checksums(
+    report: ReleaseGateReport, iso: Path, output_dir: Path, verify_checksums: bool = True
+) -> None:
     if not iso.exists():
         report.items.append(ReleaseGateItem("iso", "blocked", "Final ISO is missing."))
         report.items.append(ReleaseGateItem("sha256", "blocked", "Cannot verify SHA256 without an ISO."))
@@ -138,8 +151,16 @@ def _check_iso_and_checksums(report: ReleaseGateReport, iso: Path, output_dir: P
     if not sums.exists():
         report.items.append(ReleaseGateItem("sha256", "blocked", "SHA256SUMS is missing."))
         return
-    expected = _sha_from_sums(sums, iso.name)
-    actual = _sha256(iso)
+    expected = sha256_from_sums(sums, iso.name)
+    if not verify_checksums:
+        # Status-only pass: SHA256SUMS must cover the ISO, but the bytes are not
+        # re-read. Whoever needs the verdict itself asks with the default.
+        if expected is None:
+            report.items.append(ReleaseGateItem("sha256", "blocked", "SHA256SUMS does not list the ISO."))
+            return
+        report.items.append(ReleaseGateItem("sha256", "ready", expected))
+        return
+    actual = sha256_file(iso)
     if expected != actual:
         report.items.append(ReleaseGateItem("sha256", "blocked", "SHA256SUMS does not match the ISO."))
         return
@@ -186,8 +207,10 @@ def _check_boot_proof(report: ReleaseGateReport, output_dir: Path, options: Buil
         report.items.append(ReleaseGateItem("boot-proof", "blocked", "No QEMU, bootcheck or QA proof configured."))
 
 
-def _check_release_readiness(report: ReleaseGateReport, iso: Path, output_dir: Path) -> None:
-    readiness = ReleaseReadinessService().check(iso, output_dir)
+def _check_release_readiness(
+    report: ReleaseGateReport, iso: Path, output_dir: Path, verify_checksums: bool = True
+) -> None:
+    readiness = ReleaseReadinessService().check(iso, output_dir, verify_checksum=verify_checksums)
     report.items.append(
         ReleaseGateItem(
             "release-readiness",
@@ -222,13 +245,6 @@ def _check_publish_signing(report: ReleaseGateReport, root: Path, options: Build
         report.items.append(ReleaseGateItem("publish-signing", "ready", str(bundle)))
 
 
-def _sha_from_sums(path: Path, name: str) -> str | None:
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and Path(parts[-1]).name == name:
-            return parts[0]
-    return None
-
 
 def _boot_proof_summary(path: Path) -> dict[str, str]:
     try:
@@ -243,10 +259,3 @@ def _boot_proof_summary(path: Path) -> dict[str, str]:
         "proof_level": str(data.get("proof_level", "none")),
     }
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

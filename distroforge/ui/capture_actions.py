@@ -104,31 +104,54 @@ def browse_partition_layout_action(window) -> None:
         window.image_partition_layout_edit.setText(path)
 
 
+def _capture_work(window):
+    """Freeze the capture inputs read from widgets into a thread-safe callable.
+
+    The scan shells out to apt-mark and systemctl and, with "include configs",
+    walks and hashes whole directory trees -- unbounded work that must not run on
+    the Qt thread. Every widget is read here, before the worker starts.
+    """
+    target = Path(window.capture_target_edit.text().strip() or "/")
+    sanitize = str(window.capture_sanitize_combo.currentData() or "strict")
+    include_configs = _capture_include_configs(window)
+    include_config_globs = _capture_include_config_globs(window)
+
+    def _work():
+        return InstalledSystemCaptureService().capture(
+            target,
+            sanitize=sanitize,
+            include_configs=include_configs,
+            include_config_globs=include_config_globs,
+        )
+
+    return _work
+
+
 def run_capture_scan_action(window) -> None:
-    profile = InstalledSystemCaptureService().capture(
-        Path(window.capture_target_edit.text().strip() or "/"),
-        sanitize=str(window.capture_sanitize_combo.currentData() or "strict"),
-        include_configs=_capture_include_configs(window),
-        include_config_globs=_capture_include_config_globs(window),
-    )
-    window.capture_view.setPlainText(profile.render_summary())
-    window.capture_profile_path = None
-    window._log("Captured installed system intent for review.")
+    def _done(profile):
+        window.capture_view.setPlainText(profile.render_summary())
+        window.capture_profile_path = None
+        window._log("Captured installed system intent for review.")
+
+    window._run_in_worker(_capture_work(window), _done, "Scanning the installed system…")
 
 
 def export_capture_profile_action(window) -> None:
     target = _capture_output_path(window)
-    profile = InstalledSystemCaptureService().capture(
-        Path(window.capture_target_edit.text().strip() or "/"),
-        sanitize=str(window.capture_sanitize_combo.currentData() or "strict"),
-        include_configs=_capture_include_configs(window),
-        include_config_globs=_capture_include_config_globs(window),
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(profile.render_yaml(), encoding="utf-8")
-    window.capture_profile_path = target
-    window.capture_view.setPlainText(profile.render_summary() + f"\n\nWrote {target}")
-    window._log(f"Exported capture profile {target}")
+    work = _capture_work(window)
+
+    def _work():
+        profile = work()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(profile.render_yaml(), encoding="utf-8")
+        return profile
+
+    def _done(profile):
+        window.capture_profile_path = target
+        window.capture_view.setPlainText(profile.render_summary() + f"\n\nWrote {target}")
+        window._log(f"Exported capture profile {target}")
+
+    window._run_in_worker(_work, _done, "Exporting the capture profile…")
 
 
 def rebuild_from_capture_action(window) -> None:

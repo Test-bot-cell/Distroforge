@@ -420,7 +420,12 @@ def _release_evidence(project: Project, options: BuildOptions) -> bool:
 def _publish_gate_ready(project: Project, options: BuildOptions) -> bool:
     from .release_gate import ReleaseGateService
 
-    return not ReleaseGateService().check(project, options).blocked
+    # Journey status, not a verdict: this runs on every spine/card refresh, so it
+    # answers the checksum items from the SHA256SUMS sidecar and checks that the
+    # evidence files exist instead of re-reading the ISO twice. The verifying gate
+    # stays in _check_publish_gate, which the step panel and the Artifacts page
+    # call on demand.
+    return not ReleaseGateService().check(project, options, verify_checksums=False).blocked
 
 
 def _extension_contract(project: Project, options: BuildOptions) -> bool:

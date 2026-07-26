@@ -71,9 +71,22 @@ def build_command_center_page(window) -> QWidget:
     return page
 
 
-def command_center_text(window) -> tuple[str, str]:
+def journey_report(window):
+    """The journey report for the window's current project, options and level.
+
+    The spine, the command center and the Start cards are three views of one
+    (project, options, level) triple. A refresh computes the report once here and
+    hands the same object to all three, instead of paying for the engine's
+    per-step checks once per view.
+    """
+    if not window.project:
+        return None
     level = window.mode_combo.currentData() or "beginner"
-    journey = build_journey(window.project, window._build_options(), level).render_text()
+    return build_journey(window.project, window._build_options(), level)
+
+
+def command_center_text(window, report=None) -> tuple[str, str]:
+    journey = (report or journey_report(window)).render_text()
     parity = (
         gui_parity_report()
         + "\n\n" + product_capability_text()

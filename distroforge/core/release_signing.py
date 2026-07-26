@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
+from .hashing import sha256_file
 from .host_artifacts import write_host_artifact
 from .project import Project
 
@@ -113,7 +113,7 @@ def sign_release_bundle(
 
 def _write_manifest(project: Project, bundle_dir: Path, manifest_path: Path) -> tuple[ReleaseManifestEntry, ...]:
     entries = tuple(
-        ReleaseManifestEntry(path.name, path.stat().st_size, _sha256(path))
+        ReleaseManifestEntry(path.name, path.stat().st_size, sha256_file(path))
         for path in sorted(bundle_dir.iterdir())
         if path.is_file() and path.name not in {"RELEASE-MANIFEST.json", "SIGNING-REPORT.json"} and not path.name.endswith(".asc")
     )
@@ -144,10 +144,3 @@ def _gate_status(path: Path) -> str:
     except json.JSONDecodeError:
         return "unknown"
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

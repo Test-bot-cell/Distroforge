@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
+from .hashing import sha256_file, sha256_from_sums
 from .host_artifacts import write_host_artifact
 from .project import Project
 
@@ -101,7 +101,7 @@ def _verify_manifest_files(bundle_dir: Path, manifest: dict[str, object], items:
         expected_size = entry.get("size")
         expected_sha = entry.get("sha256")
         actual_size = path.stat().st_size
-        actual_sha = _sha256(path)
+        actual_sha = sha256_file(path)
         if expected_size != actual_size:
             items.append(ReleaseVerifyItem("manifest-size", "blocked", f"{name} size mismatch: {actual_size} != {expected_size}."))
         elif expected_sha != actual_sha:
@@ -119,8 +119,8 @@ def _verify_sha256sums(bundle_dir: Path, items: list[ReleaseVerifyItem]) -> None
     if not iso_paths:
         items.append(ReleaseVerifyItem("sha256sums", "blocked", "No ISO found for SHA256SUMS verification."))
         return
-    expected = _sha_from_sums(sums, iso_paths[0].name)
-    actual = _sha256(iso_paths[0])
+    expected = sha256_from_sums(sums, iso_paths[0].name)
+    actual = sha256_file(iso_paths[0])
     if expected != actual:
         items.append(ReleaseVerifyItem("sha256sums", "blocked", f"SHA256SUMS does not match {iso_paths[0].name}."))
     else:
@@ -163,17 +163,3 @@ def _verify_signatures(bundle_dir: Path, signing: dict[str, object], items: list
             items.append(ReleaseVerifyItem("signature", status, detail))
 
 
-def _sha_from_sums(path: Path, name: str) -> str | None:
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and Path(parts[-1]).name == name:
-            return parts[0]
-    return None
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

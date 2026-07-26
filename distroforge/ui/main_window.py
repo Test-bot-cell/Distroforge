@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from distroforge.core.apt import PackagePlan
+from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.build import BuildOptions
 from distroforge.core.build_journey import JOURNEY_STEPS
 from distroforge.core.customize import load_desktops
@@ -82,6 +83,7 @@ from distroforge.ui.command_center_page import (
     apply_current_journey_step,
     build_command_center_page,
     command_center_text,
+    journey_report,
     open_current_journey_step,
 )
 from distroforge.ui.customization_page import build_customization_page
@@ -448,10 +450,11 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         level = self.mode_combo.currentData()
         if level:
             preferences.save_workflow_level(str(level))
+        report = journey_report(self)
         if hasattr(self, "journey_spine"):
-            self.journey_spine.refresh()
+            self.journey_spine.refresh(report)
         if self.project:
-            journey, parity = command_center_text(self)
+            journey, parity = command_center_text(self, report)
             self.journey_view.setPlainText(journey)
             self.command_center_view.setPlainText(parity)
 
@@ -560,7 +563,7 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
     def _browse_output_iso(self) -> None:
         default = self.output_iso_edit.text().strip()
         if not default and self.project:
-            default = str(self.project.output_dir / f"{self.project.name}.iso")
+            default = str(default_output_iso(self.project))
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Select output ISO on host",
@@ -1019,8 +1022,12 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         custom.keyboard_layout = _combo_value(self.keyboard_combo) or None
 
     def _refresh(self) -> None:
+        # One journey report per refresh: the spine, the command center and the
+        # Start cards all render the same (project, options, level) triple, so
+        # computing it three times only multiplied the engine's per-step checks.
+        report = journey_report(self)
         if hasattr(self, "journey_spine"):
-            self.journey_spine.refresh()
+            self.journey_spine.refresh(report)
         for header in getattr(self, "_step_focus_headers", ()):
             header.refresh()
         if not self.project:
@@ -1058,10 +1065,10 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
         _set_editable_combo_value(self.locale_combo, custom.locale or "")
         _set_editable_combo_value(self.timezone_combo, custom.timezone or "")
         _set_editable_combo_value(self.keyboard_combo, custom.keyboard_layout or "")
-        journey, parity = command_center_text(self)
+        journey, parity = command_center_text(self, report)
         self.journey_view.setPlainText(journey)
         self.command_center_view.setPlainText(parity)
-        refresh_start_journey_cards(self)
+        refresh_start_journey_cards(self, report)
 
     def _require_project(self) -> bool:
         if self.project:

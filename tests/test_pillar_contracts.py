@@ -10,6 +10,8 @@ off the UI thread and that the per-frame refresh paths do no blocking I/O.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import threading
 import time
 from pathlib import Path
@@ -125,6 +127,123 @@ def test_per_frame_refresh_paths_have_no_blocking_io() -> None:
         source = (ROOT / module).read_text(encoding="utf-8")
         present = [token for token in forbidden if token in source]
         assert present == [], (module, present)
+
+
+_HEAVY_OFF_THREAD_ACTIONS = {
+    "distroforge/ui/artifacts_actions.py": (
+        "run_release_readiness_action",
+        "run_release_gate_action",
+        "run_evidence_status_action",
+        "create_publish_bundle_action",
+    ),
+    "distroforge/ui/capture_actions.py": (
+        "run_capture_scan_action",
+        "export_capture_profile_action",
+    ),
+    "distroforge/ui/artifacts_page.py": (
+        "release_pipeline_from_artifacts",
+        "boot_proof_from_artifacts",
+    ),
+    "distroforge/ui/build_page.py": ("run_iso_accept_from_build",),
+}
+
+
+def test_heavy_artifact_actions_dispatch_through_the_worker_seam() -> None:
+    """Every slot that hashes, copies or boots an ISO must hand the work to the one
+    concurrency seam the neighbouring modules already use, not run it in the click
+    handler. Counting the offenders keeps a new heavy action from slipping back."""
+    blocking = []
+    for module, names in _HEAVY_OFF_THREAD_ACTIONS.items():
+        tree = ast.parse((ROOT / module).read_text(encoding="utf-8"))
+        functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+        for name in names:
+            called = {
+                node.func.attr
+                for node in ast.walk(functions[name])
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            }
+            if "_run_in_worker" not in called:
+                blocking.append(f"{module}:{name}")
+    assert blocking == []
+
+
+def _iso_with_sidecar(root: Path) -> tuple[object, Path]:
+    """A project whose default artifact paths hold a built ISO plus its SHA256SUMS."""
+    from distroforge.core.artifact_paths import default_artifact_paths
+    from distroforge.core.project import Project
+
+    project = Project.create("PillarIso", root, "26.04")
+    project.source_mode = "bootstrap"
+    iso = default_artifact_paths(project).output_iso
+    iso.parent.mkdir(parents=True, exist_ok=True)
+    iso.write_bytes(b"iso-payload" * 4096)
+    digest = hashlib.sha256(iso.read_bytes()).hexdigest()
+    (iso.parent / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
+    return project, iso
+
+
+def count_iso_reads(iso: Path, work) -> int:
+    """Run ``work`` and count how many times ``iso`` is opened for reading bytes."""
+    reads = []
+    real_open = Path.open
+
+    def spy(self, mode="r", *args, **kwargs):
+        if "b" in mode and self == iso:
+            reads.append(self)
+        return real_open(self, mode, *args, **kwargs)
+
+    Path.open = spy
+    try:
+        work()
+    finally:
+        Path.open = real_open
+    return len(reads)
+
+
+def test_journey_status_never_hashes_the_iso(tmp_path) -> None:
+    """Pillar 4 teeth: the guided journey is recomputed on every refresh, so its
+    publish-gate status answers from the SHA256SUMS sidecar. The full gate -- which
+    reads the ISO twice -- belongs to the on-demand per-step check."""
+    from distroforge.core.build import BuildOptions
+    from distroforge.core.build_journey import build_journey
+
+    project, iso = _iso_with_sidecar(tmp_path / "journey")
+    options = BuildOptions()
+    assert count_iso_reads(iso, lambda: build_journey(project, options, "maintainer")) == 0
+    # The step panel's check is still the authoritative, hashing one.
+    from distroforge.core.build_journey import check_journey_step
+
+    assert count_iso_reads(iso, lambda: check_journey_step(project, options, "publish-gate")) >= 1
+
+
+def test_evidence_status_reads_the_iso_once(tmp_path) -> None:
+    """Pillar 4 teeth: readiness, the gate and the gate's own readiness pass used to
+    each re-read the same immutable ISO -- three full reads for one request."""
+    from distroforge.core.build import BuildOptions
+    from distroforge.core.evidence import EvidenceStatusService
+
+    # tmp_path is unique per test, so no digest for this ISO can be cached yet.
+    project, iso = _iso_with_sidecar(tmp_path / "evidence")
+    reads = count_iso_reads(
+        iso,
+        lambda: EvidenceStatusService().check(
+            project, BuildOptions(), iso=iso, output_dir=iso.parent
+        ),
+    )
+    assert reads == 1
+
+
+def test_rewriting_the_iso_invalidates_its_memoised_digest(tmp_path) -> None:
+    """The memo must be identity-based, never trust-based: a rewritten artifact
+    reports its new digest even at the same path."""
+    from distroforge.core.hashing import sha256_file
+
+    iso = tmp_path / "artifact.iso"
+    iso.write_bytes(b"first")
+    first = sha256_file(iso)
+    assert first == sha256_file(iso)  # unchanged file, reused digest
+    iso.write_bytes(b"second-and-longer")
+    assert sha256_file(iso) == hashlib.sha256(b"second-and-longer").hexdigest() != first
 
 
 # --- Pillar 3 lockstep: the contract docs ship -----------------------------

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from distroforge.core.build_journey import BuildJourneyItem, build_journey, check_journey_step
+from distroforge.core.build_journey import BuildJourneyItem, check_journey_step
 from distroforge.ui.command_center_page import (
     apply_journey_step_id,
     check_journey_step_id,
     create_publish_bundle_from_start,
     execute_beginner_iso_from_start,
+    journey_report,
     open_journey_target,
     prepare_beginner_iso_from_start,
     prepare_poweruser_iso_from_start,
@@ -50,15 +51,16 @@ def build_start_journey_panel(window) -> QWidget:
     return panel
 
 
-def refresh_start_journey_cards(window) -> None:
+def refresh_start_journey_cards(window, report=None) -> None:
+    """Redraw the Start cards, reusing ``report`` when the caller already has one."""
     if not hasattr(window, "start_journey_cards"):
         return
     if not window.project:
         window.start_journey_status_label.setText("Create or open a project to start the guided build journey.")
         window.start_journey_cards.set_items(())
         return
-    level = window.mode_combo.currentData() or "beginner"
-    report = build_journey(window.project, window._build_options(), level)
+    report = report or journey_report(window)
+    level = report.level
     if report.current:
         window.start_journey_status_label.setText(
             f"Current step: {report.current.step.title} - {report.current.next_action}"

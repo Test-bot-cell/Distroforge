@@ -10,8 +10,8 @@ so the journey has one source of truth.
 
 from __future__ import annotations
 
-from distroforge.core.build_journey import BuildJourneyItem, build_journey
-from distroforge.ui.command_center_page import open_journey_target
+from distroforge.core.build_journey import BuildJourneyItem
+from distroforge.ui.command_center_page import journey_report, open_journey_target
 from distroforge.ui.qt import (
     QHBoxLayout,
     QLabel,
@@ -105,7 +105,8 @@ class JourneySpine(QWidget):
         layout.addLayout(self._rows)
         layout.addStretch(1)
 
-    def refresh(self) -> None:
+    def refresh(self, report=None) -> None:
+        """Redraw the spine, reusing ``report`` when the caller already has one."""
         while self._rows.count():
             item = self._rows.takeAt(0)
             widget = item.widget()
@@ -115,8 +116,8 @@ class JourneySpine(QWidget):
         if not window.project:
             self._summary.setText("Create or open a project to start the guided build journey.")
             return
-        level = window.mode_combo.currentData() or "beginner"
-        report = build_journey(window.project, window._build_options(), level)
+        report = report or journey_report(window)
+        level = report.level
         done = sum(1 for item in report.items if item.status == "done")
         total = len(report.items)
         if report.current is not None:

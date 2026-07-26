@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import sys
+import warnings
 
 import pytest
 
@@ -86,6 +88,69 @@ def test_run_streaming_respects_check_and_returncode() -> None:
     assert result.returncode == 3
     with pytest.raises(CommandError):
         CommandRunner(dry_run=False).run_streaming(failing, lambda _line: None)
+
+
+def test_run_streaming_delivers_a_short_line_before_the_child_writes_again(tmp_path) -> None:
+    """A line already sitting in the pipe must reach ``on_line`` at once.
+
+    Text-mode ``read(256)`` blocks until 256 characters or EOF, so a 13-character
+    apt ``pmstatus`` line stayed invisible for the whole silence that followed it
+    and the progress bar showed a stale state. The child proves delivery without
+    a stopwatch: it writes one short line, then waits for the callback to create a
+    handshake file before reporting whether it ever appeared.
+    """
+    handshake = tmp_path / "on-line-fired"
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "flag = Path(sys.argv[1])\n"
+        "sys.stdout.write('pmstatus:vim:1.0:Unpacking\\n'); sys.stdout.flush()\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while time.monotonic() < deadline and not flag.exists():\n"
+        "    time.sleep(0.01)\n"
+        "sys.stdout.write('x' * 300 + '\\n'); sys.stdout.flush()\n"
+        "sys.stdout.write(f'delivered={flag.exists()}\\n'); sys.stdout.flush()\n"
+    )
+    spec = CommandSpec(argv=(sys.executable, "-c", code, str(handshake)))
+    lines: list[str] = []
+
+    def on_line(line: str) -> None:
+        lines.append(line)
+        handshake.touch()
+
+    CommandRunner(dry_run=False).run_streaming(spec, on_line)
+    assert lines[0] == "pmstatus:vim:1.0:Unpacking"  # the short line came through first
+    assert "delivered=True" in lines  # ...while the child was still running
+
+
+def test_run_streaming_closes_the_output_pipe_itself() -> None:
+    """Leaving the merged pipe to the garbage collector raises ResourceWarning and
+    keeps the descriptor alive for as long as the wrapper survives."""
+    gc.collect()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        CommandRunner(dry_run=False).run_streaming(_py("print('done')"), lambda _line: None)
+        gc.collect()
+    leaked = [str(entry.message) for entry in caught if issubclass(entry.category, ResourceWarning)]
+    assert leaked == []
+
+
+def test_run_streaming_decodes_utf8_split_across_reads() -> None:
+    """Reading available bytes means a multi-byte character can straddle two reads;
+    the incremental decoder must join them instead of emitting replacements."""
+    code = (
+        "import sys, time\n"
+        "raw = sys.stdout.buffer\n"
+        "raw.write('caf'.encode() + b'\\xc3'); raw.flush()\n"
+        "time.sleep(0.05)\n"
+        "raw.write(b'\\xa9' + b'\\n'); raw.flush()\n"
+    )
+    lines: list[str] = []
+    result = CommandRunner(dry_run=False).run_streaming(
+        CommandSpec(argv=(sys.executable, "-c", code)), lines.append
+    )
+    assert lines == ["caf\u00e9"]
+    assert result.stdout == "caf\u00e9\n"
 
 
 def test_run_streaming_dry_run_and_virtual_never_stream() -> None:

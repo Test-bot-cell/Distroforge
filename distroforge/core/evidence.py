@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .artifact_paths import default_artifact_paths
+from .artifact_paths import default_artifact_paths, default_output_iso
 from .build import BuildOptions
 from .chroot import detect_chroot_backends
 from .command import CommandRunner
@@ -223,7 +223,7 @@ class EvidenceStatusService:
         root = root.resolve()
         explicit_iso = iso is not None
         output_dir = (output_dir or root / "dist").resolve()
-        iso = (iso or output_dir / f"{root.name}.iso").resolve()
+        iso = (iso or _source_tree_iso(root, output_dir)).resolve()
         report = EvidenceStatusReport(root, iso, output_dir, profile)
         report.items.append(_source_tree_item(root))
         if profile in {"package", "iso", "publish"}:
@@ -346,6 +346,16 @@ def _normalize_profile(profile: str) -> str:
     if profile not in EVIDENCE_PROFILES:
         raise ValueError(f"evidence profile must be one of: {', '.join(EVIDENCE_PROFILES)}")
     return profile
+
+
+def _source_tree_iso(root: Path, output_dir: Path) -> Path:
+    # check_source_tree accepts any directory, so it cannot assume a project is
+    # loadable. When the tree really is one, use the canonical versioned name the
+    # builder writes; otherwise keep the directory-name guess.
+    try:
+        return output_dir / default_output_iso(Project.load(root)).name
+    except (OSError, ValueError, KeyError):
+        return output_dir / f"{root.name}.iso"
 
 
 def _string_list(data: dict[str, object], key: str, errors: list[str]) -> tuple[str, ...]:

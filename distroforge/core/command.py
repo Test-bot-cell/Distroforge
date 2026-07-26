@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import codecs
+import io
 import json
 import os
 import re
@@ -10,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 VIRTUAL_COMMANDS = {
     "autoinstall-skip",
@@ -141,6 +144,13 @@ class CommandRunner:
         and carriage returns, so the in-place progress bars printed by tools such as
         unsquashfs and mksquashfs surface as discrete lines. dry-run and virtual
         commands behave exactly like :meth:`run` and never invoke ``on_line``.
+
+        The pipe is read in binary and decoded incrementally: ``read1`` hands back
+        whatever bytes are already available, whereas a text-mode ``read(n)`` blocks
+        until n characters or EOF. With the latter, an apt ``pmstatus`` line sat in
+        the pipe unseen for the whole silence of a large unpack -- the progress bar
+        stalled on information it already had. The Popen context manager then closes
+        the pipe deterministically instead of leaving it to the collector.
         """
         self.history.append(spec)
         self._write_event("start", spec, None)
@@ -153,36 +163,43 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
-        process = subprocess.Popen(
+        captured: list[str] = []
+        with subprocess.Popen(
             spec.argv,
             cwd=spec.cwd,
             env=dict(spec.env) if spec.env else None,
-            text=True,
             stdin=subprocess.PIPE if spec.stdin is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            bufsize=1,
-        )
-        if spec.stdin is not None and process.stdin is not None:
-            process.stdin.write(spec.stdin)
-            process.stdin.close()
-        captured: list[str] = []
-        buffer = ""
-        assert process.stdout is not None
-        while True:
-            chunk = process.stdout.read(256)
-            if not chunk:
-                break
-            captured.append(chunk)
-            buffer += chunk
-            segments = re.split(r"[\r\n]", buffer)
-            buffer = segments.pop()
-            for segment in segments:
-                if segment:
-                    on_line(segment)
-        if buffer:
-            on_line(buffer)
-        process.wait()
+        ) as process:
+            if spec.stdin is not None and process.stdin is not None:
+                process.stdin.write(spec.stdin.encode())
+                process.stdin.close()
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            buffer = ""
+            assert process.stdout is not None
+            # Default bufsize gives a BufferedReader, whose read1 issues at most one
+            # raw read: it returns the bytes already waiting instead of filling a quota.
+            stream = cast(io.BufferedReader, process.stdout)
+            while True:
+                data = stream.read1(4096)
+                if not data:
+                    break
+                chunk = decoder.decode(data)
+                if not chunk:
+                    continue
+                captured.append(chunk)
+                buffer += chunk
+                segments = re.split(r"[\r\n]", buffer)
+                buffer = segments.pop()
+                for segment in segments:
+                    if segment:
+                        on_line(segment)
+            flushed = decoder.decode(b"", True)
+            if flushed:
+                captured.append(flushed)
+            if buffer + flushed:
+                on_line(buffer + flushed)
         result = CommandResult(
             spec=spec,
             returncode=process.returncode,

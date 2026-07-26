@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .hashing import sha256_file, sha256_from_sums
 from .qemu_smoke import QemuSmokePlanner
 
 
@@ -52,11 +52,20 @@ class ReleaseReadinessReport:
 
 
 class ReleaseReadinessService:
-    def check(self, iso: Path, output_dir: Path) -> ReleaseReadinessReport:
+    def check(
+        self, iso: Path, output_dir: Path, *, verify_checksum: bool = True
+    ) -> ReleaseReadinessReport:
+        """Capture the release evidence available for ``iso``.
+
+        ``verify_checksum=False`` reports the digest SHA256SUMS already records
+        rather than re-reading the ISO. The sha256 item is evidence, never a
+        blocker (an existing ISO is always "captured"), so the light form cannot
+        change ``blocked`` -- it only spares callers that just want the verdict.
+        """
         report = ReleaseReadinessReport(iso=iso, output_dir=output_dir)
         if iso.exists():
             report.items.append(ReleaseReadinessItem("iso", "captured", f"{iso.stat().st_size} bytes"))
-            report.items.append(ReleaseReadinessItem("sha256", "captured", _sha256(iso)))
+            report.items.append(ReleaseReadinessItem("sha256", "captured", _digest(iso, output_dir, verify_checksum)))
         else:
             report.items.append(ReleaseReadinessItem("iso", "blocked", "ISO path does not exist"))
             report.items.append(ReleaseReadinessItem("sha256", "blocked", "No ISO to checksum"))
@@ -86,9 +95,9 @@ class ReleaseReadinessService:
         return report
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _digest(iso: Path, output_dir: Path, verify_checksum: bool) -> str:
+    if verify_checksum:
+        return sha256_file(iso)
+    sums = output_dir / "SHA256SUMS"
+    recorded = sha256_from_sums(sums, iso.name) if sums.exists() else None
+    return recorded or "not checksummed yet"

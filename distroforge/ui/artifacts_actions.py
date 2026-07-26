@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from distroforge.core.artifact_paths import default_artifact_paths
+from distroforge.core.artifact_paths import default_artifact_paths, default_output_iso
 from distroforge.core.evidence import EvidenceStatusService, validate_evidence_contract
 from distroforge.core.packaging import (
     HermeticBuildPlan,
@@ -58,10 +58,16 @@ def load_artifact_defaults_action(window) -> None:
 def run_release_readiness_action(window) -> None:
     iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or "/tmp/distroforge.iso")
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
-    report = ReleaseReadinessService().check(iso, output_dir)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log("Rendered release readiness report.")
-    window._open_surface("artifacts")
+
+    def _work():
+        return ReleaseReadinessService().check(iso, output_dir)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log("Rendered release readiness report.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Checking release readiness…")
 
 
 def run_release_gate_action(window) -> None:
@@ -70,25 +76,40 @@ def run_release_gate_action(window) -> None:
     from distroforge.core.release_gate import ReleaseGateService
     iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or "/tmp/distroforge.iso")
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
-    window.artifacts_view.setPlainText(ReleaseGateService().check(window.project, window._build_options(), iso=iso, output_dir=output_dir).render_text())
-    window._log("Rendered release gate report.")
-    window._open_surface("artifacts")
+    project, options = window.project, window._build_options()
+
+    def _work():
+        return ReleaseGateService().check(project, options, iso=iso, output_dir=output_dir)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log("Rendered release gate report.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Running the release gate…")
 
 
 def run_evidence_status_action(window, *, verbose: bool = False, fix_plan: bool = False) -> None:
     if not window._require_project():
         return
     assert window.project
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
-    report = EvidenceStatusService().check(window.project, window._build_options(), iso=iso, output_dir=output_dir)
-    counts = report.counts()
-    summary = f"Evidence {report.status.upper()} | ready {counts['ready']} | review {counts['review']} | blocked {counts['blocked']} | invalid {counts['invalid']}"
-    if hasattr(window, "evidence_summary_label"):
-        window.evidence_summary_label.setText(summary)
-    window.ai_view.setPlainText(report.render_fix_plan_text() if fix_plan else report.render_text(verbose=verbose))
-    window._log(f"Rendered evidence status with status {report.status}.")
-    window._open_surface("maintainer")
+    project, options = window.project, window._build_options()
+
+    def _work():
+        return EvidenceStatusService().check(project, options, iso=iso, output_dir=output_dir)
+
+    def _done(report):
+        counts = report.counts()
+        summary = f"Evidence {report.status.upper()} | ready {counts['ready']} | review {counts['review']} | blocked {counts['blocked']} | invalid {counts['invalid']}"
+        if hasattr(window, "evidence_summary_label"):
+            window.evidence_summary_label.setText(summary)
+        window.ai_view.setPlainText(report.render_fix_plan_text() if fix_plan else report.render_text(verbose=verbose))
+        window._log(f"Rendered evidence status with status {report.status}.")
+        window._open_surface("maintainer")
+
+    window._run_in_worker(_work, _done, "Collecting evidence status…")
 
 
 def verify_evidence_contract_action(window) -> None:
@@ -115,10 +136,19 @@ def create_publish_bundle_action(window) -> None:
     from distroforge.core.publish_bundle import create_publish_bundle
     iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or "/tmp/distroforge.iso")
     output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
-    report = create_publish_bundle(window.project, window._build_options(), iso=iso, output_dir=output_dir)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Created publish bundle with gate {report.status}.")
-    window._open_surface("artifacts")
+    project, options = window.project, window._build_options()
+
+    # Re-runs the gate and copies the ISO itself: minutes of disk work on a
+    # multi-gigabyte artifact, so never on the Qt thread.
+    def _work():
+        return create_publish_bundle(project, options, iso=iso, output_dir=output_dir)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Created publish bundle with gate {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Creating the publish bundle…")
 
 
 def run_qemu_smoke_plan_action(window) -> None:

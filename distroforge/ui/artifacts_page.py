@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from distroforge.core.artifact_paths import default_output_iso
 from distroforge.ui.path_actions import picker
 from distroforge.ui.qt import QVBoxLayout, QWidget
 from distroforge.ui.step_focus import StepFocusHeader
@@ -174,7 +175,7 @@ def explain_release_from_artifacts(window) -> None:
 
     reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
     bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     report = explain_release(window.project, iso=iso, bundle_dir=bundle_dir)
     window.artifacts_view.setPlainText(report.render_text())
     window._log(f"Explained release evidence with status {report.status}.")
@@ -188,7 +189,7 @@ def publish_drill_from_artifacts(window) -> None:
 
     reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
     bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     backend = str(window.boot_proof_backend_combo.currentData() or "auto")
     report = run_publish_drill(window.project, window._build_options(), iso=iso, bundle_dir=bundle_dir, gpg_key=window.artifact_gpg_key_edit.text().strip() or None, boot_backend=backend)
     window.artifacts_view.setPlainText(report.render_text())
@@ -229,11 +230,21 @@ def release_pipeline_from_artifacts(window) -> None:
 
     reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
     bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
-    report = run_release_pipeline(window.project, window._build_options(), iso=iso, output_dir=iso.parent, bundle_dir=bundle_dir, gpg_key=window.artifact_gpg_key_edit.text().strip() or None)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Ran release pipeline with status {report.status}.")
-    window._open_surface("artifacts")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
+    project, options = window.project, window._build_options()
+    gpg_key = window.artifact_gpg_key_edit.text().strip() or None
+
+    # Repair, sign, verify: several full reads of the ISO plus a copy of it, so
+    # the whole chain runs on a worker like every other heavy Artifacts action.
+    def _work():
+        return run_release_pipeline(project, options, iso=iso, output_dir=iso.parent, bundle_dir=bundle_dir, gpg_key=gpg_key)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Ran release pipeline with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Running the release pipeline…")
 
 
 def boot_proof_from_artifacts(window) -> None:
@@ -241,9 +252,17 @@ def boot_proof_from_artifacts(window) -> None:
         return
     from distroforge.core.boot_proof import run_boot_proof
 
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or window.project.output_dir / f"{window.project.name}.iso")
+    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     backend = str(window.boot_proof_backend_combo.currentData() or "auto")
-    report = run_boot_proof(window.project, window._build_options(), iso=iso, backend=backend, execute=True)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Ran {backend} boot proof with status {report.status}.")
-    window._open_surface("artifacts")
+    project, options = window.project, window._build_options()
+
+    # A real QEMU boot, bounded only by the prebuild-vm timeout (300 s by default).
+    def _work():
+        return run_boot_proof(project, options, iso=iso, backend=backend, execute=True)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Ran {backend} boot proof with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, f"Running the {backend} boot proof…")

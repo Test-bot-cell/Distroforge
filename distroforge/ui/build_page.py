@@ -55,6 +55,8 @@ class BuildPageWindow(Protocol):
 
     def _sync_project_from_ui(self) -> None: ...
 
+    def _run_in_worker(self, fn, on_done, label: str = ...) -> None: ...
+
 
 def build_build_page(window: BuildPageWindow) -> QWidget:
     page = QWidget()
@@ -186,9 +188,18 @@ def run_iso_accept_from_build(window: BuildPageWindow) -> None:
     from distroforge.core.iso_acceptance import accept_iso
 
     window._sync_project_from_ui()
-    report = accept_iso(window.project, window._build_options())
-    window.plan_view.setPlainText(report.render_text())
-    window._log(f"ISO acceptance: {report.status}")
+    project, options = window.project, window._build_options()
+
+    # Acceptance hashes the finished ISO end to end; the registry marks iso-accept
+    # progress_required, so it belongs on a worker, not in the click handler.
+    def _work():
+        return accept_iso(project, options)
+
+    def _done(report):
+        window.plan_view.setPlainText(report.render_text())
+        window._log(f"ISO acceptance: {report.status}")
+
+    window._run_in_worker(_work, _done, "Accepting the ISO…")
 
 
 def run_demo_iso_from_build(window: BuildPageWindow) -> None:
