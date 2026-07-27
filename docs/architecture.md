@@ -64,6 +64,27 @@ it must not be installed into the target rootfs or used to mutate hermetic build
 unless an explicit future workflow asks for it. `distroforge chroot-backends` exposes the
 configured mode and the resolved active backend for scripts and the Maintainer cockpit.
 
+That "must not mutate" was not being kept, and the shell had no name resolution either.
+Measured 2026-07-27 by diffing a throwaway rootfs — one carrying the shape a real image
+has, an `/etc/resolv.conf` symlink into `../run`, an `/etc/localtime` symlink, an empty
+`/etc/machine-id` — after each of ten `--resolv-conf` modes and four flag sets. nspawn's
+default `--link-journal=try-guest` created `/var/log/journal` **in the image** on every
+session. Its default `--resolv-conf=auto` left the shell with no resolver at all: the
+copy modes are documented to skip a destination that is not a regular file, and a
+symlink into `../run` is precisely what `systemd-resolved`'s postinst leaves, so they
+declined and the link stayed dangling — `apt` in the shell fails on "Temporary failure
+resolving". The `replace-*` modes do resolve, by writing the build machine's nameserver
+into the image over that symlink, which is the leak taken out of the build phases in
+0.3.5-4. And the default `--timezone=auto` bound the host's zone over the image's, so
+`date` printed CEST inside an image whose own `/etc/localtime` says UTC. The backend
+therefore passes `--resolv-conf=bind-host --link-journal=no --timezone=off`: measured,
+`archive.ubuntu.com` resolves inside and the image comes out byte-identical, because a
+bind mount dies with the container. The one accepted difference from the `chroot`
+backend is that a bind hands over the host's whole resolver file, search domain
+included, where `host_resolver_content()` keeps only the nameserver lines; nothing of it
+survives the session, and the alternative is plumbing a filtered copy through a
+lifetime the spec does not have.
+
 Rollback snapshots are part of the same reliability boundary. `SnapshotService` prepares
 `work/snapshots`, writes archives to `.part`, publishes only after `tar` succeeds, and
 uses the configured privilege helper when reading or restoring protected rootfs content.

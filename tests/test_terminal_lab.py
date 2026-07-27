@@ -28,20 +28,36 @@ def test_nspawn_terminal_command_uses_clean_maintainer_environment(tmp_path) -> 
     spec = ChrootTerminalSpec(tmp_path / "rootfs", use_sudo=False, backend="nspawn")
     argv = spec.command().argv
 
-    assert argv[:6] == (
-        "systemd-nspawn",
-        "--quiet",
-        "--register=no",
-        "--as-pid2",
-        "--directory",
-        str(tmp_path / "rootfs"),
-    )
+    assert argv[:4] == ("systemd-nspawn", "--quiet", "--register=no", "--as-pid2")
+    assert argv[7:9] == ("--directory", str(tmp_path / "rootfs"))
     assert "--setenv=TERM=xterm-256color" in argv
     env_index = argv.index("/usr/bin/env")
     assert argv[env_index:env_index + 2] == ("/usr/bin/env", "-i")
     assert "HOME=/root" in argv
     assert "LC_ALL=C.UTF-8" in argv
     assert "distroforge-nspawn" in argv[-1]
+
+
+def test_the_nspawn_shell_keeps_its_resolver_and_leaves_the_image_alone(tmp_path) -> None:
+    """The three defaults measured to be wrong for a shell over a build rootfs.
+
+    Measured 2026-07-27, diffing a throwaway rootfs after each of ten `--resolv-conf`
+    modes and four flag sets: the default resolver mode left the shell unable to resolve
+    anything, because the copy modes decline a destination that is not a regular file
+    and `/etc/resolv.conf` in a real image is a symlink into `../run`; the default
+    journal mode created `/var/log/journal` in the image on every session; and the
+    default timezone mode made `date` print the build machine's zone for an image whose
+    own `/etc/localtime` says otherwise. With these three, the image came out
+    byte-identical and `archive.ubuntu.com` resolved inside.
+    """
+    argv = ChrootTerminalSpec(tmp_path / "rootfs", use_sudo=False, backend="nspawn").command().argv
+
+    assert argv[4:7] == ("--resolv-conf=bind-host", "--link-journal=no", "--timezone=off")
+    # The modes that do resolve by writing the build machine's nameserver into the image
+    # over that symlink -- the leak taken out of the build phases in 0.3.5-4 -- and the
+    # ones that leave no resolver at all.
+    for rejected in ("replace-host", "replace-stub", "copy-host", "copy-stub", "auto", "off"):
+        assert f"--resolv-conf={rejected}" not in argv
 
 
 def test_auto_terminal_prefers_nspawn_when_available(monkeypatch, tmp_path) -> None:

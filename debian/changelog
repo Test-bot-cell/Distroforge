@@ -1,3 +1,37 @@
+distroforge (0.3.5-8) resolute; urgency=medium
+
+  * Give the nspawn maintainer shell a resolver, and stop it writing into the
+    image. Decided by measurement rather than by reading the manual page:
+    2026-07-27, ten --resolv-conf modes and four flag sets, each against a
+    throwaway rootfs carrying the shape a real one has -- an /etc/resolv.conf
+    symlink into ../run, an /etc/localtime symlink, an empty /etc/machine-id --
+    with the whole tree diffed afterwards. The default, auto, left the shell
+    unable to resolve anything: the copy modes skip a destination that is not a
+    regular file, and that symlink is what systemd-resolved's postinst leaves,
+    so copy-host and copy-stub declined and apt in the shell failed on
+    "Temporary failure resolving". The replace modes resolve by writing the
+    build machine's nameserver into the image over that symlink, which is the
+    leak taken out of the build phases in 0.3.5-4. bind-host resolves --
+    archive.ubuntu.com answered from inside -- and leaves the image untouched,
+    because the mount dies with the container.
+  * Stop every session leaving /var/log/journal in the rootfs. nspawn's default
+    for --directory is --link-journal=try-guest, which creates it in the image;
+    docs/architecture.md says this backend must not mutate hermetic build
+    chroots, and it had been doing so since it shipped. With --link-journal=no
+    the tree comes out byte-identical.
+  * Make the shell read the image's clock instead of the build machine's. The
+    default --timezone=auto binds the host's zone over the image's, so date
+    printed CEST inside an image whose own /etc/localtime says UTC. The symlink
+    survives either way, so this is about what the operator sees, not about
+    contamination: --timezone=off.
+  * One difference from the chroot backend is accepted rather than hidden: a
+    bind hands over the host's whole resolver file, search domain included,
+    where host_resolver_content() keeps only the nameserver lines. Nothing of it
+    survives the session, and the alternative is plumbing a filtered copy
+    through a lifetime ChrootTerminalSpec does not have.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 17:04:26 +0200
+
 distroforge (0.3.5-7) resolute; urgency=medium
 
   * Let the automated QEMU proofs use the hardware acceleration the host

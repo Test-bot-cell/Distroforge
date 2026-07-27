@@ -54,6 +54,39 @@ class ChrootTerminalSpec:
                         "--quiet",
                         "--register=no",
                         "--as-pid2",
+                        # Three things nspawn does by default that a shell opened over a
+                        # build rootfs must not do. Measured 2026-07-27 against a
+                        # throwaway rootfs carrying the shape a real one has -- an
+                        # /etc/resolv.conf symlink into ../run, an /etc/localtime
+                        # symlink, an empty /etc/machine-id -- by diffing the whole tree
+                        # after each run, ten resolver modes and four flag sets.
+                        #
+                        # --resolv-conf: the default, auto, left the shell with no
+                        # resolver at all. The copy modes are documented to skip a
+                        # destination that is not a regular file, and a symlink into
+                        # ../run is exactly what systemd-resolved's postinst leaves
+                        # behind, so copy-host and copy-stub declined and the link
+                        # stayed dangling -- apt in the shell fails on "Temporary
+                        # failure resolving". The replace modes do resolve, by writing
+                        # the build machine's nameserver into the image over that
+                        # symlink, which is the leak taken out of the build phases in
+                        # 0.3.5-4. bind-host resolves -- archive.ubuntu.com answered --
+                        # and leaves the image untouched, because the mount dies with
+                        # the container.
+                        #
+                        # --link-journal: the default for --directory is try-guest,
+                        # which creates /var/log/journal inside the image. Every session
+                        # left one behind, in a rootfs architecture.md says this backend
+                        # must not mutate.
+                        #
+                        # --timezone: the default binds the host's zone over the
+                        # image's, so `date` in the shell printed CEST for an image
+                        # whose own /etc/localtime says UTC. The symlink survives either
+                        # way; off is what makes the shell read the image's clock rather
+                        # than the build machine's.
+                        "--resolv-conf=bind-host",
+                        "--link-journal=no",
+                        "--timezone=off",
                         "--directory",
                         str(self.root),
                         "--setenv=TERM=xterm-256color",
