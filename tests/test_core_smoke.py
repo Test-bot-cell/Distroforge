@@ -5,6 +5,7 @@ import json
 import pathlib
 
 import pytest
+from conftest import make_rootfs
 
 from distroforge.core import squashfs as squashfs_module
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
@@ -468,10 +469,7 @@ def test_squashfs_dry_run_is_pure_and_records_commands(tmp_path) -> None:
 
 def test_bootstrap_reuses_existing_valid_rootfs(tmp_path) -> None:
     project = Project.create("ReuseRootfs", tmp_path / "reuse-rootfs", "26.04")
-    (project.squashfs_root / "var/lib/dpkg").mkdir(parents=True)
-    (project.squashfs_root / "var/lib/dpkg/status").write_text("", encoding="utf-8")
-    (project.squashfs_root / "etc").mkdir()
-    (project.squashfs_root / "etc/os-release").write_text("ID=ubuntu\n", encoding="utf-8")
+    make_rootfs(project.squashfs_root)
     runner = RecordingExecuteRunner()
 
     BootstrapService(
@@ -491,11 +489,7 @@ def test_bootstrap_reuse_sheds_stale_apt_overlays(tmp_path) -> None:
     # shed every DistroForge apt overlay before the base install runs apt, while
     # preserving the base sources (the only working repo when a mirror is set).
     project = Project.create("StaleOverlays", tmp_path / "stale-overlays", "26.04")
-    root = project.squashfs_root
-    (root / "var/lib/dpkg").mkdir(parents=True)
-    (root / "var/lib/dpkg/status").write_text("", encoding="utf-8")
-    (root / "etc").mkdir()
-    (root / "etc/os-release").write_text("ID=ubuntu\n", encoding="utf-8")
+    root = make_rootfs(project.squashfs_root)
     apt = root / "etc/apt"
     (apt / "apt.conf.d").mkdir(parents=True)
     (apt / "sources.list.d").mkdir(parents=True)

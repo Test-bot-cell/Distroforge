@@ -110,6 +110,38 @@ _BOOTSTRAP_STAMP_VERSION = 1
 _IDENTITY_FIELDS = ("codename", "family", "arch", "variant", "mirror")
 
 
+# What the phase *after* the bootstrap needs to find in the tree, and therefore what
+# "a rootfs" means here. install_live_base's first act is `apt-get update` inside the
+# chroot, so a tree with no apt is not a base this build can use, however cleanly the
+# bootstrap tool exited -- and one did exit 0 without it, in the first real golden-path
+# run: 23 seconds, and `env: 'apt-get': No such file or directory` five phases later,
+# from a chroot, with the reason for the absence long since discarded.
+#
+# Each entry is a tuple of alternatives, because more than one path is a correct answer:
+# os-release(5) allows either location, and dpkg's own tools live under /usr/bin with
+# /bin a compatibility symlink on a merged-usr tree but not necessarily on a foreign one.
+_ROOTFS_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("a dpkg database", ("var/lib/dpkg/status",)),
+    ("an os-release", ("etc/os-release", "usr/lib/os-release")),
+    ("dpkg", ("usr/bin/dpkg", "bin/dpkg")),
+    ("apt-get", ("usr/bin/apt-get", "bin/apt-get")),
+)
+
+
+def missing_rootfs_requirements(root: Path) -> tuple[str, ...]:
+    """What a tree lacks before it can be called a rootfs, named as a reader would.
+
+    Returns descriptions rather than paths so a caller can put them in a sentence, and
+    returns them all rather than the first, because "it has no apt-get" and "it has
+    nothing at all" deserve different reactions from whoever reads the message.
+    """
+    return tuple(
+        f"{label} ({' or '.join('/' + path for path in paths)})"
+        for label, paths in _ROOTFS_REQUIREMENTS
+        if not any((root / path).exists() for path in paths)
+    )
+
+
 @dataclass(frozen=True)
 class RootfsVerdict:
     """What to do with whatever is already sitting at a bootstrap target.
@@ -180,11 +212,13 @@ def rootfs_verdict(root: Path, release: UbuntuRelease, options: BootstrapOptions
         return RootfsVerdict("unreadable", str(exc))
     if not entries:
         return RootfsVerdict("empty")
-    complete = (root / "var/lib/dpkg/status").exists() and (
-        (root / "etc/os-release").exists() or (root / "usr/lib/os-release").exists()
-    )
-    if not complete:
-        return RootfsVerdict("incomplete")
+    missing = missing_rootfs_requirements(root)
+    if missing:
+        # The reason used to be empty here, and the test used to be two paths: a dpkg
+        # status file and an os-release. A tree carrying both and no package manager
+        # passed as *complete*, so a re-run would have reused the very tree whose
+        # missing apt-get had just stopped the build.
+        return RootfsVerdict("incomplete", f"it has no {', no '.join(missing)}")
     return _identity_verdict(root, release, options)
 
 
@@ -292,7 +326,7 @@ class BootstrapService:
             )
         if verdict.state == "incomplete":
             raise ValueError(
-                f"Bootstrap target {self.root} is non-empty but incomplete. "
+                f"Bootstrap target {self.root} is non-empty but incomplete: {verdict.reason}. "
                 "Clean the work/filesystem directory or choose a new work directory before retrying."
             )
         self.fs.mkdir(self.root, "Create bootstrap rootfs directory")
@@ -343,6 +377,7 @@ class BootstrapService:
                 description=f"Bootstrap minimal {self.release.label} rootfs with {tool}",
             )
         )
+        self._assert_bootstrap_produced_a_rootfs(tool)
         # Written only after the tool ran, so a failed bootstrap leaves no record
         # claiming a base for a tree that does not have one. It goes through the same
         # runner as everything else, which is what makes a dry run describe the write
@@ -352,6 +387,37 @@ class BootstrapService:
             json.dumps(bootstrap_identity(self.release, self.options), indent=2, sort_keys=True)
             + "\n",
             "Record the base this rootfs was bootstrapped from",
+        )
+
+    def _assert_bootstrap_produced_a_rootfs(self, tool: str) -> None:
+        """Check the tool's work before believing its exit status.
+
+        A bootstrap tool exiting 0 is a claim about the tool, not about the tree. The
+        first real golden-path run took the claim: mmdebstrap returned 0, the stamp was
+        written, and the build ran five more phases before a chroot said ``apt-get`` was
+        missing -- at which point the tool's own output, which would have said why, had
+        been discarded, because the runner keeps output only for commands that fail.
+
+        Naming the tool and the variant matters: ``minbase`` does not mean the same set
+        to both tools this code can call. debootstrap(8) defines it as "required packages
+        and apt"; mmdebstrap(1) defines it as the essential set plus Priority:required,
+        which does not mention apt at all. On this maintainer's host the resolved set does
+        contain apt -- ``mmdebstrap --simulate --verbose --variant=minbase --include=ca-certificates
+        resolute`` lists 129 packages including ``apt (3.2.0)`` -- so the two agree in
+        practice with mmdebstrap 1.5.7. They are not guaranteed to, and the run that broke
+        used 1.4.3-6. Whoever reads this message should be told which tool made the claim.
+        """
+        if self.runner.dry_run:
+            return
+        missing = missing_rootfs_requirements(self.root)
+        if not missing:
+            return
+        raise ValueError(
+            f"{tool} exited successfully but {self.root} has no "
+            f"{', no '.join(missing)}. A --variant={self.options.variant} bootstrap of "
+            f"{self.release.codename} has to leave a usable package manager behind: the "
+            "next phase runs apt-get inside this tree. Re-run with the work directory "
+            f"cleaned, and check {tool}'s own output for what it declined to install."
         )
 
     def install_live_base(self) -> None:

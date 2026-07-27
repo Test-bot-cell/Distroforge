@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import make_rootfs
 
 from distroforge.ai.forgeadvisor import ForgeAdvisor
 from distroforge.ai.review import ConstrainedRecipeAssistant, PlanReviewer
@@ -182,10 +183,7 @@ def test_dry_run_report_detects_locked_boot_artifacts_without_privilege(tmp_path
     project.source_mode = "bootstrap"
     boot = project.squashfs_root / "boot"
     boot.mkdir(parents=True)
-    (project.squashfs_root / "var/lib/dpkg").mkdir(parents=True)
-    (project.squashfs_root / "var/lib/dpkg/status").write_text("", encoding="utf-8")
-    (project.squashfs_root / "etc").mkdir()
-    (project.squashfs_root / "etc/os-release").write_text("ID=ubuntu\n", encoding="utf-8")
+    make_rootfs(project.squashfs_root)
     kernel = boot / "vmlinuz-test"
     kernel.write_text("kernel", encoding="utf-8")
     kernel.chmod(0)

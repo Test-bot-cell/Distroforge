@@ -355,6 +355,33 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     not, so a green make check meant nothing here. The three neighbouring
     tests in test_core_smoke.py already sealed that seam; this one now does
     too.
+  * Refused a bootstrapped rootfs that has no package manager, at both the
+    ranges where the first golden-path run got away with one. A bootstrap tool
+    exiting 0 is a claim about the tool, not about the tree: nothing checked
+    the tree it had just made, so the build ran five more phases before a
+    chroot answered "env: 'apt-get': No such file or directory", by which
+    point the tool's own output was gone -- the runner keeps output only for
+    commands that fail. And rootfs_verdict graded that same tree reusable,
+    because completeness was var/lib/dpkg/status plus an os-release, so a
+    re-run would have skipped the bootstrap and hit the identical failure with
+    no bootstrap left in the log to blame. Completeness is now
+    _ROOTFS_REQUIREMENTS -- a dpkg database, an os-release, dpkg, apt-get,
+    each with its legitimate alternative locations -- the verdict names what
+    is absent rather than saying only "incomplete", and create_rootfs checks
+    the same list the moment the tool returns and before the identity stamp is
+    written, so a refused tree carries no record claiming a base. The message
+    names the tool, the variant and the suite, because minbase does not mean
+    the same set to debootstrap(8) ("required packages and apt") and to
+    mmdebstrap(1) (essential plus Priority:required, and apt is
+    Priority:important in resolute). That divergence is documented and not
+    blamed: measured on a resolute host, mmdebstrap --simulate --verbose
+    --variant=minbase --include=ca-certificates resolute resolves 129
+    packages including apt 3.2.0, so with 1.5.7 the two agree in practice and
+    the cause of the 1.4.3-6 run's missing apt is still open. Four test files
+    had hand-copied the old two-path definition and all four broke in
+    assertions about something else, so tests/conftest.py now builds the
+    fixture tree from _ROOTFS_REQUIREMENTS itself.
+
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium

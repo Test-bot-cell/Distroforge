@@ -16,11 +16,37 @@ from pathlib import Path
 import pytest
 
 from distroforge.core import qemu_invocation
+from distroforge.core.bootstrap import _ROOTFS_REQUIREMENTS
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Qt reads XDG_RUNTIME_DIR at startup and warns when it is unset or wrong-moded;
 # offscreen does not need it, and the warning is noise in every CI log.
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
+
+
+def make_rootfs(root: Path, codename: str | None = None) -> Path:
+    """Materialise the smallest tree ``rootfs_verdict`` will accept as a rootfs.
+
+    Built *from* ``_ROOTFS_REQUIREMENTS`` rather than from a hand-copied list of paths,
+    because the hand-copied version already cost four test files. When a package manager
+    joined the requirements, every test that had spelled out "dpkg status plus an
+    os-release" started failing on the new entry before reaching what it was written to
+    check -- none of them was about completeness, they all just needed a plausible tree.
+    Deriving it means adding a fifth requirement updates them all, and
+    ``test_the_shared_rootfs_helper_satisfies_the_real_requirements`` fails loudly here
+    if this ever drifts from the production definition instead of quietly in four places.
+
+    The first alternative of each requirement is the one created: os-release(5) allows
+    two locations and a real Ubuntu tree uses ``/etc``.
+    """
+    for _label, paths in _ROOTFS_REQUIREMENTS:
+        target = root / paths[0]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.write_text("", encoding="utf-8")
+    body = "ID=ubuntu\n" + (f"VERSION_CODENAME={codename}\n" if codename else "")
+    (root / "etc/os-release").write_text(body, encoding="utf-8")
+    return root
 
 
 @pytest.fixture(scope="session", autouse=True)

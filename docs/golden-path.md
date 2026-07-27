@@ -234,15 +234,49 @@ downloading the artifact. All three assertion steps now report before they asser
 before asserting there was none.
 
 Still open: **why** a `--variant=minbase` mmdebstrap produced a tree with `env` and no
-`apt-get`, in 23 seconds, exiting 0. `mmdebstrap --simulate` for the same suite, variant
-and mirror resolves 129 packages including `apt (3.2.0 Ubuntu:26.04/resolute)` — on a
-26.04 host. The next run's report carries the failing command's own output, which is what
-will answer it; the section below removes the toolchain from the list of suspects, and it
-does not by itself make mmdebstrap's silence acceptable. Whatever the cause turns out to
-be, a bootstrap that exits 0 with no package manager in the tree has to be refused where
-it happens: `rootfs_verdict` calls such a tree *complete*, because its test is
-`var/lib/dpkg/status` plus an `os-release`, and the build carried on for five more phases
-before the chroot said `apt-get` was missing.
+`apt-get`, in 23 seconds, exiting 0.
+
+One hypothesis was raised and refuted here rather than shipped. The two tools this code
+can call disagree in writing about that variant: debootstrap(8) defines `minbase` as
+"required packages **and apt**", while mmdebstrap(1) defines `required, minbase` as the
+essential set plus `?priority(required)` and does not mention apt — and in resolute's
+archive `apt` is `Priority: important`, neither `required` nor `Essential: yes`. So
+`create_rootfs` passing one string to whichever tool it finds looked like the whole bug.
+It is not: measured on a resolute host,
+
+```
+mmdebstrap --simulate --verbose --variant=minbase --include=ca-certificates resolute
+```
+
+resolves **129** packages, `Inst apt (3.2.0 Ubuntu:26.04/resolute)` and
+`Inst ca-certificates` among them. With mmdebstrap 1.5.7 the two definitions agree in
+practice. The run that broke used **1.4.3-6**, from noble, against a resolute suite —
+which is what the section below is about, and why the pinned runner is the experiment
+that answers this. Note that `--simulate` alone prints no package set at all
+(`I: no essential packages -- skipping`); the list only appears with `--verbose`.
+
+What does not depend on the answer is the refusal. A bootstrap tool exiting 0 is a claim
+about the tool, not about the tree, and this build believed it twice over:
+
+- nothing checked the tree the tool had just made, so the build ran five more phases
+  before a chroot said `apt-get` was missing — by which point the tool's own output,
+  which would have named what it declined to install, had been discarded, because the
+  runner keeps output only for commands that *fail*;
+- and `rootfs_verdict` graded that tree **reusable**, because completeness was
+  `var/lib/dpkg/status` plus an `os-release`, both of which it had. A re-run would have
+  skipped the bootstrap and hit the same missing `apt-get`, with no bootstrap left in the
+  log to blame.
+
+Completeness is now the list in `_ROOTFS_REQUIREMENTS` — a dpkg database, an os-release,
+`dpkg`, `apt-get` — each with its accepted alternative locations, and the verdict says
+which entries are absent instead of the bare word `incomplete`. `create_rootfs` checks
+the same list immediately after the tool returns and **before** the identity stamp is
+written, so a refused tree carries no record claiming a base. The message names the tool,
+the variant and the suite, because that triple is what the reader has to change.
+`tests/test_bootstrap_requires_a_package_manager.py` covers both ranges, and
+`tests/conftest.py`'s `make_rootfs` builds its fixture *from* `_ROOTFS_REQUIREMENTS`:
+four test files had hand-copied "dpkg status plus an os-release" and all four broke, in
+assertions about something else entirely, the day a fifth requirement appeared.
 
 ## Three suites where the derivative names one
 

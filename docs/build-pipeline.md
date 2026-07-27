@@ -658,7 +658,21 @@ in the path, nothing cleans it between runs, and nothing compared the tree's rel
 the project's. Retarget a project at another release, rebuild, and the previous suite's
 tree was reused and shipped inside the image, silently.
 
-Reuse is now keyed on the base a tree was built from, and a difference is refused rather
+Those two paths were also not enough to say the tree is *a rootfs*. A tree carrying a dpkg
+status file, an `os-release` and no package manager graded **complete** and therefore
+reusable — which is exactly the tree the first real golden-path run produced, and a re-run
+would have skipped the bootstrap and hit the same missing `apt-get` with no bootstrap left
+in the log to blame. Completeness is now `_ROOTFS_REQUIREMENTS`: a dpkg database, an
+os-release, `dpkg` and `apt-get`, each with the alternative locations that are legitimate
+answers (os-release(5) allows two; `/bin` is a symlink on a merged-usr tree and need not be
+on a foreign one). The verdict names the entries that are absent instead of saying only
+`incomplete`, and `create_rootfs` checks the same list the moment the bootstrap tool
+returns — before the stamp below is written — so the build stops at the phase that produced
+the tree rather than five phases later, and a refused tree carries no record claiming a
+base. The refusal names the tool, the variant and the suite, because `minbase` does not
+mean the same set to debootstrap(8) and mmdebstrap(1).
+
+Reuse is then keyed on the base a tree was built from, and a difference is refused rather
 than repaired — deleting a tree the maintainer may have spent an hour on, to recover from
 a question they can answer in one command, is not the build's decision:
 

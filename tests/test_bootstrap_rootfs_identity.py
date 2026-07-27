@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from conftest import make_rootfs
 
 from distroforge.core.bootstrap import (
     BootstrapOptions,
@@ -49,13 +50,25 @@ class _Recorder(CommandRunner):
 
 
 def _tree(root, codename: str | None = None, vendor_only: bool = False) -> None:
-    """A tree with the two markers the old check was satisfied by, and nothing more."""
-    (root / "var/lib/dpkg").mkdir(parents=True, exist_ok=True)
-    (root / "var/lib/dpkg/status").write_text("", encoding="utf-8")
-    body = "ID=ubuntu\n" + (f"VERSION_CODENAME={codename}\n" if codename else "")
-    target = root / ("usr/lib/os-release" if vendor_only else "etc/os-release")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(body, encoding="utf-8")
+    """A tree that passes for a rootfs, so these tests are about identity and nothing else.
+
+    It used to carry only the two markers the check of the day was satisfied by. Once a
+    package manager joined the requirements, that tree stopped being *complete* and every
+    test here started failing on "no dpkg, no apt-get" before it ever reached the suite
+    comparison it exists to make -- a green suite check would have been the accident. The
+    tree a build reuses has apt in it; so does this one, via the shared helper, so the
+    next requirement to be added does not repeat the lesson. The other direction is
+    ``test_bootstrap_requires_a_package_manager.py``.
+
+    ``vendor_only`` moves the os-release to the location a tree with no ``/etc`` copy
+    uses, which is one of the two the requirement accepts.
+    """
+    make_rootfs(root, codename)
+    if vendor_only:
+        vendor = root / "usr/lib/os-release"
+        vendor.parent.mkdir(parents=True, exist_ok=True)
+        vendor.write_text((root / "etc/os-release").read_text(encoding="utf-8"), encoding="utf-8")
+        (root / "etc/os-release").unlink()
 
 
 def _stamp(root, **overrides) -> None:
