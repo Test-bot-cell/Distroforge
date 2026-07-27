@@ -23,8 +23,13 @@ def test_dry_run_build_creates_no_host_filesystem_side_effects(tmp_path) -> None
     write_targets = {spec.argv[1] for spec in runner.history if spec.argv[:1] == ("write-file",)}
     assert str(project.output_dir / "distroforge-provenance.json") in write_targets
     assert str(project.output_dir / "report.html") in write_targets
+    # Including the UEFI boot image. Asserted on the *plan* because that is the only
+    # place a from-scratch amorce can be verified without building: the guardrail in
+    # IsoService cannot fire in dry-run, since nothing exists on disk to be wrong.
+    assert str(project.iso_root / "boot" / "grub" / "efi.img") in write_targets
 
     # ...but planning a build mutates nothing on the host filesystem.
     assert _files(project.root) == before
     assert not (project.output_dir / "distroforge-provenance.json").exists()
     assert not (project.output_dir / "report.html").exists()
+    assert not (project.iso_root / "boot" / "grub" / "efi.img").exists()

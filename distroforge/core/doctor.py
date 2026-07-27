@@ -39,6 +39,7 @@ REQUIRED_TOOLS = {
     "xorriso": "ISO extraction and rebuild",
     "unsquashfs": "live filesystem extraction",
     "mksquashfs": "live filesystem rebuild",
+    "mformat": "UEFI boot image assembly for from-scratch ISOs",
     "qemu-system-x86_64": "QEMU preview",
     "chroot": "target shell and package operations",
     "apt-get": "package operations",

@@ -273,6 +273,16 @@ def test_bootstrap_copies_locked_boot_artifacts_with_sudo_install(tmp_path) -> N
     boot.mkdir(parents=True)
     (boot / "vmlinuz-locked").write_text("kernel", encoding="utf-8")
     (boot / "initrd.img-locked").write_text("initrd", encoding="utf-8")
+    # The EFI payloads a real live-base install leaves behind. create_iso_tree stages the
+    # UEFI amorce out of the rootfs, so without them it refuses to continue -- which is
+    # the point of the refusal.
+    shim = project.squashfs_root / "usr/lib/shim"
+    shim.mkdir(parents=True)
+    (shim / "shimx64.efi.signed.latest").write_text("shim", encoding="utf-8")
+    (shim / "mmx64.efi").write_text("mokmanager", encoding="utf-8")
+    signed_grub = project.squashfs_root / "usr/lib/grub/x86_64-efi-signed"
+    signed_grub.mkdir(parents=True)
+    (signed_grub / "grubx64.efi.signed").write_text("grub", encoding="utf-8")
     runner = RecordingExecuteRunner()
 
     BootstrapService(
@@ -311,6 +321,16 @@ def test_bootstrap_copies_locked_boot_artifacts_with_sudo_install(tmp_path) -> N
     grub = project.iso_root / "boot" / "grub" / "grub.cfg"
     assert "terminal_output console serial" in grub.read_text(encoding="utf-8")
     assert "console=ttyS0,115200n8" in grub.read_text(encoding="utf-8")
+    # The UEFI amorce, staged in the same pass: a FAT image with a pinned volume serial
+    # so two builds of one tree match, shim as the file firmware auto-boots, and the
+    # signed GRUB under the exact leafname shim chain-loads.
+    esp = project.iso_root / "boot" / "grub" / "efi.img"
+    mformat = next(argv for argv in commands if argv[0] == "mformat")
+    assert mformat[:6] == ("mformat", "-C", "-i", str(esp), "-v", "DFORGE_EFI")
+    assert "-N" in mformat and mformat[mformat.index("-N") + 1] == "44464f52"
+    assert ("mcopy", "-i", str(esp), str(shim / "shimx64.efi.signed.latest"), "::/EFI/BOOT/BOOTX64.EFI") in commands
+    assert ("mcopy", "-i", str(esp), str(signed_grub / "grubx64.efi.signed"), "::/EFI/BOOT/grubx64.efi") in commands
+    assert ("mdir", "-/", "-i", str(esp), "::/EFI/BOOT") in commands
 
 
 @pytest.mark.unprivileged

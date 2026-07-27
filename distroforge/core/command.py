@@ -18,6 +18,7 @@ from typing import cast
 VIRTUAL_COMMANDS = {
     "autoinstall-skip",
     "bootstrap-bios-skip",
+    "bootstrap-efi-skip",
     "bootstrap-rootfs-reuse",
     "compatibility-report",
     "consistency-issue",

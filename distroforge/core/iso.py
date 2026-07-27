@@ -142,6 +142,19 @@ class IsoService:
             if replayed is not None:
                 return replayed, "source El Torito record"
         layout = BootLayout.detect(iso_root)
+        if not self.runner.dry_run and not layout.bios_image and not layout.efi_image:
+            # xorriso would happily accept this and hand back a valid ISO9660 image with
+            # a kernel, an initrd, a GRUB config and no boot record whatsoever: a data
+            # disc no machine will start. The only prior hint was the string "boot assets
+            # not detected" buried in a command description. The existing check in
+            # validate.py cannot cover it -- it is gated on iso_root.exists(), and for a
+            # from-scratch build iso_root does not exist yet when validation runs.
+            raise ValueError(
+                f"Refusing to build an ISO with no bootable amorce: {iso_root} contains neither a BIOS "
+                "El Torito image (isolinux/isolinux.bin, boot/grub/i386-pc/eltorito.img) nor a UEFI boot "
+                "image (boot/grub/efi.img, EFI/boot/bootx64.efi). Check that the bootstrap staged them: "
+                "run distroforge iso-toolchain, and see docs/build-pipeline.md."
+            )
         return layout.xorriso_args(), layout.description
 
     def _replay_source_boot_record(self, source_iso: Path) -> list[str] | None:
@@ -235,8 +248,22 @@ class BootLayout:
             )
         if self.efi_image:
             if self.bios_image:
-                args.append("-eltorito-alt-boot")
-            args.extend(["-e", self.efi_image, "-no-emul-boot", "-isohybrid-gpt-basdat"])
+                # --efi-boot expands to -eltorito-alt-boot, -e <path>, -no-emul-boot and
+                # -eltorito-alt-boot again. That trailing one closes the entry, so the
+                # BIOS entry's -boot-load-size above cannot bleed into the EFI entry and
+                # leave firmware reading 2 KiB of a multi-megabyte image. It is what
+                # grub-mkrescue passes.
+                args.extend(["--efi-boot", self.efi_image])
+            else:
+                # Nothing to alternate away from without -b, and man xorrisofs says
+                # -eltorito-alt-boot may be omitted in exactly that case.
+                args.extend(["-e", self.efi_image, "-no-emul-boot"])
+            if self.isohybrid_mbr and self.bios_image:
+                # Same gate as -isohybrid-mbr above, because man xorrisofs states that
+                # -isohybrid-gpt-basdat "works only with -isohybrid-mbr". It used to be
+                # emitted unconditionally, which nothing noticed while no code path had
+                # ever produced an EFI image to trigger it.
+                args.append("-isohybrid-gpt-basdat")
         if self.bios_image or self.efi_image:
             args.extend(["-partition_offset", "16"])
         return args

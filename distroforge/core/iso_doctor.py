@@ -97,11 +97,15 @@ def _check_tools(project: Project, findings: list[IsoDoctorFinding]) -> None:
     required = ["xorriso", "mksquashfs", "chroot", "apt-get"]
     if project.source_mode == "iso":
         required.append("unsquashfs")
+    if project.source_mode == "bootstrap":
+        # Only bootstrap mode assembles its own UEFI boot image; an ISO rebuild replays
+        # the boot record the source already carries.
+        required.append("mformat")
     if project.source_mode == "bootstrap" and not (CommandRunner.has_binary("mmdebstrap") or CommandRunner.has_binary("debootstrap")):
         findings.append(IsoDoctorFinding("error", "host-bootstrap-tool", "Neither mmdebstrap nor debootstrap is available.", "Install mmdebstrap or debootstrap."))
     missing = [binary for binary in required if not CommandRunner.has_binary(binary)]
     if missing:
-        packages = {"xorriso": "xorriso", "mksquashfs": "squashfs-tools", "unsquashfs": "squashfs-tools", "chroot": "coreutils", "apt-get": "apt"}
+        packages = {"xorriso": "xorriso", "mksquashfs": "squashfs-tools", "unsquashfs": "squashfs-tools", "chroot": "coreutils", "apt-get": "apt", "mformat": "mtools"}
         findings.append(IsoDoctorFinding("error", "host-tools-missing", f"Missing host tools: {', '.join(missing)}.", apt_install_command(sorted({packages[item] for item in missing}))))
 
 

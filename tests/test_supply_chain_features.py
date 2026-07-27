@@ -243,6 +243,16 @@ def test_bootstrap_grub_packages_are_arch_aware(tmp_path) -> None:
     assert "grub-efi-amd64-bin" in amd64
     assert "grub-pc-bin" not in arm64
     assert "grub-efi-arm64-bin" in arm64
+    # The signed pair the ESP is staged from. Named explicitly rather than inherited
+    # through shim-signed's "grub-efi-amd64-signed | grub-efi-arm64-signed" alternation,
+    # which apt could satisfy with the wrong arch's package on a cross build.
+    assert "grub-efi-amd64-signed" in amd64
+    assert "grub-efi-arm64-signed" in arm64
+    # The EFI package name follows GRUB's platform, not the dpkg architecture: there has
+    # never been a grub-efi-i386-bin, so this build used to die at apt-get install.
+    i386 = _bootstrap_service(tmp_path, "i386")._base_packages()
+    assert "grub-efi-ia32-bin" in i386
+    assert not any(name.startswith("grub-efi-i386") for name in i386)
 
 
 def test_bootstrap_kernel_meta_package_is_arch_independent_on_ubuntu(tmp_path) -> None:
@@ -261,6 +271,50 @@ def test_cross_arch_build_requires_qemu_and_skips_bios(tmp_path, monkeypatch) ->
     commands = [spec.argv for spec in runner.history]
     assert ("qemu-user-static-required", "arm64", "amd64") in commands
     assert ("bootstrap-bios-skip", "arm64") in commands
+    # Skipping BIOS is correct on arm64; producing nothing in its place was not. The
+    # bios-skip marker's own description says the arch "boots EFI-only", and for as long
+    # as this assertion was missing that claim was false: the build shipped an ISO with
+    # no boot record at all, and exited 0.
+    assert ("write-file", str(project.iso_root / "boot" / "grub" / "efi.img")) in commands
+    assert not any(argv[0] == "bootstrap-efi-skip" for argv in commands)
+
+
+def test_esp_sizing_rounds_to_a_track_and_refuses_what_el_torito_cannot_address(tmp_path) -> None:
+    small = tmp_path / "shim.efi"
+    small.write_bytes(b"\x00" * 4096)
+
+    blocks = bootstrap_module._esp_blocks([small])
+
+    # A whole number of 32-sector tracks, because that is the geometry mformat is given.
+    assert blocks % 32 == 0
+    assert blocks * 512 >= 4096
+    huge = tmp_path / "huge.efi"
+    huge.write_bytes(b"\x00" * (33 * 1024 * 1024))
+    # An El Torito boot image is addressed in 512-byte blocks by a 16-bit field. Raising
+    # is the point: an oversized image would be silently clipped and would not boot.
+    with pytest.raises(ValueError, match="may not exceed 65535"):
+        bootstrap_module._esp_blocks([huge])
+
+
+def test_bootstrap_refuses_a_rootfs_with_no_uefi_grub(tmp_path) -> None:
+    project = _bootstrap_project(tmp_path, "NoGrub")
+    boot = project.squashfs_root / "boot"
+    boot.mkdir(parents=True)
+    (boot / "vmlinuz-6.17.0-1-generic").write_bytes(b"\x00")
+    (boot / "initrd.img-6.17.0-1-generic").write_bytes(b"\x00")
+    service = BootstrapService(
+        CommandRunner(dry_run=False),
+        get_release("26.04"),
+        project.squashfs_root,
+        project.iso_root,
+        BootstrapOptions(arch="amd64"),
+        use_sudo=False,
+    )
+
+    # Silently skipping the amorce is what shipped an unbootable ISO, so an absent
+    # payload has to stop the build rather than be worked around.
+    with pytest.raises(ValueError, match="No UEFI GRUB image in the target rootfs"):
+        service.create_iso_tree()
 
 
 def test_native_amd64_build_does_not_require_qemu(tmp_path, monkeypatch) -> None:

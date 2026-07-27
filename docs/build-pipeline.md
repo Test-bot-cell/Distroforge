@@ -263,6 +263,29 @@ source ISO to interrogate (bootstrap mode) or the source reports no boot record.
 runs only in execute mode, so dry-run plans build nothing and their rebuild command stays
 byte-identical to the detection path.
 
+That fallback path is the one a from-scratch build takes, and it used to be half-built. The
+bootstrap staged a BIOS El Torito image and nothing else, so `detect()` found no EFI image
+and `xorriso` was handed no EFI tokens: an amd64 ISO booted only in BIOS/CSM mode despite
+the target having `grub-efi-<arch>-bin` and `shim-signed` installed, and an arm64 ISO — where
+the BIOS image is deliberately skipped as "EFI-only" — carried no boot record whatsoever
+while the build exited 0. The bootstrap now stages both, and two options are gated where
+they were not: `-isohybrid-gpt-basdat` is emitted only alongside `-isohybrid-mbr`, which
+`man xorrisofs` says is the only case it works in, and the EFI entry is opened with
+`--efi-boot` rather than a bare `-eltorito-alt-boot -e`, because the macro's trailing
+`-eltorito-alt-boot` closes the entry so the BIOS entry's `-boot-load-size` cannot bleed
+into it.
+
+A tree that ends up with neither amorce is now refused rather than built. `xorriso` accepts
+such a tree happily and returns a valid ISO9660 image with a kernel, an initrd, a GRUB
+config and no boot record — a data disc — and the only previous hint was the string
+`boot assets not detected` inside a command description. The refusal lives at the single
+point every path passes through to obtain boot tokens, and it fires in execute mode only:
+in dry-run the boot files are planned rather than written, so there is nothing on disk to be
+right or wrong about. That is why the dry-run plan is where a from-scratch amorce is
+asserted instead (`tests/test_dry_run_host_purity.py`), and why the equivalent check in
+`validate.py` never caught this — it is gated on `iso_root.exists()`, and for a from-scratch
+build `iso_root` does not exist yet when validation runs.
+
 Verification is honest about its boundary: offline tests pin a real (BIOS-only) `as_mkisofs`
 capture and a UEFI-shaped forwarding case, proving the parser drops the options we own and
 forwards every boot/partition token — including EFI/appended-partition tokens — verbatim.
@@ -308,6 +331,40 @@ can carry a vendor-neutral component inventory.
 
 `--bootstrap-arch` builds a foreign-architecture image, such as arm64 on an amd64 host.
 GRUB packages are architecture-aware: amd64 keeps `grub-pc-bin` plus `grub-efi-amd64-bin`,
-while arm64 drops the BIOS package and uses `grub-efi-arm64-bin`. The kernel meta-package
-stays `linux-generic` on Ubuntu. A cross-arch target requires `qemu-user-static`; native
-builds add no qemu requirement.
+while arm64 drops the BIOS package and uses `grub-efi-arm64-bin`. Both add
+`grub-efi-<arch>-signed` next to `shim-signed`, which is the pair the UEFI amorce is staged
+from. The package name follows GRUB's EFI platform rather than the dpkg architecture, and
+for i386 the two differ — `grub-efi-ia32-bin` is the real name, and there has never been a
+`grub-efi-i386-bin`, so that build used to fail at `apt-get install`. The kernel
+meta-package stays `linux-generic` on Ubuntu. A cross-arch target requires
+`qemu-user-static`; native builds add no qemu requirement.
+
+### How the UEFI amorce is staged
+
+The EFI payloads are copied out of the **target rootfs**, never off the build host. The host
+is whatever machine the maintainer happens to be on, and a UEFI-only host does not even
+carry the BIOS GRUB the El Torito step reads. Nothing extra is installed into the target to
+make this work: `shim-signed` already depends on `grub-efi-<arch>-signed`, and
+`grub-efi-<arch>-bin` already depends on `grub-efi-<arch>-unsigned`, which is the package
+that ships a ready-to-boot monolithic image. `grub-efi-<arch>-bin` itself ships no `.efi`
+file at all — only modules — so there is nothing in it to copy.
+
+Shim plus the signed GRUB is preferred, because that pair is what boots with Secure Boot on;
+the unsigned monolithic GRUB is the fallback and boots with it off. The files are placed in
+a FAT image at `boot/grub/efi.img`, which is what `BootLayout.detect()` looks for first and
+what an El Torito EFI entry is specified to contain, with plain copies under `EFI/boot/` for
+whatever reads the tree rather than its boot record. The FAT container is built on the host
+with `mtools`, which writes an image as an ordinary file: no loop mount, no privilege, and
+`mtools` stays out of the delivered filesystem. It is therefore a `Depends`, and `doctor`,
+`iso-toolchain`, `iso-doctor` and bootstrap validation all report it — validation checks it
+up front so a missing tool costs a second rather than an hour of bootstrapping. The volume
+serial is pinned so two builds of one tree produce the same image; FAT directory timestamps
+still come from the source files and remain a residual reproducibility gap.
+
+One thing here is **not machine-verified**: whether the staged GRUB finds
+`boot/grub/grub.cfg` from its own baked-in prefix. A signed GRUB's prefix is fixed at the
+vendor's build time and cannot be re-set — that is the point of signing. The
+`EFI/BOOT/grub.cfg` trampoline written into the image is the documented mitigation, and
+confirming it needs a real ISO booted under UEFI firmware, which no automated gate in this
+project performs. The refusal described under *Boot record reproduction* guarantees the
+media carries an amorce; it cannot guarantee that amorce chain-loads.

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from distroforge.core import iso as iso_module
 from distroforge.core.command import CommandResult, CommandRunner, CommandSpec
 from distroforge.core.iso import BootLayout, IsoService, boot_args_from_report
 from distroforge.core.project import Project
@@ -138,3 +141,90 @@ def test_rebuild_is_byte_identical_to_detection_in_dry_run(tmp_path) -> None:
     ]
     # Byte-identical to the pre-delegation behavior: fixed prefix + detector args + root.
     assert list(rebuild.argv) == prefix + expected_boot + [str(project.iso_root)]
+
+
+# The tests below cover the other half: a tree with no source ISO to interrogate, which
+# is what --from-scratch produces. Nothing here had a test before, and the gap was not
+# academic -- the bootstrap staged no EFI image at all, so an amd64 ISO booted only in
+# BIOS mode and an arm64 one carried no boot record whatsoever, both exiting 0.
+
+
+def _staged_iso_root(tmp_path: Path, *, bios: bool = True, efi: bool = True) -> Path:
+    """An ISO tree shaped like the one a from-scratch bootstrap stages."""
+    root = tmp_path / "iso"
+    root.mkdir(parents=True, exist_ok=True)
+    if bios:
+        image = root / "boot/grub/i386-pc/eltorito.img"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"\x00" * 512)
+    if efi:
+        esp = root / "boot/grub/efi.img"
+        esp.parent.mkdir(parents=True, exist_ok=True)
+        esp.write_bytes(b"\x00" * 512)
+    return root
+
+
+def test_from_scratch_layout_boots_both_firmwares(tmp_path, monkeypatch) -> None:
+    mbr = tmp_path / "isohdpfx.bin"
+    # Pinned, because whether the runner has isolinux installed must not change the args.
+    monkeypatch.setattr(iso_module, "_first_existing", lambda *paths: mbr)
+    root = _staged_iso_root(tmp_path)
+
+    layout = BootLayout.detect(root)
+
+    assert layout.description == "BIOS+UEFI"
+    assert layout.xorriso_args() == [
+        "-isohybrid-mbr", str(mbr),
+        "-b", "boot/grub/i386-pc/eltorito.img",
+        "-c", "boot.catalog",
+        "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
+        # --efi-boot, not a bare -e: its trailing -eltorito-alt-boot closes the entry so
+        # the BIOS -boot-load-size above cannot bleed into the EFI one.
+        "--efi-boot", "boot/grub/efi.img",
+        "-isohybrid-gpt-basdat",
+        "-partition_offset", "16",
+    ]
+
+
+def test_efi_only_layout_omits_every_bios_only_option(tmp_path, monkeypatch) -> None:
+    # An MBR is offered and must still be refused: there is no BIOS image to hybridise.
+    monkeypatch.setattr(iso_module, "_first_existing", lambda *paths: tmp_path / "isohdpfx.bin")
+    root = _staged_iso_root(tmp_path, bios=False)
+
+    layout = BootLayout.detect(root)
+    args = layout.xorriso_args()
+
+    assert layout.description == "UEFI"
+    assert args == ["-e", "boot/grub/efi.img", "-no-emul-boot", "-partition_offset", "16"]
+    # man xorrisofs: -isohybrid-gpt-basdat "works only with -isohybrid-mbr", and
+    # -eltorito-alt-boot may be omitted when no -b was given. Both used to be emitted
+    # unconditionally, which nothing noticed while no path ever produced an EFI image.
+    assert "-isohybrid-gpt-basdat" not in args
+    assert "-eltorito-alt-boot" not in args
+    assert "-isohybrid-mbr" not in args
+
+
+def test_rebuild_refuses_a_tree_with_no_bootable_amorce(tmp_path) -> None:
+    project = Project.create("Bootless", tmp_path / "proj", "26.04")
+    project.iso_root.mkdir(parents=True, exist_ok=True)
+    runner = _FakeRunner("")
+
+    with pytest.raises(ValueError, match="no bootable amorce"):
+        IsoService(runner, use_sudo=False).rebuild(project, tmp_path / "out.iso")
+
+    # It must refuse *before* xorriso, which would otherwise return a valid ISO9660
+    # image with a kernel, an initrd, a GRUB config and no boot record: a data disc.
+    assert not any("mkisofs" in spec.argv for spec in runner.history)
+
+
+def test_dry_run_plans_a_tree_whose_boot_files_exist_only_on_paper(tmp_path) -> None:
+    project = Project.create("Planned", tmp_path / "proj", "26.04")
+    runner = CommandRunner(dry_run=True)
+
+    IsoService(runner, use_sudo=False).rebuild(project, tmp_path / "out.iso")
+
+    # The refusal above must not fire here. In dry-run the boot files are planned rather
+    # than written, so detection legitimately finds nothing, and raising would make every
+    # from-scratch plan fail on a build that is perfectly correct.
+    assert any("mkisofs" in spec.argv for spec in runner.history)
+    assert not (tmp_path / "out.iso").exists()

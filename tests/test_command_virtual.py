@@ -13,6 +13,7 @@ REPORT_MARKERS = (
     ("vuln-report", "ok", "0"),
     ("qemu-user-static-required", "arm64", "amd64"),
     ("bootstrap-bios-skip", "arm64"),
+    ("bootstrap-efi-skip", "riscv64"),
 )
 
 

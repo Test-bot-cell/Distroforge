@@ -37,15 +37,27 @@ def validate_host(runner: CommandRunner) -> list[ValidationIssue]:
 
 
 def validate_bootstrap_host(runner: CommandRunner) -> list[ValidationIssue]:
-    if runner.has_binary("mmdebstrap") or runner.has_binary("debootstrap"):
-        return []
-    return [
-        ValidationIssue(
-            "error",
-            "missing-bootstrap-tool",
-            "mmdebstrap or debootstrap is required for skeleton source starters",
+    issues: list[ValidationIssue] = []
+    if not (runner.has_binary("mmdebstrap") or runner.has_binary("debootstrap")):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "missing-bootstrap-tool",
+                "mmdebstrap or debootstrap is required for skeleton source starters",
+            )
         )
-    ]
+    # Checked here rather than only at the ISO step so it costs a second instead of an
+    # hour: without mtools the bootstrap cannot assemble the UEFI boot image, and the
+    # failure would otherwise surface after debootstrap and a full apt install.
+    if not runner.has_binary("mformat"):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "missing-fat-tool",
+                "mtools (mformat) is required to build the UEFI boot image for a from-scratch ISO",
+            )
+        )
+    return issues
 
 
 def validate_project(project: Project, execute: bool = False) -> list[ValidationIssue]:

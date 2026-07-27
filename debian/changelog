@@ -1,3 +1,27 @@
+distroforge (0.3.5-4) resolute; urgency=medium
+
+  * Stage the UEFI amorce for --from-scratch ISOs, which had none at all.
+    create_iso_tree built a BIOS El Torito image and stopped there, so an
+    amd64 ISO booted only under legacy firmware while an arm64 one carried
+    no boot record whatsoever -- the "boots EFI-only" marker described media
+    no machine can start, and xorriso exited 0 either way. The ESP is now
+    assembled with mtools from the target rootfs's own shim and signed GRUB
+    (new Depends: mtools), which adds no package to the delivered image:
+    shim-signed already depends on grub-efi-<arch>-signed, and
+    grub-efi-<arch>-bin on grub-efi-<arch>-unsigned.
+  * Stop passing -isohybrid-gpt-basdat with no -isohybrid-mbr to pair it
+    with, and open the El Torito EFI entry through --efi-boot so the BIOS
+    entry's -boot-load-size cannot bleed into it. Neither was reachable
+    until the change above produced an EFI image for the first time.
+  * Install grub-efi-ia32-bin on i386 rather than grub-efi-i386-bin, which
+    has no candidate in any archive, so every --bootstrap-arch i386 build
+    died at apt-get install.
+  * Refuse to build an ISO from a tree carrying no boot image for either
+    firmware, and report missing mtools at validation rather than an hour
+    into the build.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 08:03:10 +0200
+
 distroforge (0.3.5-3) resolute; urgency=medium
 
   * Remove debian/distroforge.postinst. Its embedded python3 payload raised
