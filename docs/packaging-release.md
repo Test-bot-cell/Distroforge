@@ -275,10 +275,9 @@ one shared reason. This project's release step is a true fast-forward: `main` an
 hold the identical commit SHA, signed by the maintainer's key and Verified on GitHub.
 GitHub offers no fast-forward merge for pull requests -- the merge-method enum is closed at
 merge, squash and rebase in the REST endpoint, the repository settings, the ruleset rule and
-the merge queue alike, and "Rebase and merge" is documented to
-always create new commit SHAs and to land commits without their signatures. Routing `main`
-through a pull request would therefore trade an identical signed SHA for a rewritten
-unsigned one. Required status checks fall to the same argument from the other side: GitHub
+the merge queue alike, and "Rebase and merge" is documented to always create new commit
+SHAs and to land commits without their signatures. Routing `main` through a pull request
+would therefore trade an identical signed SHA for a rewritten unsigned one. Required status checks fall to the same argument from the other side: GitHub
 evaluates them against the commit being pushed, a new commit has no results yet, so
 requiring them forecloses direct pushes and forces exactly that pull-request flow. There is
 one documented exception, and it does not help here: a locally created merge commit may be

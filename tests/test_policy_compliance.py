@@ -721,12 +721,25 @@ def test_the_rules_test_arguments_import_the_staged_package_not_the_checkout(tmp
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=False
-    )
+    """Shell out to git, making an absent git look the way a failed git call looks.
+
+    The distro-dependencies job installs distribution packages only and git is not one of
+    them, so actions/checkout there falls back to the REST tarball: that leg runs with no
+    git binary and no .git directory at all. Without this, the first call raised
+    FileNotFoundError and turned "there is no history here to check" into a failing suite,
+    which is what it did on the commit that introduced these tests.
+    """
+    try:
+        return subprocess.run(
+            ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=False
+        )
+    except OSError as error:
+        return subprocess.CompletedProcess(
+            args=("git", *args), returncode=127, stdout="", stderr=str(error)
+        )
 
 
-def _is_git_checkout() -> bool:
+def _git_history_available() -> bool:
     return _git("rev-parse", "--git-dir").returncode == 0
 
 
@@ -771,7 +784,10 @@ def test_gbp_conf_names_only_things_this_repository_actually_has() -> None:
     # real where the refs are there to resolve. A shallow checkout has only the branch it
     # was made from, which is what actions/checkout produces by default, so asking there
     # would fail over the fetch depth rather than over the configuration.
-    if not _is_git_checkout() or _git("rev-parse", "--is-shallow-repository").stdout.strip() != "false":
+    if (
+        not _git_history_available()
+        or _git("rev-parse", "--is-shallow-repository").stdout.strip() != "false"
+    ):
         return
     for option in ("debian-branch", "upstream-branch"):
         name = defaults[option]
@@ -797,8 +813,8 @@ def test_every_packaging_tag_names_the_version_its_own_commit_declares() -> None
     rather than imported from gbp: gbp is not installed on the CI runners, and a test that
     recomputes the invariant independently disagrees loudly if the implementation drifts.
     """
-    if not _is_git_checkout():
-        pytest.skip("not a Git checkout")
+    if not _git_history_available():
+        pytest.skip("no git binary or no .git here, so there is no history to check")
 
     listed = _git("tag", "--list", "debian/*")
     assert listed.returncode == 0, listed.stderr

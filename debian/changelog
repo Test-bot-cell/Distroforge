@@ -56,8 +56,15 @@ distroforge (0.3.5-16) resolute; urgency=medium
   * tools/*.sh is now swept by both shellcheck gates, the Makefile target
     and the pre-commit hook, so a release script cannot ship unchecked the
     way debian/tests/gui-import nearly did.
+  * The tests above shell out to git, which the distro-dependencies job
+    does not have: it installs distribution packages only, so
+    actions/checkout falls back to the REST tarball and that leg runs with
+    no git binary and no .git at all. The first version raised
+    FileNotFoundError there and turned "no history to check" into a red
+    job. The helper now reports a missing git the way it reports a failed
+    git call, and the tests skip rather than crash.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:03:21 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:15:23 +0200
 
 distroforge (0.3.5-15) resolute; urgency=medium
 
