@@ -43,6 +43,7 @@ from .seeds import SeedOptions
 from .size_analysis import SizeAnalysisOptions
 from .snaps import SnapOptions, SnapSpec
 from .snapshots import SnapshotOptions
+from .squashfs import SquashfsOptions
 from .system_sync import SystemSyncOptions
 from .systemd import SystemdOptions
 from .trust import TrustOptions
@@ -120,6 +121,7 @@ def definition_from_project(
         "ppa": _ppa_definition(options.ppa),
         "apt_cache": _clean(options.apt_cache),
         "snapshots": _clean(options.snapshots),
+        "squashfs": _clean(options.squashfs),
         "oem": _clean(options.oem),
         "systemd": _clean(options.systemd),
         "users": [_clean(value) for value in options.users.users],
@@ -182,6 +184,7 @@ def apply_definition(project: Project, data: dict[str, object]) -> BuildOptions:
         ppa=_ppa_options(data.get("ppa", {})),
         apt_cache=_group(data, "apt_cache", AptCacheOptions),
         snapshots=_group(data, "snapshots", SnapshotOptions),
+        squashfs=_group(data, "squashfs", SquashfsOptions),
         oem=_group(data, "oem", OemOptions),
         systemd=_group(data, "systemd", SystemdOptions),
         users=UserOptions(_user_specs(data.get("users", []))),

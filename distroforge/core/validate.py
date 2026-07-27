@@ -14,6 +14,7 @@ from .doctor import REQUIRED_TOOLS, run_doctor
 from .iso import BootLayout
 from .project import Project
 from .qemu_invocation import default_ovmf_code, default_ovmf_vars, is_secure_boot_firmware
+from .squashfs import SQUASHFS_COMPRESSORS
 
 
 @dataclass(frozen=True)
@@ -441,9 +442,40 @@ def collect_option_issues(options, strict: bool = False) -> list[ValidationIssue
     issues.extend(validate_desktop_source_options(options.desktop_source))
     issues.extend(validate_system_sync_options(options.system_sync))
     issues.extend(validate_branding_options(options.branding, strict=strict))
+    issues.extend(validate_squashfs_options(options.squashfs))
     issues.extend(validate_prebuild_vm_options(options.prebuild_vm))
     issues.extend(validate_release_artifacts_options(options.release_artifacts, strict=strict))
     return issues
+
+
+def validate_squashfs_options(options) -> list[ValidationIssue]:
+    """Refuse a compressor before the build, not after the pack.
+
+    Repacking the live filesystem is the last heavy phase of a build, so a compressor
+    nobody can mount would be discovered after every expensive step had already run --
+    and in the lzma case, not even then: mksquashfs writes it happily and exits 0.
+    """
+    compression = getattr(options, "compression", "")
+    if not compression or compression in SQUASHFS_COMPRESSORS:
+        return []
+    supported = ", ".join(SQUASHFS_COMPRESSORS)
+    if compression == "lzma":
+        return [
+            ValidationIssue(
+                "error",
+                "squashfs-compression-unmountable",
+                "mksquashfs can write lzma but no kernel can read it: the squashfs "
+                "driver has an XZ decompressor and no raw-LZMA one, so the image would "
+                f"pack, checksum and ship and then fail to mount. Use one of: {supported}.",
+            )
+        ]
+    return [
+        ValidationIssue(
+            "error",
+            "squashfs-compression-unsupported",
+            f"Unknown squashfs compressor {compression!r}. Use one of: {supported}.",
+        )
+    ]
 
 
 def validate_prebuild_vm_options(options) -> list[ValidationIssue]:

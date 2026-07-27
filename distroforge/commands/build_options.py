@@ -41,6 +41,7 @@ from distroforge.core.seeds import SeedOptions
 from distroforge.core.size_analysis import SizeAnalysisOptions
 from distroforge.core.snaps import SnapOptions, SnapSpec
 from distroforge.core.snapshots import SnapshotOptions
+from distroforge.core.squashfs import SQUASHFS_COMPRESSORS, SquashfsOptions
 from distroforge.core.system_sync import SystemSyncOptions
 from distroforge.core.systemd import SystemdOptions
 from distroforge.core.trust import TrustOptions
@@ -55,6 +56,20 @@ def register_build_arguments(parser: argparse.ArgumentParser) -> None:
     register_trust_arguments(parser)
     parser.add_argument("--persona", choices=list(load_personas()))
     parser.add_argument("--from-scratch", action="store_true")
+    parser.add_argument(
+        "--squashfs-compression",
+        default="",
+        # The empty default is not one of the choices, so that a bad value produces
+        # "choose from gzip, lzo, ..." rather than a leading empty item. Asking for the
+        # release default means omitting the flag, which is what the default already is.
+        choices=SQUASHFS_COMPRESSORS,
+        metavar="COMP",
+        help=(
+            "live filesystem compressor ("
+            + ", ".join(SQUASHFS_COMPRESSORS)
+            + "); omit to keep the release default"
+        ),
+    )
     parser.add_argument("--bootstrap-arch", default="amd64")
     parser.add_argument("--bootstrap-variant", default="minbase")
     parser.add_argument("--bootstrap-mirror")
@@ -317,6 +332,7 @@ def build_options_from_args(project: Project, args: argparse.Namespace) -> Build
             enabled=args.snapshot,
             auto_restore_on_failure=args.auto_restore_on_failure,
         ),
+        squashfs=SquashfsOptions(compression=args.squashfs_compression),
         oem=OemOptions(enabled=args.oem),
         systemd=SystemdOptions(
             enable=_csv_args(args.enable_service),

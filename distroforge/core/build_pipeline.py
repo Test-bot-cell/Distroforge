@@ -49,7 +49,7 @@ from .seeds import SeedService
 from .size_analysis import SizeAnalysisService
 from .snaps import SnapService
 from .snapshots import SnapshotService
-from .squashfs import SquashfsService
+from .squashfs import SquashfsService, resolve_compression
 from .system_sync import SystemSyncService
 from .systemd import SystemdService
 from .trust import TrustService
@@ -645,15 +645,14 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
     casper.update_manifest()
     casper.update_filesystem_size()
 
-    orch._step(
-        BuildPhase.REPACK_FILESYSTEM,
-        "Repack live filesystem",
-        orch.project.release.compression,
+    compression = resolve_compression(
+        orch.options.squashfs.compression, orch.project.release.compression
     )
+    orch._step(BuildPhase.REPACK_FILESYSTEM, "Repack live filesystem", compression)
     squashfs.pack(
         orch.project.squashfs_root,
         orch._filesystem_image(),
-        compression=orch.project.release.compression,
+        compression=compression,
         on_progress=orch._phase_progress,
     )
 

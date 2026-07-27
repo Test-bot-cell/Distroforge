@@ -39,6 +39,11 @@ provenance:
 `--vuln-scan`/`--vuln-policy`/`--vuln-db`, and `provenance.sbom_format` mirrors
 `--sbom-format`.
 
+`squashfs.compression` mirrors `--squashfs-compression` and selects the live-filesystem
+compressor — `gzip`, `lzo`, `lz4`, `xz` or `zstd`, empty meaning the release default.
+Only compressors a kernel can mount are accepted; see `docs/build-pipeline.md` for the
+measured cost of each.
+
 Definitions are validated with Pydantic. Unknown top-level keys are preserved for forward
 compatibility, while known nested sections reject unsupported fields where strict models exist.
 The repository examples under `examples/*.yaml` are part of the Debian package contract:

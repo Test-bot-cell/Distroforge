@@ -86,6 +86,57 @@ QEMU online/offline install smoke matrix.
    into `/proc/kcore` — apparent size 128 TiB — and turned a 2.0 GB rootfs into 5.7 GB
    of squashfs in thirty minutes, still growing. The mount points themselves are kept:
    a live system needs them to mount onto.
+   Which compressor the repack uses is a build option, `--squashfs-compression`, empty
+   meaning the release default (`xz` for every release shipped here). Only compressors
+   a kernel can mount are offered. mksquashfs also writes `lzma`, which its own man page
+   marks *deprecated - no kernel support* — the squashfs driver has an XZ decompressor
+   and no raw-LZMA one — so an lzma image packs, checksums, passes every artifact gate,
+   ships, and then fails to mount on the machine it was built for.
+   `validate_squashfs_options` refuses it before the build starts rather than after its
+   last heavy phase, and a data test keeps the release table itself inside the mountable
+   set.
+   Measured on the 2.6 GB `minbase` rootfs of a real from-scratch build — four cores,
+   warm page cache, the product's own argv, compressor read back out of the superblock
+   rather than trusted from the flags:
+
+   | compressor | wall | CPU | image | against the default |
+   | --- | --- | --- | --- | --- |
+   | `lz4` | 3.9 s | 7 s | 1657 MiB | 24× faster, 14.8% larger |
+   | `gzip` | 28.8 s | 104 s | 1499 MiB | 3.2× faster, 3.8% larger |
+   | `zstd` | 37.1 s | 129 s | 1466 MiB | 2.5× faster, 1.5% larger |
+   | `xz` (release default) | 93.4 s | 308 s | 1443 MiB | — |
+
+   Wall clock repeats to about ±8% on this host; the image sizes are byte-identical
+   between runs. `xz` remains the default because a derivative should stay comparable
+   with the upstream image it descends from, but the fast rows are the point: iterating
+   on a build does not have to pay ninety seconds a lap.
+   Nothing beyond the compressor is passed — no block size, no dictionary size, no BCJ
+   filter, no compression level — and that is measured rather than assumed:
+
+   | rejected tuning | wall | image |
+   | --- | --- | --- |
+   | `xz -b 1M -Xdict-size 100%` | 125 s (+34%) | 1412 MiB (−2.2%) |
+   | …and `-Xbcj x86` on top | 244 s (+161%) | 1406 MiB (−2.6%) |
+   | `zstd -Xcompression-level 19 -b 1M` | 100 s | 1429 MiB |
+
+   A live rootfs is mostly already-compressed payload — kernel modules and firmware
+   ship as `.zst` — so a wider window and an instruction filter have little left to
+   find, and tripling the repack for half a percent is what the velocity contract
+   exists to prevent. Compression levels are left to the tool for every compressor
+   alike; pinning one and not the others would freeze an arbitrary choice against
+   future upstream improvement. (`-comp zstd` and `-comp zstd -Xcompression-level 15`
+   produce byte-identical images here, so 15 is indeed today's default.)
+   One measured result is deliberately **not** acted on: `zstd -b 1M` is a strict
+   build-time win, 23–25 s instead of 37 s *and* 10 MiB smaller. Block size is not only
+   a build-time knob, though — it also sets how much the live system must decompress to
+   serve one small read — and that runtime cost has not been measured here. A 32% faster
+   repack is not worth an unmeasured change to every boot of the delivered image.
+   `-e` stays last in the argv, always. mksquashfs reads every remaining word after it
+   as an exclude pattern, so a flag appended after the list is swallowed in silence: the
+   pack falls back to the default compressor, writes a valid image and exits 0. That is
+   not hypothetical — it is how the first version of the benchmark above measured plain
+   gzip four times over, to the identical byte, while believing it was comparing
+   compressors. A test pins the invariant.
    Every in-chroot `apt-get update` goes through one `APT_UPDATE_ARGV` carrying
    `APT::Update::Error-Mode=any`, because **apt returns 0 when every index failed to
    download** — it demotes the failure to "Some index files failed to download. They

@@ -51,6 +51,7 @@ from .seeds import SeedOptions
 from .size_analysis import SizeAnalysisOptions
 from .snaps import SnapOptions
 from .snapshots import SnapshotOptions
+from .squashfs import SquashfsOptions
 from .system_sync import SystemSyncOptions
 from .systemd import SystemdOptions
 from .trust import TrustOptions
@@ -81,6 +82,7 @@ class BuildOptions:
     ppa: PpaOptions = field(default_factory=PpaOptions)
     apt_cache: AptCacheOptions = field(default_factory=AptCacheOptions)
     snapshots: SnapshotOptions = field(default_factory=SnapshotOptions)
+    squashfs: SquashfsOptions = field(default_factory=SquashfsOptions)
     oem: OemOptions = field(default_factory=OemOptions)
     systemd: SystemdOptions = field(default_factory=SystemdOptions)
     users: UserOptions = field(default_factory=UserOptions)

@@ -17,6 +17,7 @@ from distroforge.core.provenance import (
     ProvenanceService,
 )
 from distroforge.core.releases import get_release
+from distroforge.core.squashfs import SquashfsOptions
 from distroforge.core.vulnscan import VulnScanOptions, VulnScanService
 
 
@@ -397,6 +398,24 @@ def test_no_apt_update_in_the_chroot_can_fail_silently(tmp_path) -> None:
         # rc 100 with it -- so a build that cannot reach its archive must stop here
         # rather than at a misleading "Unable to locate package" minutes later.
         assert "APT::Update::Error-Mode=any" in argv, argv
+
+
+def test_the_chosen_compressor_reaches_the_pack_and_not_only_the_progress_line(tmp_path) -> None:
+    project = _bootstrap_project(tmp_path, "Compressor")
+    runner = CommandRunner(dry_run=True)
+    options = BuildOptions(
+        use_sudo=False,
+        bootstrap=BootstrapOptions(arch="amd64"),
+        squashfs=SquashfsOptions(compression="zstd"),
+    )
+
+    BuildOrchestrator(project, runner, options).run()
+
+    packs = [spec.argv for spec in runner.history if spec.argv[0] == "mksquashfs"]
+    assert len(packs) == 1, packs
+    # The release default is xz. An override that reached the phase description but not
+    # the command would look right in the log and ship the wrong image.
+    assert packs[0][packs[0].index("-comp") + 1] == "zstd"
 
 
 def test_the_grub_trampoline_lands_on_the_signed_prefix(tmp_path) -> None:

@@ -37,6 +37,7 @@ from distroforge.core.seeds import SeedOptions
 from distroforge.core.size_analysis import SizeAnalysisOptions
 from distroforge.core.snaps import SnapOptions, SnapSpec
 from distroforge.core.snapshots import SnapshotOptions
+from distroforge.core.squashfs import SquashfsOptions
 from distroforge.core.system_sync import SystemSyncOptions
 from distroforge.core.systemd import SystemdOptions
 from distroforge.core.trust import TrustOptions
@@ -95,6 +96,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             variant=window.bootstrap_variant_edit.text().strip() or "minbase",
             mirror=window.bootstrap_mirror_edit.text().strip() or None,
         ),
+        squashfs=SquashfsOptions(compression=window.squashfs_compression_combo.currentData()),
         release_track=ReleaseTrackOptions(
             mode=window.release_track_combo.currentData(),
             devel_suite=window.devel_suite_edit.text().strip() or "devel",
@@ -384,6 +386,8 @@ def apply_build_options_to_window(window: BuildOptionsWindow, options: BuildOpti
     _set_text(window.bootstrap_arch_edit, options.bootstrap.arch)
     _set_text(window.bootstrap_variant_edit, options.bootstrap.variant)
     _set_text(window.bootstrap_mirror_edit, options.bootstrap.mirror)
+
+    set_combo_data(window.squashfs_compression_combo, options.squashfs.compression)
 
     track = options.release_track
     set_combo_data(window.release_track_combo, track.mode)

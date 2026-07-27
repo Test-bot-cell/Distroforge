@@ -4,9 +4,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from distroforge.core.definition import apply_definition, load_definition
+from distroforge.core.build import BuildOptions
+from distroforge.core.definition import apply_definition, definition_from_project, load_definition
 from distroforge.core.project import Project
 from distroforge.core.schema import validate_definition_data
+from distroforge.core.squashfs import SquashfsOptions
 
 
 def test_load_yaml_definition(tmp_path) -> None:
@@ -73,7 +75,23 @@ DEFINITION_GROUPS = (
     "release_artifacts",
     "html_report",
     "vuln_scan",
+    "squashfs",
 )
+
+
+def test_a_preset_carries_the_compressor_it_was_exported_with(tmp_path) -> None:
+    """Export then import has to preserve the choice, not merely agree on losing it.
+
+    The window round-trip in test_gui_cli_parity compares the *imported* options with
+    what the widgets rebuild from them, so a field the exporter drops is absent on both
+    sides and the comparison stays green. This one starts from the configured options.
+    """
+    project = Project.create("PresetCompressor", tmp_path / "preset-compressor", "26.04")
+    options = BuildOptions(squashfs=SquashfsOptions(compression="zstd"))
+
+    exported = definition_from_project(project, options)
+
+    assert apply_definition(project, exported).squashfs.compression == "zstd"
 
 
 @pytest.mark.parametrize("group", DEFINITION_GROUPS)

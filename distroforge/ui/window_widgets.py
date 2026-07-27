@@ -6,6 +6,7 @@ from distroforge.core.branding_palettes import load_branding_palettes
 from distroforge.core.interaction_plan import available_interaction_plans
 from distroforge.core.qemu_invocation import default_ovmf_code, default_ovmf_vars
 from distroforge.core.source_starter import list_source_starters
+from distroforge.core.squashfs import SQUASHFS_COMPRESSORS
 from distroforge.core.workflows import WORKFLOW_LEVELS, get_workflow_level
 from distroforge.ui import preferences
 from distroforge.ui.build_guidance import (
@@ -187,6 +188,19 @@ def build_window_widgets(window) -> None:
     window.release_track_combo.addItem("Stable", "stable")
     window.release_track_combo.addItem("Devel (experimental)", "devel")
     window.release_track_combo.addItem("Rolling-like (experimental)", "rolling")
+    window.squashfs_compression_combo = QComboBox()
+    window.squashfs_compression_combo.addItem("Release default", "")
+    for _compressor in SQUASHFS_COMPRESSORS:
+        window.squashfs_compression_combo.addItem(_compressor, _compressor)
+    window.squashfs_compression_combo.setToolTip(
+        "Compressor for the live filesystem. The release default is xz, which keeps a "
+        "derivative comparable with the image it descends from. Measured on a 2.6 GB "
+        "minbase rootfs, four cores: xz packs in 93 s for 1443 MiB, zstd in 37 s for "
+        "1466 MiB, lz4 in 4 s for 1657 MiB -- so a faster compressor buys back most of "
+        "the repack for a few percent of ISO size, which is usually the right trade "
+        "while iterating. lzma is deliberately absent: mksquashfs writes it and no "
+        "kernel can mount it."
+    )
     window.devel_suite_edit = QLineEdit()
     window.devel_suite_edit.setPlaceholderText("(release codename)")
     window.devel_suite_edit.setToolTip(

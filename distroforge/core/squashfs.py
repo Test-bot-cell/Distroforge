@@ -7,6 +7,15 @@ from pathlib import Path
 from .command import CommandRunner, CommandSpec, sudo
 from .progress_parsers import squashfs_progress
 
+# The compressors an image may use: what mksquashfs can write intersected with what the
+# kernel can read. Not the same set as the tool's own list -- mksquashfs also offers
+# lzma, which its man page marks "(deprecated - no kernel support)", because the
+# squashfs driver ships an XZ decompressor and never a raw-LZMA one. An lzma image
+# packs, checksums, passes every artifact gate and ships, and then no kernel will mount
+# it. Verified against this kernel's CONFIG_SQUASHFS_{ZLIB,LZO,LZ4,XZ,ZSTD} and against
+# the list mksquashfs prints when handed a name it does not know.
+SQUASHFS_COMPRESSORS: tuple[str, ...] = ("gzip", "lzo", "lz4", "xz", "zstd")
+
 # Directories that exist in an image only as mount points: the initramfs, udev and
 # systemd populate them at boot. Their *contents* are never part of a filesystem
 # image, and compressing them is not merely wasteful -- if a runtime bind mount is
@@ -15,6 +24,26 @@ from .progress_parsers import squashfs_progress
 # still mounted produced 5.7 GB of squashfs in 30 minutes and was still growing.
 # The directories themselves are kept -- a live system needs them to mount onto.
 _PSEUDO_FS_CONTENTS = ("proc/*", "sys/*", "run/*", "dev/*")
+
+
+@dataclass
+class SquashfsOptions:
+    """How to pack the live filesystem.
+
+    ``compression`` empty means "whatever the release says", which is the only default
+    that keeps a derivative comparable with the upstream image it descends from.
+    """
+
+    compression: str = ""
+
+
+def resolve_compression(override: str, release_default: str) -> str:
+    """The compressor a build will really use -- asked once, answered here.
+
+    The pipeline, the phase description it logs and the validator all need the same
+    answer, and each would otherwise re-implement the precedence in its own words.
+    """
+    return override or release_default
 
 
 def mounts_under(root: Path) -> list[str]:
@@ -112,6 +141,12 @@ class SquashfsService:
                     "-noappend",
                     "-comp",
                     compression,
+                    # -e stays last, always. mksquashfs reads every remaining word as an
+                    # exclude pattern, so a flag appended after this list is swallowed
+                    # silently and the pack falls back to the default compressor with no
+                    # warning and a zero exit. Measured while benchmarking compressors:
+                    # four "variants" whose flags sat after -e produced byte-identical
+                    # gzip images.
                     "-wildcards",
                     "-e",
                     *_PSEUDO_FS_CONTENTS,

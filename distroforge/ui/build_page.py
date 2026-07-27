@@ -33,6 +33,7 @@ class BuildPageWindow(Protocol):
     sanitize_apt_lists_check: QCheckBox
     sanitize_ssh_keys_check: QCheckBox
     release_track_combo: QComboBox
+    squashfs_compression_combo: QComboBox
     devel_suite_edit: QLineEdit
     backports_check: QCheckBox
     proposed_check: QCheckBox
@@ -98,6 +99,7 @@ def build_build_page(window: BuildPageWindow) -> QWidget:
     release_form = responsive_form()
     release_form.addRow("Release track", window.release_track_combo)
     release_form.addRow("Devel suite", window.devel_suite_edit)
+    release_form.addRow("Live filesystem compression", window.squashfs_compression_combo)
     release_flags = responsive_row(
         window.backports_check,
         window.proposed_check,

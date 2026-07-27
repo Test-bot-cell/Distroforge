@@ -265,6 +265,7 @@ class MainWindow(ServiceRunnerMixin, QMainWindow):
     profile_combo: QComboBox
     release_track_combo: QComboBox
     source_starter_combo: QComboBox
+    squashfs_compression_combo: QComboBox
     system_sync_strategy_combo: QComboBox
     terminal_backend_combo: QComboBox
     timezone_combo: QComboBox

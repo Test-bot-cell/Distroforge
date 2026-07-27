@@ -61,6 +61,20 @@ distroforge (0.3.5-4) resolute; urgency=medium
   * Correct docs/platform-refactor-audit.md, which still recorded that mypy,
     pre-commit and shellcheck were "not wired anywhere" long after make check
     and CI had begun running all three.
+  * Let a build choose its live-filesystem compressor, through
+    --squashfs-compression and a matching Build & Release field, instead of
+    taking whatever the release table names. Only compressors a kernel can
+    mount are offered: mksquashfs also writes lzma, which its own man page
+    marks "deprecated - no kernel support", so such an image would pack,
+    checksum, pass every artifact gate, ship, and then fail to mount on the
+    machine it was built for. It is now refused at validation, and a data test
+    keeps the release table inside the same set. Measured on the 2.6 GB minbase
+    rootfs of a real from-scratch build: xz 93 s for 1443 MiB, zstd 37 s for
+    1466 MiB, lz4 3.9 s for 1657 MiB. No block size, dictionary size, BCJ
+    filter or compression level is passed, also measured -- "-b 1M -Xdict-size
+    100%" costs 34% more wall clock for 2.2% of the image and "-Xbcj x86"
+    another 161% for 0.5%, because a live rootfs is mostly payload that already
+    ships compressed. The full table is in docs/build-pipeline.md.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 08:03:10 +0200
 

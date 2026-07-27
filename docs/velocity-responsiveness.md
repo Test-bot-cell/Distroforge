@@ -58,6 +58,27 @@ These are the testable, inviolable rules.
    linear in the number of visible items; a redraw rebuilds a bounded spine, not
    an unbounded recomputation of the whole project state.
 
+## Inherent cost stays honest, and stays the user's choice
+
+Some work is simply expensive: compressing a two-and-a-half gigabyte rootfs, hashing
+a finished ISO, booting it under emulation. The contract above forbids *avoidable*
+latency, not the cost of the job itself. Where the cost is inherent, the rules are:
+
+- **Never mistake someone else's cost for your own.** The 30-minute repack that first
+  prompted this section turned out to be mksquashfs walking into a surviving `/proc`
+  bind mount and compressing `/proc/kcore`, not xz being slow. The same pack, once the
+  mount bug was fixed, takes 93 seconds. Attributing it to the compressor would have
+  bought a redesign for a bug — so a velocity claim gets measured against the phase
+  log before it gets acted on.
+- **Price the alternatives, then expose the choice.** The live-filesystem compressor is
+  a build option because the measured spread is large and the right point on it depends
+  on what the run is for: `lz4` packs the same rootfs 24× faster than `xz` for 15% more
+  bytes, which is the difference between iterating and waiting. The measured table lives
+  in `docs/build-pipeline.md`.
+- **Do not spend the user's runtime to save the maintainer's build time.** A knob that
+  makes the build faster but the delivered image slower to read is not a velocity win,
+  and stays unshipped until the runtime side is measured too.
+
 ## Enforcement
 
 The teeth are structural rather than wall-clock, on purpose:

@@ -23,9 +23,15 @@ from distroforge.core.network import NetworkOptions, NetworkService
 from distroforge.core.policy import CompatibilityReport
 from distroforge.core.ppa import PpaOptions, PpaService, PpaSpec
 from distroforge.core.project import Project
+from distroforge.core.releases import load_releases
 from distroforge.core.snapshots import SnapshotOptions, SnapshotService
-from distroforge.core.squashfs import SquashfsService
-from distroforge.core.validate import format_issues, validate_for_build
+from distroforge.core.squashfs import SquashfsOptions, SquashfsService
+from distroforge.core.validate import (
+    collect_option_issues,
+    format_issues,
+    validate_for_build,
+    validate_squashfs_options,
+)
 
 
 class RecordingExecuteRunner(CommandRunner):
@@ -651,6 +657,77 @@ def test_pack_excludes_the_pseudo_filesystem_contents(tmp_path) -> None:
     assert argv[-6:] == ("-wildcards", "-e", "proc/*", "sys/*", "run/*", "dev/*")
     # The mount points themselves must stay: a live system needs them to mount onto.
     assert "proc" not in argv and "dev" not in argv
+
+
+def test_pack_lets_nothing_follow_the_exclude_list(tmp_path) -> None:
+    runner = CommandRunner(dry_run=True)
+
+    SquashfsService(runner, use_sudo=False).pack(tmp_path / "rootfs", tmp_path / "fs.squashfs", "xz")
+
+    argv = runner.history[0].argv
+    # mksquashfs reads every remaining word after -e as an exclude pattern, so a flag
+    # appended after this list is swallowed without a warning: the pack silently falls
+    # back to the default compressor, writes a perfectly valid image and exits 0.
+    # Measured while benchmarking compressors -- four "variants" whose flags sat after
+    # -e produced byte-identical gzip images, which is how the trap was found.
+    assert argv[argv.index("-e") + 1 :] == ("proc/*", "sys/*", "run/*", "dev/*")
+
+
+def test_pack_asks_for_the_compressor_the_caller_chose_and_tunes_nothing(tmp_path) -> None:
+    runner = CommandRunner(dry_run=True)
+
+    SquashfsService(runner, use_sudo=False).pack(tmp_path / "rootfs", tmp_path / "fs.squashfs", "zstd")
+
+    argv = runner.history[0].argv
+    assert argv[argv.index("-comp") + 1] == "zstd"
+    # Measured, not assumed: on a real live rootfs a 1 MiB block with a full dictionary
+    # costs 34% more wall clock for 2.2% of the image and a BCJ filter costs 161% more
+    # for another 0.5%, because modules and firmware already ship compressed. Levels are
+    # left to the tool for every compressor alike. See docs/build-pipeline.md.
+    for flag in ("-b", "-Xdict-size", "-Xbcj", "-Xcompression-level"):
+        assert flag not in argv, flag
+
+
+def test_the_release_default_is_used_when_nothing_overrides_it() -> None:
+    assert squashfs_module.resolve_compression("", "xz") == "xz"
+    assert squashfs_module.resolve_compression("zstd", "xz") == "zstd"
+
+
+def test_every_release_ships_a_compressor_a_kernel_can_mount() -> None:
+    # The release table is data, so nothing else would notice a typo in it until a
+    # build had packed an image no machine could mount.
+    for version, release in load_releases().items():
+        assert release.compression in squashfs_module.SQUASHFS_COMPRESSORS, version
+
+
+def test_lzma_is_refused_because_no_kernel_can_mount_it() -> None:
+    issues = validate_squashfs_options(SquashfsOptions(compression="lzma"))
+
+    # mksquashfs offers lzma and its own man page marks it "deprecated - no kernel
+    # support": the squashfs driver has an XZ decompressor and no raw-LZMA one. The
+    # image would pack, checksum, pass the artifact gates and ship, and then fail to
+    # mount on the machine it was built for -- so the refusal has to come first.
+    assert [issue.code for issue in issues] == ["squashfs-compression-unmountable"]
+    assert issues[0].level == "error"
+
+
+def test_an_unknown_compressor_is_refused_before_anything_is_packed() -> None:
+    issues = validate_squashfs_options(SquashfsOptions(compression="brotli"))
+
+    assert [issue.code for issue in issues] == ["squashfs-compression-unsupported"]
+
+
+def test_a_supported_compressor_and_the_release_default_both_pass() -> None:
+    assert validate_squashfs_options(SquashfsOptions(compression="zstd")) == []
+    assert validate_squashfs_options(SquashfsOptions()) == []
+
+
+def test_the_build_gate_itself_asks_about_the_compressor() -> None:
+    # Tests that call the validator directly stay green when nobody calls it, which is
+    # how an option becomes decorative. This one goes through the gate the build uses.
+    issues = collect_option_issues(BuildOptions(squashfs=SquashfsOptions(compression="lzma")))
+
+    assert "squashfs-compression-unmountable" in [issue.code for issue in issues]
 
 
 def test_pack_refuses_a_source_whose_chroot_is_still_mounted(tmp_path, monkeypatch) -> None:

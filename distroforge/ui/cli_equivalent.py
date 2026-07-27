@@ -178,6 +178,11 @@ def _sanitize_args(options: BuildOptions, base: BuildOptions) -> list[str]:
 def _release_track_args(options: BuildOptions, base: BuildOptions) -> list[str]:
     track = options.release_track
     return [
+        *_value(
+            "--squashfs-compression",
+            options.squashfs.compression,
+            base.squashfs.compression,
+        ),
         *_value("--release-track", track.mode, base.release_track.mode),
         *_value("--devel-suite", track.devel_suite, base.release_track.devel_suite),
         *_switch("--enable-backports", track.enable_backports),

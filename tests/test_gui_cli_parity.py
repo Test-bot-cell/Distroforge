@@ -125,6 +125,8 @@ def _configure_rich_settings(window) -> None:
     window.keep_logs_check.setChecked(True)
     window.import_scripts_edit.setPlainText("/tmp/distroforge-import.sh")
     window.size_report_check.setChecked(True)
+    combo = window.squashfs_compression_combo
+    combo.setCurrentIndex(combo.findData("zstd"))
 
 
 # --- B13: an imported preset must not freeze the screen ---------------------
