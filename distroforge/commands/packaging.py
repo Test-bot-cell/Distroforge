@@ -78,11 +78,25 @@ def register_packaging_commands(sub) -> None:
     bundle_parser.add_argument("--json", action="store_true")
 
 
-def render_packaging_command(args) -> str | None:
+def render_packaging_command(args) -> tuple[str, bool] | None:
+    """The rendered report, and whether the shell must be told it failed.
+
+    Only ``debian-package`` carries a blocking verdict, and it is the only command
+    here that performs the action it reports on: it runs dpkg-buildpackage, lintian
+    and autopkgtest for real, so a build that returned 2, a lintian error tag or a
+    failed autopkgtest has to reach the exit status. Printing "blocked" and exiting 0
+    is how a green CI job over a broken package becomes possible.
+
+    The others answer a question -- a .buildinfo taint, a policy verdict, a diagnosis
+    of a broken testbed -- and a question answered is a success even when the answer
+    is bad news. That is not a stylistic choice for `packaging-policy`:
+    debian/tests/control declares it a required autopkgtest check, so a policy remark
+    exiting 2 would turn a remark into a failed test of the installed package.
+    """
     if args.command == "buildinfo-report":
-        return render_buildinfo(args.buildinfo, args.json, args.changes)
+        return render_buildinfo(args.buildinfo, args.json, args.changes), False
     if args.command == "packaging-policy":
-        return render_packaging_policy(args.root, args.buildinfo, args.json, args.changes)
+        return render_packaging_policy(args.root, args.buildinfo, args.json, args.changes), False
     if args.command == "debian-package":
         return render_debian_package_build(
             args.root, execute=args.execute, json_output=args.json, artifact_dir=args.artifact_dir
@@ -96,9 +110,9 @@ def render_packaging_command(args) -> str | None:
             execute=args.execute,
             output=args.output,
             json_output=args.json,
-        )
+        ), False
     if args.command == "hermetic-build-plan":
-        return render_hermetic_build_plan(args.root, args.backend, args.suite, args.arch)
+        return render_hermetic_build_plan(args.root, args.backend, args.suite, args.arch), False
     if args.command == "hermetic-release-bundle":
         return render_hermetic_release_bundle(
             args.root,
@@ -113,7 +127,7 @@ def render_packaging_command(args) -> str | None:
             iso=args.iso,
             replace=args.replace,
             json_output=args.json,
-        )
+        ), False
     return None
 
 
@@ -138,9 +152,14 @@ def render_debian_package_build(
     execute: bool = False,
     json_output: bool = False,
     artifact_dir: Path | None = None,
-) -> str:
+) -> tuple[str, bool]:
     report = build_debian_package(root, execute=execute, artifact_dir=artifact_dir)
-    return report.render_json() if json_output else report.render_text()
+    rendered = report.render_json() if json_output else report.render_text()
+    # Only "blocked" fails. "review required" is what a host without autopkgtest
+    # installed reports, and what lintian warnings without an error tag report, so
+    # failing on it would make a missing optional tool indistinguishable from a
+    # broken package. "planned" is a dry run, which built nothing to judge.
+    return rendered, report.status == "blocked"
 
 
 def render_autopkgtest_doctor(

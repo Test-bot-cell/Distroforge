@@ -54,7 +54,8 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
     if args.command == "release-pipeline":
         return render_release_pipeline(args.root, args.definition, args.iso, args.output_dir, args.bundle_dir, args.gpg_key, args.execute_signing, args.run_boot_proof, args.boot_proof_dry_run, args.boot_backend, args.json), False
     if args.command == "boot-proof":
-        return render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.firmware, args.secure_boot, args.dry_run, args.json), False
+        rendered, blocked = render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.firmware, args.secure_boot, args.dry_run, args.json)
+        return rendered, blocked
     if args.command == "preview":
         return render_preview(args.root, args.definition, args.iso, args.display, args.execute, args.json), False
     if args.command == "qemu-interaction":
@@ -300,7 +301,7 @@ def render_boot_proof(
     secure_boot: bool = False,
     dry_run: bool = False,
     json_output: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
@@ -316,7 +317,12 @@ def render_boot_proof(
         secure_boot=secure_boot,
         execute=not dry_run,
     )
-    return report.render_json() if json_output else report.render_text()
+    rendered = report.render_json() if json_output else report.render_text()
+    # Same rule as iso-build and debian-package: a plan never fails, a proof does. A
+    # --dry-run against a project with no ISO reports blocked and is a correct answer;
+    # an executed proof that came back blocked is a boot that did not happen, and it
+    # used to print exactly that and exit 0.
+    return rendered, report.blocked and not dry_run
 
 
 def render_preview(root: Path, definition: Path | None, iso: Path | None, display: str, execute: bool = False, json_output: bool = False) -> str:

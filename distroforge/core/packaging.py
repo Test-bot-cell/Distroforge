@@ -160,9 +160,19 @@ class PackageBuildCheck:
     def failed(self) -> bool:
         return self.status in {"failed", "testbed-broken", "test-failed"}
 
+    # "missing-tool" is the autopkgtest doctor's word for the condition
+    # _run_package_tool_check reports as "missing": the tool is not installed on this
+    # host. The doctor's status is copied verbatim into this check, and this word was
+    # in neither set, so it graded as neither a failure nor a review and a host with
+    # no autopkgtest produced a report that said "built" with the package's declared
+    # test suite never run. It reviews rather than fails because a missing optional
+    # tool is not a broken package -- the same grading lintian's "missing" gets.
+    # The doctor's two other blocking words, missing-deb and invalid, are deliberately
+    # absent: from this type's one call site the .deb is checked before the doctor is
+    # asked, and the null backend always yields a command, so neither can arrive here.
     @property
     def needs_review(self) -> bool:
-        return self.status in {"missing", "review required", "skipped"}
+        return self.status in {"missing", "review required", "skipped", "missing-tool"}
 
     def to_dict(self) -> dict[str, object]:
         return {

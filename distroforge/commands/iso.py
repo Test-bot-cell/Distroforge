@@ -48,11 +48,15 @@ def render_iso_command(args) -> tuple[str, bool] | None:
     if args.command == "iso-doctor":
         from distroforge.commands.iso_doctor import render_iso_doctor
 
+        # Deliberately never blocking, unlike its four siblings here. A fresh project
+        # with no source ISO is blocked, and saying so with the next command to run is
+        # this command's whole answer, not a failure to produce it.
         return render_iso_doctor(args.root, args.definition, args.json), False
     if args.command == "iso-build":
         from distroforge.commands.iso_build import render_iso_build
 
-        return render_iso_build(args.root, args.definition, args.execute, args.output_iso, args.boot_proof, args.json), False
+        rendered, blocked = render_iso_build(args.root, args.definition, args.execute, args.output_iso, args.boot_proof, args.json)
+        return rendered, blocked
     if args.command == "iso-accept":
         from distroforge.commands.iso_accept import render_iso_accept
 

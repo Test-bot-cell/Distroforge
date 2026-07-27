@@ -8,9 +8,15 @@ from distroforge.core.iso_build import run_iso_build
 from distroforge.core.project import Project
 
 
-def render_iso_build(root: Path, definition: Path | None = None, execute: bool = False, output_iso: Path | None = None, boot_proof: str = "none", json_output: bool = False) -> str:
+def render_iso_build(root: Path, definition: Path | None = None, execute: bool = False, output_iso: Path | None = None, boot_proof: str = "none", json_output: bool = False) -> tuple[str, bool]:
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
     options.output_iso = output_iso or options.output_iso
     report = run_iso_build(project, options, execute=execute, boot_proof_backend=boot_proof, definition=definition)
-    return report.render_json() if json_output else report.render_text()
+    rendered = report.render_json() if json_output else report.render_text()
+    # Only an executing build fails. run_iso_build marks a dry run blocked too, when
+    # the doctor refuses the project (core/iso_build.py:90), and a plan that reports
+    # why it cannot build has answered correctly rather than failed. With --execute,
+    # blocked means the ISO is missing or empty after the build ran, which is the one
+    # case that used to print "blocked" in the report and still exit 0.
+    return rendered, report.blocked and report.execute

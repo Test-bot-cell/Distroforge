@@ -78,10 +78,19 @@ produced `.deb`, `.changes` and `.buildinfo` artifacts, records file sizes and S
 digests, runs `lintian` and `autopkgtest` when available, and embeds the packaging policy
 verdict in one reviewable report.
 
-`lintian` is always invoked as `lintian --profile debian --no-tag-display-limit`. The
-profile is pinned because a lintian profile is a **vendor**, never a suite: there is no
-`resolute` profile, and an unpinned run takes its verdict from whichever vendor the host
-happens to be, so the same `.dsc` could pass on one machine and fail on the next. The
+`lintian` is always invoked as `lintian --profile <vendor> --no-tag-display-limit`, and
+the vendor is resolved from the package's own changelog rather than pinned: a lintian
+profile is a **vendor**, never a suite — there is no `resolute` profile — and an unpinned
+run takes its verdict from whichever vendor the host happens to be, so the same `.dsc`
+could pass on one machine and fail on the next. `lintian_vendor_for_suite` reads which
+suites each installed vendor accepts from lintian's own
+`/usr/share/lintian/vendors/<vendor>/main/data/changes-file/known-dists`, so the mapping
+is not duplicated here; `debian` remains the fallback for a suite no installed vendor
+claims. Pinning `debian` outright was the earlier answer and it was wrong in one specific
+way: the vendor also decides which suite names a `.changes` `Distribution` field may hold,
+so an Ubuntu-targeted package graded against the Debian profile raised
+`bad-distribution-in-changes-file` for a field that was correct. Measured on this tree,
+the resolved invocation is `lintian --profile ubuntu --no-tag-display-limit`. The
 display limit is lifted because a truncated report cannot be turned into a reason string.
 The verdict is graded from the tags rather than the exit code — `lintian` exits 0 on a
 package carrying warnings — so any tag reads as `review required` with every tag kept in
@@ -90,6 +99,30 @@ wrong lever here: it turns the exit code into 2 for a healthy artifact without b
 anything and still says nothing about which tag to fix. Tags get fixed, never overridden:
 the package ships no `lintian/overrides/distroforge`, because silencing a tag is not the
 same thing as being clean.
+
+### What the exit status means
+
+`debian-package --execute` exits **2** when its report is `blocked`, and `0` otherwise.
+It did not, for a long time: the report carried a field literally called `blocked`, the
+renderer printed it, and the command returned success — so a `dpkg-buildpackage` that
+returned 2, an `E:` tag, or a failed `autopkgtest` all left an exit status that any script
+or CI job would read as a good build. `iso-build --execute` and `boot-proof` had the same
+shape and now behave the same way.
+
+The rule is that a plan never fails and an executed action does:
+
+| Command | Exits 2 when | Never fails |
+| --- | --- | --- |
+| `debian-package` | `--execute` and the report is `blocked` | `planned` (no `--execute`), and `review required` |
+| `iso-build` | `--execute` and the report is `blocked` | a dry run, including one the doctor refuses |
+| `boot-proof` | an executed proof came back `blocked` | `--dry-run`, including against a project with no ISO |
+
+`review required` deliberately does not fail: it is what a host without `autopkgtest`
+installed reports, and what a package carrying warnings but no `E:` tag reports, and
+neither is a broken package. Two commands here stay diagnostic on purpose and always exit
+0 — `iso-doctor`, whose whole answer is the next command to run, and `packaging-policy`,
+which `debian/tests/control` declares a required autopkgtest check, so a policy remark
+exiting 2 would turn a remark into a failed test of the installed package.
 
 Before running the normal test suite outside a package build, clean generated Debian
 artifacts with:

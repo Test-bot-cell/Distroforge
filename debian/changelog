@@ -158,8 +158,35 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     rootfs, which comes from a mirror URL no source option reaches, and PPAs,
     where apt derives snapshot.ppa.launchpadcontent.net, gets Ign on every
     fetch and exits 0, so pinning them would be a second placebo.
+  * Made three commands that perform real work able to fail. debian-package
+    --execute, iso-build --execute and boot-proof each computed a verdict,
+    rendered it under a JSON field called blocked, and exited 0 -- so a
+    dpkg-buildpackage that returned 2, an E: lintian tag at exit 0, a build
+    that produced no ISO and a boot that never happened all left the exit
+    status of a good run. Three render_*_command dispatchers hard-coded False
+    in the blocked slot beside siblings that propagated a real verdict, three
+    of five in commands/iso.py and two of fourteen in commands/artifacts.py.
+    A plan still never fails, and neither does review required, which is what
+    a host without autopkgtest installed reports and what a package carrying
+    warnings but no error tag reports. iso-doctor and packaging-policy stay
+    diagnostic on purpose: the first answers with the next command to run,
+    and debian/tests/control declares the second a required autopkgtest
+    check, so a policy remark exiting 2 would become a failed test of the
+    installed package.
+  * Fixed the grading mismatch that gate would otherwise have blessed. The
+    autopkgtest doctor calls missing-tool blocking, PackageBuildCheck knew
+    only lintian's word "missing" for the same condition, and neither of its
+    two sets held the doctor's -- so a host without autopkgtest produced a
+    report that said "built" with the package's declared test suite never
+    run. It grades as review, not failure: a missing optional tool is not a
+    broken package. The doctor's other two blocking words stay out because
+    neither can reach that type from its one call site.
+  * Corrected a stale claim in docs/packaging-release.md, which still said
+    lintian is always invoked as --profile debian. The vendor has been
+    resolved from the changelog suite since 0.3.5-17; measured on this tree
+    the invocation is --profile ubuntu.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 22:26:56 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

@@ -670,9 +670,12 @@ def _main(argv: list[str] | None = None) -> None:
 
     from .commands.packaging import render_packaging_command
 
-    output = render_packaging_command(args)
-    if output is not None:
-        print(output)
+    packaging_output = render_packaging_command(args)
+    if packaging_output is not None:
+        rendered, blocked = packaging_output
+        print(rendered)
+        if blocked:
+            raise SystemExit(2)
         return
 
     if args.command == "compat":

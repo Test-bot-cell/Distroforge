@@ -136,6 +136,12 @@ metadata, El Torito boot catalog evidence and kernel/initrd or live payload mark
 complete scan can mark `boot-proof.json` ready; partial structural evidence is `review`.
 The release gate rejects planned or review proof as blocking evidence.
 
+An executed `boot-proof` that came back `blocked` exits **2**; `--dry-run` always exits 0,
+including against a project with no ISO, because reporting that is what a plan is for.
+`iso-build --execute` follows the same rule. Both used to print a report whose `blocked`
+field was `true` and still exit 0 — see the exit-status table in
+[packaging-release.md](packaging-release.md), which holds the rule for all three commands.
+
 ## Software Bill of Materials
 
 Every build writes `distroforge-provenance.json`. When `--sbom-format` selects a standard
