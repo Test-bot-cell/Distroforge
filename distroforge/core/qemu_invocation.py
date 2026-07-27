@@ -71,8 +71,14 @@ def kvm_is_usable() -> bool:
     can still fail at KVM_CREATE_VM, on a machine whose hypervisor exposes no nested
     virtualisation. QEMU's own "Could not access KVM kernel module" is the report for
     that, and it is a clearer one than anything this could infer. What this does
-    guarantee is that a host with no device -- every GitHub runner -- never gets the
-    flag, so the automated proofs still run there, emulated.
+    guarantee is that a host with no device never gets the flag, so the automated proofs
+    still run there, emulated.
+
+    That used to read "no device -- every GitHub runner --", which was an assumption
+    dressed as an example. The first real run of the weekly golden path measured
+    ``crw-rw---- 1 root kvm 10, 232 /dev/kvm`` on ``ubuntu-latest``, so the parenthesis
+    was false and is gone. Whether the flag is added there is now what it should always
+    have been: whatever access(2) says at the time, on that machine.
     """
     return os.access(KVM_DEVICE, os.R_OK | os.W_OK)
 

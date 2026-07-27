@@ -37,10 +37,16 @@ packages:
 squashfs:
   compression: zstd
 
-# No customization.desktop, and that is the disk budget talking rather than a view about
-# desktops. GitHub documents 14 GB of SSD for a standard runner; the rootfs, its squashfs
-# and the ISO already come to roughly 6 GB without one, and core/preflight.py:18 warns
-# below 12 GiB free. A desktop derivative stays a maintainer-run build.
+# No customization.desktop. The reason written here first was the disk budget, citing the
+# 14 GB of SSD GitHub documents for a standard runner against the roughly 6 GB a rootfs,
+# its squashfs and the ISO come to, and core/preflight.py:18's warning below 12 GiB free.
+# The first real run measured 145 GB on / with 88 GB free, so that reason was wrong and is
+# withdrawn: disk is not the binding constraint on this runner.
+#
+# What remains is wall clock. A desktop pulls a few thousand packages through apt inside
+# the chroot, and the job's ceiling is a guess already. So a desktop derivative stays a
+# maintainer-run build for now, on a measured cost rather than an imagined one -- and it
+# is a candidate to add once the run's real duration is known.
 
 # Default anyway (core/sanitize.py:12), stated because an image that ships the apt lists
 # it was built with is the classic derivative leak, and a reference build should be

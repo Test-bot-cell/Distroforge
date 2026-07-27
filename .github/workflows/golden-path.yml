@@ -87,15 +87,24 @@ jobs:
         run: echo "DERIVATIVE_ROOT=$RUNNER_TEMP/reference-derivative" >> "$GITHUB_ENV"
 
       - name: Record what this runner actually is
-        # Measured, not assumed, because three of the decisions here depend on figures
-        # that were read in documentation rather than observed. GitHub documents 14 GB of
-        # SSD for a standard runner while this build needs roughly 6 GB and
-        # core/preflight.py:18 warns below 12 GiB free; core/qemu_invocation.py:74 asserts
-        # that "a host with no device -- every GitHub runner -- never gets the flag", so
-        # /dev/kvm settles whether the boot proof is accelerated or emulated; and the whole
-        # reason the privilege preflight was changed is that sudo here authenticates with
-        # no prompt, which this states in one line. The du is not idle curiosity: if free
-        # space turns out to be the binding constraint, it names what there is to reclaim.
+        # Measured, not assumed, because three of the decisions here depended on figures
+        # read in documentation rather than observed. The first run of this workflow
+        # settled all three, and the answers are kept here because they are the reason
+        # the comments elsewhere changed:
+        #
+        # - Disk. GitHub documents 14 GB of SSD for a standard runner, which the
+        #   definition cited as the reason to skip a desktop. Measured: 145 GB on /, 88 GB
+        #   free, against roughly 6 GB needed and core/preflight.py:18's 12 GiB warning.
+        #   Disk is not the binding constraint, and that reason has been withdrawn.
+        # - /dev/kvm. core/qemu_invocation.py:74 says "a host with no device -- every
+        #   GitHub runner -- never gets the flag". Measured: crw-rw---- 1 root kvm
+        #   10, 232. The parenthesis is wrong; this runner can accelerate the boot proof.
+        # - sudo. Authenticates with no prompt, which is the premise the privilege
+        #   preflight was changed on.
+        #
+        # It stays a step rather than becoming a comment, because a runner image changes
+        # under you and a figure in a comment cannot notice. The du names what there is
+        # to reclaim if disk ever does bind; it costs 80 seconds.
         run: |
           df -h /
           nproc && free -h
@@ -165,6 +174,15 @@ jobs:
         # it cannot quietly turn this job green over nothing.
         run: |
           REPORT="$DERIVATIVE_ROOT/dist/ISO-BUILD.json"
+          # Say what broke before asserting that nothing did. The first real run of this
+          # workflow failed here with "jq: Could not open file .../ISO-BUILD.json",
+          # because the build raised its CommandError instead of reporting it, so the
+          # log accused the missing report rather than the missing apt-get that caused
+          # it. run_iso_build now records the failing command and its output in the
+          # report, and this prints them where the failure is read.
+          jq -e '.failure == null' "$REPORT" \
+            || jq -r '"FAILED: \(.failure.description) (exit \(.failure.returncode))",
+                      "  \(.failure.command | join(" "))", "", .failure.output' "$REPORT"
           jq -e '.status == "built"' "$REPORT"
           jq -e '.execute == true'   "$REPORT"
           jq -e '.output_exists'     "$REPORT"
@@ -202,12 +220,22 @@ jobs:
         # valid answer here, and what matters is that the log says which one it was.
         run: |
           PROOF="$DERIVATIVE_ROOT/dist/boot-proof.json"
+          # Print the four values, then assert them. Asserting first means the run that
+          # fails shows one false jq expression and none of the other three, so a proof
+          # that reached "ready" over TCG instead of KVM, or booted BIOS instead of UEFI,
+          # reads the same in the log as one that never booted at all.
+          jq -r '"status: \(.status)", "proof_level: \(.proof_level)",
+                 "selected_backend: \(.selected_backend)", "firmware: \(.firmware)",
+                 "reason: \(.reason // "none")"' "$PROOF"
+          # Not an assertion either way: a proof that stopped before QEMU was invoked
+          # writes no lab report, and failing on its absence here would hide the four
+          # values printed just above, which are the ones that say what went wrong.
+          jq -r '"accelerated: \(.accelerated)"' \
+            "$DERIVATIVE_ROOT/dist/qemu-lab-report.json" || echo "accelerated: no lab report"
           jq -e '.status == "ready"'          "$PROOF"
           jq -e '.proof_level == "runtime"'   "$PROOF"
           jq -e '.selected_backend == "qemu"' "$PROOF"
           jq -e '.firmware == "uefi"'         "$PROOF"
-          jq -r '"accelerated: \(.accelerated)"' \
-            "$DERIVATIVE_ROOT/dist/qemu-lab-report.json"
 
       - name: Assemble the evidence bundle
         # publish-bundle copies the ISO into dist/publish (core/publish_bundle.py:93), so
@@ -338,6 +366,18 @@ jobs:
         # acceptable on a host where the tool and a writable testbed are both present.
         run: |
           REPORT="$RUNNER_TEMP/debian-package.json"
+          # Print every verdict before asserting on any of them. This summary used to be
+          # the last line of the step, which under sh -e means it only ever ran when
+          # nothing was wrong: the first real run of this workflow stopped at the status
+          # assertion below and never printed the "autopkgtest: test-failed" that
+          # explained it. Reading the verdict required downloading the artifact.
+          #
+          # evidence is the autopkgtest doctor's own extract of the output -- the summary
+          # lines that name which test in debian/tests failed. reason alone is a
+          # classification, identical for every failing test.
+          jq -r '"overall: \(.status)", (.checks[] |
+                 "\(.name): \(.status)\n  \(.reason)",
+                 (.evidence // [] | .[] | "  | \(.)"))' "$REPORT"
           jq -e '.execute == true' "$REPORT"
           jq -e '.build.status == "passed"' "$REPORT"
           jq -e '.status == "built" or .status == "review required"' "$REPORT"
@@ -345,7 +385,6 @@ jobs:
           jq -e '.checks[] | select(.name == "lintian")
                  | .status == "passed" or .status == "review required"' "$REPORT"
           jq -e '.checks[] | select(.name == "autopkgtest") | .status == "passed"' "$REPORT"
-          jq -r '.checks[] | "\(.name): \(.status)\n\(.reason)"' "$REPORT"
 
       - name: Stage the package and its verdicts
         # Copied into the workspace rather than uploaded from ../, because

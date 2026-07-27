@@ -184,6 +184,59 @@ and the reports, from which the image is reproducible. The package leg publishes
 `dist/reports` while the build writes `dist`, so the default reports a successful build's
 own artifacts as missing.
 
+## What the first real run measured
+
+Dispatched 2026-07-27, and it is the reason several numbers on this page are now facts
+instead of quotes from documentation.
+
+The runner is not what the definition assumed. `ubuntu-latest` resolves to **noble**
+(24.04), with **145 GB** on `/` and **88 GB free** — not the 14 GB the Actions docs
+state, which `.github/golden-path/reference-derivative.yaml` had cited as the reason to
+skip a desktop. 4 CPUs, 15 GiB RAM. `sudo` authenticates with no prompt.
+
+**`/dev/kvm` exists** — `crw-rw---- 1 root kvm 10, 232`. `core/qemu_invocation.py:74`
+says "a host with no device — every GitHub runner — never gets the flag"; that
+parenthesis is wrong and the boot proof on this runner can be accelerated.
+
+Reclaimable if disk ever binds: dotnet 5.2 GB, the Android SDK 11 GB, hostedtoolcache
+5.4 GB. The `du` that measures them costs 80 seconds of the run.
+
+## A failure has to arrive as data
+
+Both legs failed, and neither said why. That, not the two failures, was the finding.
+
+The ISO leg died in the chroot — `env: 'apt-get': No such file or directory`, exit 127 —
+and the log said `jq: Could not open file .../ISO-BUILD.json`. `run_iso_build` let the
+`CommandError` out, so no report was written and the assertion failed on the absence of
+the file rather than on the cause. The traceback did name the failing command, on stderr,
+past `--json`. It now returns a report with `status: "failed"` and a `failure` object
+carrying the command, its description, its exit code and the tail of its output;
+`--execute` still exits non-zero, through `IsoBuildReport.failed` rather than through an
+exception.
+
+The package leg built a clean `.deb` — `lintian: passed` — and reported
+`autopkgtest: test-failed` with the reason *"The autopkgtest test command ran and
+failed."* That sentence is a classification, byte-identical for every failing test in
+`debian/tests`. The doctor had already extracted the output lines that name which test
+failed, into its report's `evidence`, and the one call site that asks the doctor built
+its `PackageBuildCheck` without them. The check now carries the evidence and the
+doctor's remediation.
+
+And the workflow itself hid both. Each assertion step printed its summary *after* its
+assertions, which under `sh -e` means only on the happy path: the run that stopped at
+the status assertion never printed the verdict behind it, and reading it meant
+downloading the artifact. All three assertion steps now report before they assert, and
+`tests/test_golden_path.py` refuses a step that asserts first — excluding the
+`jq -e … || jq -r` guard, which cannot abort and is how the ISO leg prints a failure
+before asserting there was none.
+
+Still open: **why** a `--variant=minbase` mmdebstrap produced a tree with `env` and no
+`apt-get`, in 23 seconds, exiting 0. `mmdebstrap --simulate` for the same suite, variant
+and mirror resolves 129 packages including `apt (3.2.0 Ubuntu:26.04/resolute)` — on a
+26.04 host. The runner is noble, bootstrapping a suite two years newer with 2024's
+mmdebstrap, apt and dpkg. That is a hypothesis, not a diagnosis; the next run's report
+carries the failing command's own output, which is what will settle it.
+
 ## Two figures that are headroom, not measurements
 
 `timeout-minutes: 90` on the ISO job and `--timeout 1200` on the boot proof are both

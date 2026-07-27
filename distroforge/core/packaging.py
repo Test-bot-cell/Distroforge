@@ -155,6 +155,14 @@ class PackageBuildCheck:
     command: tuple[str, ...]
     returncode: int | None = None
     reason: str = ""
+    # The lines of the tool's own output that decided the status. The autopkgtest doctor
+    # already extracts them (_autopkgtest_evidence_lines) and its report carries them,
+    # and this type used to drop them on the floor at the one call site that asks the
+    # doctor -- so a failed weekly run said "The autopkgtest test command ran and
+    # failed." and nothing else. That sentence is a classification, not evidence: it is
+    # the same sentence for every failing test in debian/tests, and the output it was
+    # derived from is captured by CommandRunner and never printed.
+    evidence: tuple[str, ...] = ()
 
     @property
     def failed(self) -> bool:
@@ -181,6 +189,7 @@ class PackageBuildCheck:
             "command": list(self.command),
             "returncode": self.returncode,
             "reason": self.reason,
+            "evidence": list(self.evidence),
         }
 
 
@@ -1288,7 +1297,11 @@ def _run_autopkgtest_package_check(
         report.status,
         report.command,
         returncode=report.returncode,
-        reason=report.detail,
+        # remediation, not just detail: the doctor works out what to do about each
+        # classification and this was the only consumer that asked for the diagnosis
+        # and threw away both the prescription and the evidence behind it.
+        reason=" ".join(part for part in (report.detail, report.remediation) if part),
+        evidence=report.evidence,
     )
 
 

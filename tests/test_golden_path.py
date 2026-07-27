@@ -361,3 +361,37 @@ def test_the_workflow_is_the_only_one_that_builds() -> None:
         "a new workflow file needs a decision about whether it may build, "
         f"and this test is where that decision is recorded: {workflows}"
     )
+
+
+def test_every_verdict_is_printed_before_it_is_asserted() -> None:
+    """A step must say what it found before it refuses it.
+
+    Both assertion steps in the first real run of this workflow hid the thing that
+    explained the failure. The package leg ended with a ``jq -r`` printing every
+    check's status and reason -- last, so under ``sh -e`` it only ran on the happy
+    path, and the run that stopped at ``.status == "built" or "review required"``
+    never printed the ``autopkgtest: test-failed`` behind it. Reading the verdict
+    meant downloading the artifact. The ISO leg was worse: its report did not exist,
+    so the log accused a missing file.
+
+    The rule, checked here rather than remembered: in any script that both prints with
+    ``jq -r`` and asserts with ``jq -e``, the printing comes before the first assertion
+    that can abort the step. A ``jq -e`` guarding an ``||`` cannot abort -- that is the
+    idiom the ISO leg uses to print a failure before asserting there was none -- so it
+    does not count, and the check would be wrong rather than strict if it did.
+    """
+    for name, job in _load(WORKFLOW)["jobs"].items():
+        for step in job["steps"]:
+            # Join backslash continuations so one command is one line, which is what
+            # decides whether an "||" belongs to the jq -e in front of it.
+            script = step.get("run", "").replace("\\\n", " ")
+            if "jq -r" not in script or "jq -e" not in script:
+                continue
+            lines = script.splitlines()
+            reports = [i for i, line in enumerate(lines) if "jq -r" in line]
+            aborts = [i for i, line in enumerate(lines) if "jq -e" in line and "||" not in line]
+            assert aborts, f"{name}: step {step.get('name')!r} asserts nothing that can fail"
+            assert reports[0] < aborts[0], (
+                f"{name}: step {step.get('name')!r} asserts before it reports, so a "
+                "failing run prints the assertion and not the reason for it"
+            )

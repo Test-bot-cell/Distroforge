@@ -7,10 +7,56 @@ from pathlib import Path
 from .artifact_paths import default_output_iso
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
-from .command import CommandRunner
+from .command import CommandError, CommandRunner
 from .hashing import sha256_file
 from .iso_doctor import IsoDoctorReport, diagnose_iso_build
 from .project import Project
+
+# The tail of the failing command's output kept in the report. Enough for apt, dpkg or
+# mmdebstrap to have said what went wrong -- their diagnosis is always at the end --
+# without letting one verbose command turn ISO-BUILD.json into a log file.
+_FAILURE_OUTPUT_TAIL = 8000
+
+
+@dataclass(frozen=True)
+class BuildFailure:
+    """What broke, as a field of the report instead of a traceback on stderr.
+
+    The first real run of the weekly golden path died inside the chroot, and the
+    workflow reported it as ``jq: Could not open file .../ISO-BUILD.json`` -- because
+    ``run_iso_build`` let ``CommandError`` out, so the command wrote no report at all
+    and the assertion downstream failed on the absence rather than on the cause. The
+    traceback did name the failing command, but it went to stderr, past ``--json``,
+    and nothing downstream could read it.
+
+    ``output`` is the failing command's own words. ``CommandRunner`` captures stdout
+    and stderr (core/command.py:123) and only the raised error carries them, so if
+    they are not copied here they are gone.
+    """
+
+    command: tuple[str, ...]
+    description: str
+    returncode: int
+    output: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "command": list(self.command),
+            "description": self.description,
+            "returncode": self.returncode,
+            "output": self.output,
+        }
+
+
+def _failure_from(exc: CommandError) -> BuildFailure:
+    result = exc.result
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    return BuildFailure(
+        command=tuple(result.spec.argv),
+        description=result.spec.description,
+        returncode=result.returncode,
+        output=output[-_FAILURE_OUTPUT_TAIL:],
+    )
 
 
 @dataclass(frozen=True)
@@ -26,10 +72,21 @@ class IsoBuildReport:
     output_size: int = 0
     output_sha256: str = ""
     boot_proof: BootProofReport | None = None
+    failure: BuildFailure | None = None
 
     @property
     def blocked(self) -> bool:
         return self.status == "blocked"
+
+    @property
+    def failed(self) -> bool:
+        """A build that ran and broke, as opposed to one that was refused before it ran.
+
+        Kept apart from ``blocked`` on purpose: blocked answers "this project cannot
+        build and here is the doctor's reason", which a dry run may say correctly and
+        usefully. ``failed`` only ever comes from a command that exited non-zero.
+        """
+        return self.status == "failed"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -37,6 +94,8 @@ class IsoBuildReport:
             "output_iso": str(self.output_iso),
             "status": self.status,
             "blocked": self.blocked,
+            "failed": self.failed,
+            "failure": self.failure.to_dict() if self.failure else None,
             "execute": self.execute,
             "report": str(self.report),
             "doctor": self.doctor.to_dict(),
@@ -70,6 +129,16 @@ class IsoBuildReport:
         ]
         if self.boot_proof:
             lines.extend(["", "Boot proof:", f"- {self.boot_proof.status} via {self.boot_proof.selected_backend or self.boot_proof.backend}"])
+        if self.failure:
+            lines.extend(
+                [
+                    "",
+                    "Failed:",
+                    f"- {self.failure.description or 'command'} (exit {self.failure.returncode})",
+                    f"- {' '.join(self.failure.command)}",
+                    *([f"  {line}" for line in self.failure.output.splitlines()[-12:]] or ["  no output"]),
+                ]
+            )
         return "\n".join(lines)
 
 
@@ -88,22 +157,35 @@ def run_iso_build(
     boot_report = None
     steps: tuple[str, ...] = ()
     status = "blocked" if doctor.blocked else "planned"
+    failure: BuildFailure | None = None
     if not doctor.blocked:
         runner = CommandRunner(dry_run=not execute, log_path=log_path)
-        build = BuildOrchestrator(project, runner, options).run()
-        steps = tuple(step.phase.value for step in build.steps)
-        exists, size, sha256 = _output_contract(options.output_iso)
-        status = "built" if execute and exists and size > 0 else "blocked" if execute else "planned"
-        if boot_proof_backend != "none" and (execute or options.output_iso.exists()):
-            boot_report = run_boot_proof(
-                project,
-                options,
-                iso=options.output_iso,
-                backend=boot_proof_backend,
-                execute=execute,
-            )
-            if boot_report.blocked:
-                status = "blocked"
+        try:
+            build = BuildOrchestrator(project, runner, options).run()
+        except CommandError as exc:
+            # A build that breaks halfway is still something to report on. Letting this
+            # out produced a traceback on stderr and no ISO-BUILD.json, which is the
+            # worst of both: the cause was printed where --json consumers cannot see it,
+            # and the report the caller was told to read did not exist. The commands run
+            # so far are not lost either -- runner.history has them, and the phase is
+            # named in the failing command's own description.
+            failure = _failure_from(exc)
+            status = "failed"
+            exists, size, sha256 = _output_contract(options.output_iso)
+        else:
+            steps = tuple(step.phase.value for step in build.steps)
+            exists, size, sha256 = _output_contract(options.output_iso)
+            status = "built" if execute and exists and size > 0 else "blocked" if execute else "planned"
+            if boot_proof_backend != "none" and (execute or options.output_iso.exists()):
+                boot_report = run_boot_proof(
+                    project,
+                    options,
+                    iso=options.output_iso,
+                    backend=boot_proof_backend,
+                    execute=execute,
+                )
+                if boot_report.blocked:
+                    status = "blocked"
     else:
         exists, size, sha256 = _output_contract(options.output_iso)
     report = IsoBuildReport(
@@ -118,6 +200,7 @@ def run_iso_build(
         size,
         sha256,
         boot_report,
+        failure,
     )
     project.output_dir.mkdir(parents=True, exist_ok=True)
     report.report.write_text(report.render_json() + "\n", encoding="utf-8")

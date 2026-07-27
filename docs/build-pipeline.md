@@ -273,9 +273,14 @@ neither the owning group nor the caller's group list answers it; `access(2)` doe
 included. The check it replaces in the preview, `Path("/dev/kvm").exists() or
 has_binary("kvm")`, answered a different question twice: a device node can exist and
 still refuse to open, and the `kvm` wrapper is installed by `qemu-system-x86` on hosts
-with no virtualisation at all. A host with no usable device — every GitHub runner —
-simply keeps emulating, which is also why the interaction lab no longer dies inside QEMU
-on `Could not access KVM kernel module` when its default-on option meets such a host.
+with no virtualisation at all. A host with no usable device simply keeps emulating, which
+is also why the interaction lab no longer dies inside QEMU on `Could not access KVM kernel
+module` when its default-on option meets such a host.
+
+That sentence used to name every GitHub runner as an example of a host with no device.
+The first real run of the weekly golden path measured `crw-rw---- 1 root kvm 10, 232` on
+`ubuntu-latest`, so the example was wrong; the rule it illustrated is unchanged, and the
+answer there is now whatever `access(2)` says on the day.
 
 Measured 2026-07-27, booting one desktop kernel and its 88 MB initramfs from the same
 media under the lab's own defaults: **7.5 s** to the end of the initramfs emulated

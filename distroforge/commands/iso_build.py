@@ -19,4 +19,8 @@ def render_iso_build(root: Path, definition: Path | None = None, execute: bool =
     # why it cannot build has answered correctly rather than failed. With --execute,
     # blocked means the ISO is missing or empty after the build ran, which is the one
     # case that used to print "blocked" in the report and still exit 0.
-    return rendered, report.blocked and report.execute
+    #
+    # "failed" is the third word and it must be here too: a build that dies inside a
+    # command now returns a report instead of raising, and without this the exception
+    # that used to exit 1 through a traceback would exit 0 through a tidy report.
+    return rendered, (report.blocked or report.failed) and report.execute

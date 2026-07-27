@@ -287,6 +287,36 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     topic branch is listed by path whether it is valid or not. Two facts
     arrived together and one explanation was handed both. docs/golden-path.md
     now records the measurement in place of the inference.
+  * Walked the golden path for real, and made a failure arrive as data. Both
+    legs failed and neither said why, which was the finding. The ISO leg died
+    in the chroot on "env: 'apt-get': No such file or directory", exit 127,
+    and the log said "jq: Could not open file .../ISO-BUILD.json":
+    run_iso_build let the CommandError out, so no report was written and the
+    assertion failed on the absence of the file rather than on the cause,
+    while the traceback named the failing command on stderr, past --json.
+    run_iso_build now returns a report with status "failed" and a failure
+    object carrying the command, its description, its exit code and the tail
+    of its output; --execute still exits non-zero, through IsoBuildReport
+    .failed instead of an exception. The package leg built a clean .deb --
+    lintian passed -- and reported autopkgtest test-failed with the reason
+    "The autopkgtest test command ran and failed.", a classification that is
+    byte-identical for every failing test in debian/tests. The doctor had
+    already extracted the output lines naming which test failed into its
+    report's evidence, and the one call site that asks the doctor dropped
+    them; PackageBuildCheck now carries the evidence and the remediation.
+    And the workflow hid both: every assertion step printed its summary after
+    its assertions, which under sh -e means only on the happy path, so the
+    run that stopped at the status assertion never printed the verdict behind
+    it. All three now report before they assert, and a test refuses a step
+    that does not -- excluding the jq -e || jq -r guard, which cannot abort.
+  * Withdrew two figures the first run measured false. The definition cited
+    GitHub's documented 14 GB of runner SSD as the reason to skip a desktop:
+    the runner has 145 GB with 88 GB free, so that reason is gone and wall
+    clock is named instead. core/qemu_invocation.py said "a host with no
+    device -- every GitHub runner -- never gets the flag"; /dev/kvm is there,
+    crw-rw---- root kvm 10, 232, so the parenthesis was an assumption dressed
+    as an example and is deleted from the docstring and from
+    docs/build-pipeline.md. The rule each illustrated is unchanged.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 
