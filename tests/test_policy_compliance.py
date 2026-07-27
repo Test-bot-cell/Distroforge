@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import datetime
 import fnmatch
 import json
 import os
 import subprocess
 import sys
 import tomllib
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import pytest
@@ -492,6 +494,71 @@ def test_latest_changelog_entry_stays_within_the_policy_line_length() -> None:
 
     assert long_lines == []
     assert lines[0].startswith("distroforge (")
+
+
+# Fixed on purpose rather than strftime("%a"): Python leaves LC_TIME at C, but this
+# suite is run on a French machine and a single locale.setlocale anywhere in a future
+# test would turn Mon into lun. and make the weekday assertion below fail on a correct
+# changelog. RFC 5322 names the days in English regardless.
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def test_every_changelog_trailer_date_is_one_that_had_already_happened() -> None:
+    """Four consecutive entries named a time that had not arrived yet.
+
+    Measured 2026-07-27 by comparing every trailer against the author date of the commit
+    that introduced its line: 0.3.5-7 was 3 minutes ahead of its own commit, 0.3.5-8 was
+    13, 0.3.5-9 was 146 and 0.3.5-10 was 160 -- the last two still in the future two
+    hours later. Nothing said so. lintian's changelog check reads the newest entry's
+    weekday, a short list of textually invalid dates, and whether the newest entry is
+    newer than the one directly below it; there is no future-date tag at all, and nothing
+    under the top two entries is looked at. So the package linted clean while claiming to
+    have been released two and a half hours after it was built.
+
+    The date is not decoration: dpkg-parsechangelog hands it to the archive as the
+    release date of that version, and it is what an upload and a bug report are dated
+    against. The defect is writing it by estimating the clock instead of reading it, so
+    the check has to sit at the moment of writing -- which it does, through the
+    changelog-policy pre-commit hook, whose `-k changelog` selection picks this up on any
+    change to the file.
+
+    Weaker than it looks, deliberately: once real time passes a fabricated date the date
+    is no longer in the future and this stops catching it. It catches every such entry at
+    the commit that introduces it, which is when it can still be corrected for free. The
+    two checks either side of it hold permanently -- the weekday, and strict ordering
+    across the whole file rather than lintian's top pair. Entries at 0.3.5-2 and below
+    predate this git repository; their dates are the original packaging record, not a
+    reading of this repository's clock, and are left alone.
+    """
+    lines = (ROOT / "debian/changelog").read_text(encoding="utf-8").splitlines()
+    trailers: list[tuple[str, str, datetime.datetime]] = []
+    version = ""
+    for line in lines:
+        if line.startswith("distroforge ("):
+            version = line.partition("(")[2].partition(")")[0]
+        elif line.startswith(" -- "):
+            declared = line.partition(">")[2].strip()
+            # Raises on anything RFC 5322 cannot read, which is the check dpkg makes.
+            trailers.append((version, declared, parsedate_to_datetime(declared)))
+
+    assert len(trailers) == sum(1 for line in lines if line.startswith("distroforge (")), (
+        "every changelog entry carries exactly one trailer"
+    )
+    # Two minutes of grace for the clock difference between the machine that writes an
+    # entry and the runner that checks it. The smallest fabrication measured here was
+    # three minutes ahead of its own commit, so the grace does not swallow the defect.
+    latest_allowed = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=2)
+    for version, declared, stamp in trailers:
+        assert stamp <= latest_allowed, f"{version} is dated in the future: {declared}"
+        actual = _WEEKDAYS[stamp.weekday()]
+        assert declared.partition(",")[0] == actual, (
+            f"{version} says {declared.partition(',')[0]}, but {stamp.date()} was a {actual}"
+        )
+
+    for (newer, shown, newer_stamp), (older, _, older_stamp) in zip(
+        trailers, trailers[1:], strict=False
+    ):
+        assert newer_stamp > older_stamp, f"{newer} ({shown}) is not newer than {older}"
 
 
 def _stage_wheel_layout(destination: Path) -> Path:

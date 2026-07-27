@@ -1,3 +1,30 @@
+distroforge (0.3.5-12) resolute; urgency=medium
+
+  * Stop dating entries in a future that had not happened yet. Comparing every
+    trailer with the author date of the commit that introduced its line found
+    four in a row ahead of their own commit: 0.3.5-7 by 3 minutes, 0.3.5-8 by
+    13, 0.3.5-9 by 146 and 0.3.5-10 by 160 -- the last two still ahead of the
+    wall clock two hours later. dpkg-parsechangelog hands that field to the
+    archive as the release date of the version, so the package was claiming to
+    have been released two and a half hours after it was built. The four now
+    carry the author dates of their commits. Entries at 0.3.5-2 and below
+    predate this git repository and are the original packaging record; they are
+    left exactly as they were.
+  * Why nothing caught it, which is the part worth keeping. lintian's changelog
+    check reads the newest entry's weekday, a short list of textually invalid
+    dates, and whether the newest entry is newer than the one directly below it.
+    There is no future-date tag at all, and nothing under the top two entries is
+    examined.
+  * The new check reads the whole file rather than its top: every trailer parses
+    as RFC 5322, declares the weekday its own date really fell on, is strictly
+    newer than the entry below it, and is not in the future. It runs from the
+    changelog-policy pre-commit hook, so it fires while a wrong date can still
+    be corrected for free -- which is the only moment the future-date half can
+    work, since once the clock passes a fabricated date it is no longer in the
+    future. Verified to fail on the file as it stood.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 17:47:48 +0200
+
 distroforge (0.3.5-11) resolute; urgency=medium
 
   * Name the right rule, and write down the step no test can take. The check
@@ -48,7 +75,7 @@ distroforge (0.3.5-10) resolute; urgency=medium
     offline suite cannot do -- so it rules out what is provably undeliverable
     and leaves the live check to the manual step.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:41:07 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 17:00:43 +0200
 
 distroforge (0.3.5-9) resolute; urgency=medium
 
@@ -72,7 +99,7 @@ distroforge (0.3.5-9) resolute; urgency=medium
     package lints clean, builds clean and is still not uploadable. Fixing the
     address is a separate change and needs a deliverable one to exist first.
 
- -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 19:22:41 +0200
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:56:52 +0200
 
 distroforge (0.3.5-8) resolute; urgency=medium
 
@@ -106,7 +133,7 @@ distroforge (0.3.5-8) resolute; urgency=medium
     survives the session, and the alternative is plumbing a filtered copy
     through a lifetime ChrootTerminalSpec does not have.
 
- -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 17:04:26 +0200
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:51:15 +0200
 
 distroforge (0.3.5-7) resolute; urgency=medium
 
@@ -151,7 +178,7 @@ distroforge (0.3.5-7) resolute; urgency=medium
   * Correct the 0.3.5-6 timestamp, which was two hours ahead of the commit
     that wrote it and would have dated this entry before it.
 
- -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:47:11 +0200
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:44:09 +0200
 
 distroforge (0.3.5-6) resolute; urgency=medium
 
