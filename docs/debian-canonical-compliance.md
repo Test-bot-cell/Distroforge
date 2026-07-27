@@ -39,6 +39,10 @@ than restating it.
 - CI must run Ruff and pytest on Python 3.11 through 3.14 against both Qt bindings; the
   policy guard tests are part of that pytest run and are additionally named as their own
   step so a collection error there cannot hide in the noise of a full matrix.
+- CI must also, weekly and never on push, build the package for real and run `lintian` and
+  the declared autopkgtest suite against it, and build and boot-proof one reference
+  derivative under UEFI firmware. That is `.github/workflows/golden-path.yml`, documented
+  in `docs/golden-path.md`.
 - `debian/rules` runs the test phase against the staged build tree, not the checkout:
   `PYBUILD_TEST_ARGS` passes `-o pythonpath={build_dir}` so `import distroforge` resolves
   to what the `.deb` will ship. A data file dropped from `package-data` therefore fails
@@ -46,18 +50,27 @@ than restating it.
   files they assert on -- `debian/control`, `docs/`, `pyproject.toml` -- because they
   anchor at `Path(__file__).resolve().parents[1]`, never at the working directory.
 - During alpha development, package build artifacts must not be produced unless
-  the maintainer explicitly authorizes a package build in the current task.
+  the maintainer explicitly authorizes a package build in the current task. There is
+  exactly one standing authorization, `.github/workflows/golden-path.yml`, which builds
+  one named derivative and one `.deb` on a weekly schedule; committing it *is* that
+  explicit authorization, given once. It runs on `schedule` and `workflow_dispatch` and
+  never on push, and `tests/test_golden_path.py` fails if that ever changes. The rule is
+  unchanged for everything else: no build to verify a change, on a workstation or in
+  per-push CI.
 
 ## What Is Not Yet Enforced
 
 Compliance is a standing requirement, but only part of it is currently automated. Stating
 the gap is part of the rule, not an exception to it:
 
-- `lintian` is a maintainer action, never a gate. `debian-package --execute` runs it to
-  produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and `debian/control`
-  lists it under `Suggests`; but no CI step runs it on a real `.deb`, `debian/rules` does
-  not run it, and the rendered `sbuild` command passes `--no-run-lintian`. What *is*
-  enforced is the shape of the invocation, and it is always built by
+- `lintian` is a weekly gate, not a per-push one. This entry used to say it was never a
+  gate at all, which stopped being true when the golden path landed: that workflow runs
+  `debian-package --execute` on a real `.deb`, and the verdict it accepts is `passed` or
+  `review required` and nothing else. `debian/rules` still does not run it and the
+  rendered `sbuild` command still passes `--no-run-lintian`; those two are unchanged.
+  `debian-package --execute` runs it to produce `LINTIAN.txt`, `doctor --debian-dev`
+  audits its presence, and `debian/control` lists it under `Suggests`. What *is*
+  enforced on every push is the shape of the invocation, and it is always built by
   `packaging.lintian_argv()`: the profile is a **vendor**, never a suite --
   `--profile resolute` does not exist -- and an unpinned run would take its verdict from
   whichever vendor the host happens to be.
@@ -101,9 +114,13 @@ the gap is part of the rule, not an exception to it:
   `debian/tests/*` is linted by `shellcheck`, and the `python3` payloads embedded in those
   scripts are handed to `compile()`, which nothing else checks: dpkg runs the script, the
   interpreter dies, and the surrounding `2>/dev/null` plus `|| true` swallow the traceback.
-- The test suite never executes an external build tool, so nothing verifies that a real
-  package or a real ISO is produced. Package-build conformance is confirmed by a
-  maintainer running the hermetic build path, not by the suite.
+- The test suite never executes an external build tool, and that boundary is deliberate
+  and permanent: it keeps the suite offline, rootless and sub-second, and it is what lets
+  the same suite run under buildd and autopkgtest. What used to follow from it -- "nothing
+  verifies that a real package or a real ISO is produced" -- is no longer true. That
+  verification lives outside the suite, in `.github/workflows/golden-path.yml`, on a
+  weekly schedule: see `docs/golden-path.md`. The hermetic build path remains the
+  maintainer's own route for a publication build.
 
 ## GUI Theming Dependencies
 

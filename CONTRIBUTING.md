@@ -9,7 +9,8 @@ make check
 That is the whole contract: `ruff check .`, `mypy distroforge/`, `pytest -q`,
 `shellcheck` over the Debian packaging scripts, and `compile()` over the `python3`
 payloads embedded in them. It needs no network and installs nothing. Run it before
-every commit; CI runs the same five.
+every commit; the per-push CI runs the same five. A second workflow, the weekly
+[golden path](docs/golden-path.md), runs the things `make check` deliberately does not.
 
 Prefer `make check` over calling `pytest` yourself, and not only for the coverage:
 the Makefile exports `PYTHONDONTWRITEBYTECODE=1`. Python invalidates a `.pyc` on the
@@ -34,7 +35,10 @@ against golden argv, and the few checks that drive a real external tool (`gpg`,
 
 If you believe a defect can only be shown by a real build, say so instead of
 building: that is a gap in the test design, and naming it is more useful than a
-one-off manual run.
+one-off manual run. There is now somewhere concrete to name it — the weekly
+[golden path](docs/golden-path.md) is the project's one authorized build, and a defect
+that only a real build can show is a case that workflow should cover. Filing it against
+the golden path is the useful move; running a build yourself to see it is still not.
 
 ## The four non-negotiable pillars
 

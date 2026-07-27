@@ -185,6 +185,58 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     lintian is always invoked as --profile debian. The vendor has been
     resolved from the changelog suite since 0.3.5-17; measured on this tree
     the invocation is --profile ubuntu.
+  * Added the golden path: the one chain this project now walks for real.
+    .github/workflows/golden-path.yml bootstraps a rootfs from the archive,
+    packs it, builds an ISO, boots that ISO under UEFI firmware, and builds
+    the .deb through lintian and the autopkgtest suite debian/tests has
+    declared since long before anything ran it. Weekly on a schedule and on
+    workflow_dispatch, never on push: docs/debian-canonical-compliance.md
+    forbids producing build artifacts without explicit authorization and
+    CONTRIBUTING.md says never build to verify a change, so committing one
+    workflow for one named derivative is that authorization given once
+    rather than a build smuggled into every push. It has its own concurrency
+    group because ci.yml's cancels in progress on ${{ github.ref }}, which
+    is refs/heads/main for a scheduled run -- a shared group would let an
+    ordinary push kill an hour-long build, and a cancelled run reports as
+    cancelled rather than failed. The boot proof uses --backend qemu and not
+    auto, since auto falls back to reading the ISO's structure without
+    booting it, and asserts proof_level, selected_backend and firmware
+    separately because "ready" alone does not distinguish a boot from a
+    scan. The reference derivative is committed rather than borrowed from
+    examples/: both shipped examples set qa.scenarios, whose QEMU
+    invocation carries no timeout, so an unattended run would hang to the
+    six-hour ceiling.
+  * Stopped refusing every automated host with passwordless sudo. The
+    privilege preflight erred on any host with no tty and no askpass helper,
+    on the assumption that sudo would have nowhere to ask -- and said "sudo
+    cannot authenticate", which is false wherever a NOPASSWD rule
+    authenticates it without asking. That is every CI runner, every
+    provisioning script and every cron job, so the one environment the build
+    most needs to work in was the one it rejected, with a message telling the
+    reader to install a graphical askpass on a machine with no display. It
+    now asks sudo the question instead of guessing from the terminal: sudo -n
+    never prompts and exits non-zero when a password would have been
+    required. Measured on this workstation, where it exits 1 with
+    "interactive authentication is required", so the refusal still fires
+    where it should; the probe is withheld from a dry-run runner, which
+    answers 0 to everything and would have fabricated a yes.
+  * Wrote the first test in this tree that reads a workflow. Nothing did,
+    which left every property that makes golden-path.yml a golden path
+    unenforced: deleting its schedule, turning --execute into --dry-run, or
+    moving the boot proof to --backend auto each leaves a file that still
+    parses, still runs and still reports success while proving nothing. All
+    fifteen ways measured, each caught by a named test.
+  * Corrected the nine documents that said no CI job builds the package and
+    that no L2 gate exists. Four of them were already wrong before this
+    change and had been for some time: README.md described "the two checks
+    CI runs" on "Python 3.11, 3.12 and 3.13" when the matrix is four
+    versions and the gates are five, said none of mypy, shellcheck,
+    pre-commit and lintian gates a change when three had gated every push
+    since they were wired, docs/acceptance-matrix.md said only Ruff and
+    pytest run in CI, and docs/debian-ubuntu-python-policy.md stopped the
+    CI policy at 3.13. The standing rules were kept rather than repealed:
+    "never build to verify a change" and the authorization requirement stay
+    as written, with the weekly workflow named as their single exception.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

@@ -1,0 +1,341 @@
+name: Golden path
+
+# The one path this project walks for real. ci.yml proves the plan; this proves the
+# product: a rootfs bootstrapped from the archive, packed, turned into an ISO, booted
+# under UEFI firmware, and a .deb built, linted and autopkgtested. Every module the two
+# jobs below never reach is a module nothing outside a unit test has ever run.
+#
+# On a schedule and never on push, deliberately. docs/debian-canonical-compliance.md
+# says package build artifacts must not be produced unless the maintainer explicitly
+# authorizes a build, and CONTRIBUTING.md says never build to verify a change. Both
+# stay in force: committing this file is that authorization, given once, for one named
+# derivative, on a cadence -- not a build smuggled into every push. A contributor still
+# must not build to prove a change.
+on:
+  schedule:
+    # Sunday, 03:17 UTC. Not on the hour: GitHub documents that "the schedule event can
+    # be delayed during periods of high loads ... High load times include the start of
+    # every hour. If the load is sufficiently high enough, some queued jobs may be
+    # dropped." A run dropped for being on the hour would look exactly like a week when
+    # nothing broke.
+    #
+    # Two traps this cadence lives with, neither of them fixable here. GitHub disables
+    # scheduled workflows "in a public repository ... when no repository activity has
+    # occurred in 60 days" -- a quiet quarter silently ends the golden path, and the
+    # only symptom is an absence. And scheduled runs "run on the latest commit on the
+    # default branch", so this job always builds main, never develop.
+    - cron: "17 3 * * 0"
+  # Also on demand, which is how it gets iterated on. Note that GitHub only honours this
+  # "if the workflow file exists on the default branch" -- a golden path living only on
+  # develop cannot be dispatched at all.
+  workflow_dispatch:
+
+# NOT the group ci.yml uses. Its group is ${{ github.workflow }}-${{ github.ref }} with
+# cancel-in-progress: true, and a scheduled run happens on refs/heads/main -- the very
+# ref a push to main uses. Sharing that group would let an ordinary push kill an
+# hour-long build mid-flight, and a cancelled run reports as "cancelled" rather than
+# "failed", so nobody would go looking. cancel-in-progress is false for the same reason:
+# a second dispatch should queue behind the first, not shoot it.
+concurrency:
+  group: golden-path
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reference-derivative:
+    # No container. The build mounts: core/chroot.py:256 binds /dev, /dev/pts, /proc and
+    # /sys and core/chroot.py:269 mounts a private tmpfs on /run, with no fallback when
+    # mount fails (core/command.py:134). A job container gets Docker's default
+    # capabilities, which exclude CAP_SYS_ADMIN, so the first bind mount would end the
+    # run; the runner host has a real kernel and real root through sudo.
+    #
+    # Privilege comes from sudo, not from running the whole job as root, because
+    # BuildOptions.use_sudo exists precisely so only the privileged commands are
+    # privileged -- and because a root-owned dist/ is a worse thing to hand to
+    # upload-artifact than a runner-owned one.
+    runs-on: ubuntu-latest
+    # Headroom, not a measurement. The first run records the real figure in its own log
+    # and this number should come down to it. The parts with measured costs are the
+    # squashfs repack (37.1 s for zstd on four cores, docs/build-pipeline.md:107) and the
+    # boot proof's own deadline, set below.
+    timeout-minutes: 90
+    env:
+      # The project root, deliberately outside the checkout. core/project.py:27 hard-codes
+      # the work directory as <root>/work and core/project.py:51 the outputs as
+      # <root>/dist, with no flag, definition field or environment variable to move
+      # either -- so the only way to keep several gigabytes of rootfs out of the source
+      # tree is to put the project somewhere else. tests/test_policy_compliance.py:109
+      # fails on a checkout carrying build leftovers, and this is how that stays true.
+      DERIVATIVE_ROOT: ${{ runner.temp }}/reference-derivative
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record what this runner actually is
+        # Measured, not assumed, because three of the decisions here depend on figures
+        # that were read in documentation rather than observed. GitHub documents 14 GB of
+        # SSD for a standard runner while this build needs roughly 6 GB and
+        # core/preflight.py:18 warns below 12 GiB free; core/qemu_invocation.py:74 asserts
+        # that "a host with no device -- every GitHub runner -- never gets the flag", so
+        # /dev/kvm settles whether the boot proof is accelerated or emulated; and the whole
+        # reason the privilege preflight was changed is that sudo here authenticates with
+        # no prompt, which this states in one line. The du is not idle curiosity: if free
+        # space turns out to be the binding constraint, it names what there is to reclaim.
+        run: |
+          df -h /
+          nproc && free -h
+          ls -l /dev/kvm 2>&1 || echo "no /dev/kvm: the boot proof will be emulated"
+          sudo -n true </dev/null && echo "sudo: authenticates with no prompt" \
+            || echo "sudo: would need to prompt"
+          sudo du -sh /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache 2>/dev/null || true
+
+      - name: Install the host tools a real build needs
+        # core/doctor.py:38 requires xorriso, unsquashfs, mksquashfs, mformat,
+        # qemu-system-x86_64, chroot and apt-get whenever --execute is passed -- including
+        # qemu for a build that never boots anything, which is why qemu-system-x86 is here
+        # and not only in the boot-proof step. core/validate.py:41 additionally wants
+        # mmdebstrap or debootstrap and mformat.
+        #
+        # grub-common and grub-pc-bin are the two nothing checks for: core/bootstrap.py:430
+        # calls grub-mkimage and reads /usr/lib/grub/i386-pc/cdboot.img, and neither
+        # appears in doctor.py, iso_toolchain.py, validate.py or debian/control. A missing
+        # one fails deep in the build instead of at the door. jq is listed rather than
+        # taken from the runner image, so the assertion steps do not depend on what
+        # happens to be preinstalled.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mmdebstrap debootstrap squashfs-tools xorriso mtools zstd jq \
+            grub-common grub-pc-bin grub-efi-amd64-bin \
+            qemu-system-x86 ovmf
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        # pip, not the distribution's python3-*, unlike ci.yml's distro-dependencies job.
+        # That job's whole subject is what the archive provides; this one's subject is the
+        # external toolchain, and the runner image is 24.04 whose python3-pydantic is 1.10
+        # (ci.yml:143), too old to import this package at all.
+        run: python -m pip install -e .
+
+      - name: Create the project
+        # core/project.py:76 raises without project.json, and core/boot_proof.py:176 writes
+        # its report without creating the directory first -- Project.create is what makes
+        # <root>/dist exist (core/project.py:100).
+        run: python -m distroforge new reference-derivative "$DERIVATIVE_ROOT" --release 26.04
+
+      - name: Build the ISO, for real
+        # No --boot-proof here even though iso-build offers one: it passes no firmware, so
+        # prebuild_vm.firmware stays at its "bios" default (core/prebuild_vm.py:24) and the
+        # proof would cover the half docs/build-pipeline.md:361 says already worked. The
+        # UEFI proof is the next step, on its own, with its own assertions.
+        run: |
+          python -m distroforge iso-build "$DERIVATIVE_ROOT" \
+            --definition .github/golden-path/reference-derivative.yaml \
+            --execute --json | tee "$RUNNER_TEMP/iso-build.json"
+          df -h /
+
+      - name: The build must have produced an ISO
+        # iso-build already exits 2 on a blocked report, as of the commit that made three
+        # commands stop printing "blocked" and exiting 0. This asserts the report's own
+        # fields anyway, because an exit status proves that the command agreed with itself
+        # and not that the artifact exists: core/iso_build.py:96 is the only line that ties
+        # "built" to a non-empty file, and reading the fields here means a future change to
+        # it cannot quietly turn this job green over nothing.
+        run: |
+          REPORT="$DERIVATIVE_ROOT/dist/ISO-BUILD.json"
+          jq -e '.status == "built"' "$REPORT"
+          jq -e '.execute == true'   "$REPORT"
+          jq -e '.output_exists'     "$REPORT"
+          jq -e '.output_size > 0'   "$REPORT"
+          jq -r '"ISO \(.output_size) bytes, sha256 \(.output_sha256)"' "$REPORT"
+
+      - name: Boot the ISO under UEFI firmware
+        # --backend qemu, never auto. auto falls back to iso-scan when QEMU is missing or
+        # refuses (core/boot_proof.py:180), and iso-scan reads the ISO's structure without
+        # booting anything -- a green report about a file, from a job whose entire purpose
+        # is to watch a kernel come up. A missing or broken QEMU has to fail here.
+        #
+        # --timeout 1200 against a default of 300 (core/prebuild_vm.py:32) because the
+        # deadline is wall clock on a guest that is emulated, not accelerated, when
+        # /dev/kvm is absent -- and the step above records which it was. Like the job
+        # timeout this is headroom over an unmeasured figure; the serial log in the
+        # evidence bundle is what will settle it.
+        #
+        # No --secure-boot yet. It needs the .secboot firmware paired with the .ms key
+        # store (core/validate.py:537) and it is the rung above this one: the UEFI leg has
+        # to come back green on a cadence before a flag that can only make it fail is
+        # added to a job nobody watches live. Secure Boot stays a maintainer-run proof
+        # until then, and docs/golden-path.md says so rather than leaving it implied.
+        run: |
+          python -m distroforge boot-proof "$DERIVATIVE_ROOT" \
+            --backend qemu --firmware uefi --timeout 1200 --json \
+            | tee "$RUNNER_TEMP/boot-proof.json"
+
+      - name: The proof must be a boot, under UEFI, by QEMU
+        # Four separate claims, because "ready" alone does not distinguish a kernel that
+        # booted from a structural scan that did not: proof_level is "runtime" only on the
+        # QEMU path (core/boot_proof.py:223), selected_backend records which backend
+        # actually answered (core/boot_proof.py:69), and firmware records what it booted
+        # (core/boot_proof.py:71). accelerated is printed and not asserted -- TCG is a
+        # valid answer here, and what matters is that the log says which one it was.
+        run: |
+          PROOF="$DERIVATIVE_ROOT/dist/boot-proof.json"
+          jq -e '.status == "ready"'          "$PROOF"
+          jq -e '.proof_level == "runtime"'   "$PROOF"
+          jq -e '.selected_backend == "qemu"' "$PROOF"
+          jq -e '.firmware == "uefi"'         "$PROOF"
+          jq -r '"accelerated: \(.accelerated)"' \
+            "$DERIVATIVE_ROOT/dist/qemu-lab-report.json"
+
+      - name: Assemble the evidence bundle
+        # publish-bundle copies the ISO into dist/publish (core/publish_bundle.py:93), so
+        # this costs a second image on disk; the df either side is how that stays a
+        # measured cost rather than a guess. evidence-status is given --output-dir
+        # explicitly because its default is <root>/dist/reports (core/evidence.py:193)
+        # while the build writes <root>/dist, so the default reports a successful build's
+        # own artifacts as missing. Neither command may fail the job: a review verdict
+        # about an alpha bundle is information, not a broken golden path.
+        run: |
+          ISO=$(jq -r '.output_iso' "$DERIVATIVE_ROOT/dist/ISO-BUILD.json")
+          python -m distroforge publish-bundle "$DERIVATIVE_ROOT" --iso "$ISO" --json \
+            > "$RUNNER_TEMP/publish-bundle.json" || true
+          python -m distroforge evidence-status "$DERIVATIVE_ROOT" \
+            --output-dir "$DERIVATIVE_ROOT/dist" --profile publish --json \
+            > "$RUNNER_TEMP/evidence-status.json" || true
+          cp "$RUNNER_TEMP"/*.json "$DERIVATIVE_ROOT/dist/"
+          df -h /
+
+      - name: Stage the evidence, without the images
+        # The ISO and the copy publish-bundle makes of it are left out on purpose, and
+        # named on the way out rather than dropped in silence: they are roughly 1.5 GiB
+        # each, and what a reader of a weekly run needs is the digests, the reports and
+        # the serial log the kernel wrote -- the image is reproducible from those.
+        #
+        # Copied into the workspace through tar rather than uploaded from
+        # $DERIVATIVE_ROOT, because an exclusion pattern that silently fails to match
+        # would attach two gigabytes of ISO to every weekly run. tar excludes before it
+        # writes, so the staged tree is small by construction and can be listed here.
+        if: always()
+        run: |
+          mkdir -p golden-path-evidence
+          find "$DERIVATIVE_ROOT/dist" -name '*.iso' -printf 'excluded from evidence: %p (%s bytes)\n' || true
+          tar -C "$DERIVATIVE_ROOT/dist" --exclude='*.iso' -cf - . \
+            | tar -C golden-path-evidence -xf -
+          du -sh golden-path-evidence && find golden-path-evidence -type f | sort
+
+      - name: Publish the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-derivative-evidence
+          if-no-files-found: error
+          path: golden-path-evidence
+
+  debian-package:
+    # container: ubuntu:devel for the same reason ci.yml's distro-dependencies job uses it
+    # -- debian/control requires python3-pydantic (>= 2.7) and the 24.04 runner image
+    # ships 1.10 (ci.yml:143) -- and because the suite debian/changelog targets is the only
+    # honest place to build the package for it.
+    #
+    # A container is enough here, unlike the job above: nothing in this leg mounts. It runs
+    # as the container's root, which autopkgtest's null backend needs in order to install
+    # the .deb it just built. The cost is that dpkg-buildpackage's own test phase then runs
+    # as root, so the tests that lock a directory to 0500 and expect a PermissionError skip
+    # instead of running (tests/conftest.py:85). ci.yml's distro-dependencies job runs the
+    # same suite as an unprivileged builder, which is where those tests are covered.
+    runs-on: ubuntu-latest
+    container: ubuntu:devel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        # mk-build-deps reads debian/control, so the Build-Depends of this build cannot
+        # drift from the ones the package declares. A hand-written apt-get list here would
+        # be a second copy of that field, and a second copy is the thing that goes stale.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            devscripts equivs dpkg-dev lintian autopkgtest jq
+          mk-build-deps --install --remove \
+            --tool 'apt-get -y --no-install-recommends' debian/control
+
+      - name: Report what the suite provides
+        run: |
+          python3 --version
+          dpkg-query -f '${Package} ${Version}\n' -W lintian autopkgtest python3-pydantic
+          lintian --version
+
+      - name: Build the package, lint it, and run its autopkgtest suite
+        # One command, because build_debian_package already is the chain: dpkg-buildpackage
+        # -us -uc -b, then lintian with the profile resolved from the changelog suite, then
+        # autopkgtest against the built .deb (core/packaging.py:1035-1060). debian/tests has
+        # declared a real smoke suite and a GUI-import test since before this workflow
+        # existed, and nothing had ever executed either.
+        #
+        # No --artifact-dir: dpkg-buildpackage writes to the parent of the source tree and
+        # the default looks exactly there (core/artifact_paths.py:49). Overriding it would
+        # point the reader at an empty directory -- "the one failure mode that reads exactly
+        # like success", as that docstring puts it.
+        run: |
+          python3 -m distroforge debian-package "$PWD" --execute --json \
+            | tee "$RUNNER_TEMP/debian-package.json"
+
+      - name: Every leg of that chain must have answered
+        # debian-package exits 2 only on a blocked report, and "review required" is
+        # deliberately not a failure (docs/packaging-release.md holds the rule). These
+        # assertions keep that rule rather than tightening it, and say which verdict each
+        # leg is allowed:
+        #
+        # lintian may be "passed" or "review required" and nothing else. Any tag at all
+        # makes it review (core/packaging.py:1218), and this package carries one pedantic
+        # tag on purpose, so requiring "passed" would fail a healthy artifact -- the same
+        # over-gating the suite caught three times in the commit that wired these exit
+        # statuses up. "missing" and "skipped" are excluded because they mean the tool or
+        # the .deb was absent, which here means the toolchain step above lied. A new
+        # warning is not a failure but it is not invisible either: lintian_reason keeps
+        # every tag, and the last line prints them.
+        #
+        # autopkgtest must be "passed". Its other executed verdicts are testbed-broken,
+        # test-failed and failed (core/packaging.py:1367-1402) and none of them is
+        # acceptable on a host where the tool and a writable testbed are both present.
+        run: |
+          REPORT="$RUNNER_TEMP/debian-package.json"
+          jq -e '.execute == true' "$REPORT"
+          jq -e '.build.status == "passed"' "$REPORT"
+          jq -e '.status == "built" or .status == "review required"' "$REPORT"
+          jq -e '[.artifacts[] | select(.kind == "deb")] | length > 0' "$REPORT"
+          jq -e '.checks[] | select(.name == "lintian")
+                 | .status == "passed" or .status == "review required"' "$REPORT"
+          jq -e '.checks[] | select(.name == "autopkgtest") | .status == "passed"' "$REPORT"
+          jq -r '.checks[] | "\(.name): \(.status)\n\(.reason)"' "$REPORT"
+
+      - name: Stage the package and its verdicts
+        # Copied into the workspace rather than uploaded from ../, because
+        # dpkg-buildpackage writes beside the source tree and an upload path that walks out
+        # of the workspace is one more thing to be wrong about.
+        if: always()
+        run: |
+          mkdir -p golden-path-evidence
+          cp "$RUNNER_TEMP/debian-package.json" golden-path-evidence/ || true
+          cp ../*.deb ../*.changes ../*.buildinfo golden-path-evidence/ || true
+          find golden-path-evidence -type f | sort
+
+      - name: Publish the package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package-evidence
+          if-no-files-found: error
+          path: golden-path-evidence

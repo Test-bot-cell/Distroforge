@@ -59,6 +59,8 @@ jobs:
   packaging-static:
     # Static packaging checks only: no package is built here. A build needs
     # privilege and minutes, and every gate below is meaningful without one.
+    # The package is built for real, with lintian and its own autopkgtest suite,
+    # once a week in golden-path.yml -- not never, just not on every push.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

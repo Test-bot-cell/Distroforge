@@ -44,8 +44,10 @@ python3 -m pytest -q
 If it passes together with Ruff, `packaging-policy`, and the hermetic build plan,
 the source tree has cleared its dry-run and maintainer workflow gate. The next
 step may be a clean Debian package build in the environment selected by
-`hermetic-build-plan`. Of those, only Ruff and pytest run in CI;
-`packaging-policy` and `hermetic-build-plan` are maintainer commands.
+`hermetic-build-plan`. Per-push CI runs Ruff, mypy, pytest, `shellcheck`, the embedded
+payload compile and every `pre-commit` ratchet; `packaging-policy` and
+`hermetic-build-plan` stay maintainer commands. This sentence used to say "only Ruff and
+pytest run in CI", which had been wrong since mypy, shellcheck and pre-commit were wired.
 
 ## What This Matrix Does Not Prove
 
@@ -54,8 +56,13 @@ only. No test has ever executed `debootstrap`, `mksquashfs`, `unsquashfs`,
 `xorriso`, `apt`, `qemu`, `sbuild` or `autopkgtest`: the progress fixtures under
 `tests/fixtures/progress/` exist precisely so those tools stay out of the suite.
 Nothing here verifies that a real ISO builds, boots, or installs, or that a real
-`.deb` passes `lintian`. That confirmation is a manual maintainer step on real
-hardware or a real target ISO, and it is the honest boundary of this gate.
+`.deb` passes `lintian`, and that is the honest boundary of *this* gate.
+
+It is no longer the boundary of the project. That confirmation used to be a manual
+maintainer step and nothing else; it now also runs weekly, outside the suite, in
+`.github/workflows/golden-path.yml` — a real bootstrap, a real ISO, a real UEFI boot and a
+real `.deb` through `lintian` and its own autopkgtest suite. See `docs/golden-path.md`.
+Install-media verification on real hardware is still a manual maintainer step.
 
 Line coverage is 74.7% overall (21351 of 28586 statements). `distroforge/ui/` is
 the weakest surface at 58.6%: the GUI is held by offscreen reachability,

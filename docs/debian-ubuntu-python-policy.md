@@ -6,7 +6,10 @@ minor interpreter.
 ## Runtime Target
 
 - Project floor: Python 3.11.
-- CI policy: test Python 3.11, 3.12, and 3.13.
+- CI policy: test Python 3.11, 3.12, 3.13 and 3.14, against both Qt bindings. 3.14 is not
+  decoration: `tarfile`'s extraction filter defaults to `fully_trusted` up to 3.13 and to
+  `data` from 3.14 (PEP 706), so a matrix stopping at 3.13 tested the opposite behaviour
+  from a 3.14 workstation.
 - Local development may use newer interpreters, but code must remain compatible with
   the declared floor and Ruff `py311` target.
 
@@ -43,7 +46,9 @@ development, but the Debian source package should express dependencies in
 During the alpha development cycle, Debian package builds are not part of the
 default workflow. Keep the tree clean with lint, tests, imports and static
 packaging review; run package build tooling only when the maintainer explicitly
-asks for it in the current task.
+asks for it in the current task. The one build that runs without being asked each time is
+the weekly golden path (`docs/golden-path.md`), which is that request made once, in a
+committed workflow, for one named artifact.
 
 This package carries the MIT license, so the source license is suitable for
 redistribution review. Debian/Ubuntu upload readiness still depends on normal

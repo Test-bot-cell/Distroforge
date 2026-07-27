@@ -417,9 +417,12 @@ pushed unchecked if its content matches the merge GitHub generated for an up-to-
 pull request -- still the pull-request flow, and a merge commit, which
 `required_linear_history` refuses on these branches anyway.
 
-What stands in their place is that CI runs on every push to `develop`, and `main` is
-fast-forwarded only to a `develop` that is green -- the same condition, checked before the
-push instead of at it. `required_signatures` is the part that does move server-side,
+What stands in their place is that per-push CI runs on every push to `develop`, and `main`
+is fast-forwarded only to a `develop` whose per-push CI is green -- the same condition,
+checked before the push instead of at it. "Green" here means `ci.yml`, not the weekly
+golden path: that one runs on `main` after the fact and by design, since a gate nobody can
+satisfy before pushing is not a gate. A red golden path is a defect to fix, not a
+fast-forward to undo. `required_signatures` is the part that does move server-side,
 because a signature is checkable at push time without waiting for anything to run.
 
 A ruleset's `fnmatch` does not let `*` cross a `/`, so `refs/tags/debian/*` covers every name

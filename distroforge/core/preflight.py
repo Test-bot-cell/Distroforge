@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .artifact_paths import default_output_iso
-from .command import CommandRunner, privilege_backend, sudo_askpass_program
+from .command import CommandRunner, CommandSpec, privilege_backend, sudo_askpass_program
 from .customize import desktop_conflicting_packages
 from .project import Project
 from .validate import ValidationIssue, validate_username
@@ -124,6 +124,34 @@ def _validate_kernel_policy(options: BuildOptions) -> list[ValidationIssue]:
     ]
 
 
+def _sudo_authenticates_without_a_prompt(runner: CommandRunner) -> bool:
+    """Ask sudo whether it needs to prompt, instead of guessing from the terminal.
+
+    A host with no tty and no askpass helper was refused outright, on the assumption
+    that sudo would have nowhere to ask for a password. That assumption is wrong for
+    every automated host: a NOPASSWD sudoers rule authenticates with no prompt at all,
+    which is exactly the configuration a CI runner, a provisioning script or a cron job
+    has. The refusal said "sudo cannot authenticate", which was false there -- it can,
+    and without asking -- so the one environment the build most needs to work in was the
+    one it rejected, and the message sent the reader off to install a graphical askpass
+    on a machine with no display.
+
+    ``sudo -n`` is the question itself rather than a proxy for it: it never prompts and
+    exits non-zero when a password would have been required. On this maintainer's
+    workstation it exits 1 with "interactive authentication is required", so the error
+    above still fires where it should.
+    """
+    if runner.dry_run:
+        # A dry-run runner answers 0 to everything it is handed, so asking it this
+        # would fabricate a yes -- the silent success this check exists to prevent.
+        return False
+    spec = CommandSpec(
+        ("sudo", "-n", "true"),
+        description="Check whether sudo authenticates without a prompt",
+    )
+    return runner.run(spec, check=False).returncode == 0
+
+
 def _validate_host_privilege(options: BuildOptions, runner: CommandRunner, execute: bool) -> list[ValidationIssue]:
     if not execute or not options.use_sudo:
         return []
@@ -135,7 +163,11 @@ def _validate_host_privilege(options: BuildOptions, runner: CommandRunner, execu
     if backend == "sudo":
         if not runner.has_binary("sudo"):
             return [ValidationIssue("error", "privilege", "sudo is required for privileged build operations")]
-        if not sys.stdin.isatty() and not sudo_askpass_program():
+        if (
+            not sys.stdin.isatty()
+            and not sudo_askpass_program()
+            and not _sudo_authenticates_without_a_prompt(runner)
+        ):
             return [
                 ValidationIssue(
                     "error",

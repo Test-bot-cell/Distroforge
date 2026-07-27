@@ -174,9 +174,20 @@ about what they do not:
   `qemu`, `apt`, `sbuild`, `autopkgtest`) has ever been executed by it, and no
   network call, privilege prompt or real artifact is involved. The progress
   fixtures under `tests/fixtures/progress/` exist precisely so heavy tools stay
-  out of the suite. There is therefore **no L2 gate**: nothing verifies that a
-  real ISO builds, boots or installs. That verification is a manual maintainer
-  step on real hardware or a real target ISO.
+  out of the suite. That boundary is permanent and is what lets the same suite run
+  under buildd and autopkgtest.
+- **The L2 gate is wired now, outside the suite.** This entry used to say there
+  was none, and that "nothing verifies that a real ISO builds, boots or installs"
+  and that the verification "is a manual maintainer step". All three stopped being
+  true when `.github/workflows/golden-path.yml` landed: weekly, and never on push,
+  it bootstraps a rootfs from the archive, packs it, builds an ISO, boots that ISO
+  under UEFI firmware with `--backend qemu` so the proof cannot degrade to a
+  structural scan, and builds the `.deb` with `lintian` and the declared
+  autopkgtest suite. `tests/test_golden_path.py` is what keeps it a real path
+  rather than a file: it fails if the schedule is removed, if `--execute` becomes
+  `--dry-run`, or if the boot proof is allowed to fall back. See
+  `docs/golden-path.md`. Install-media verification on real hardware remains a
+  manual maintainer step.
 - **Line coverage is 74.7% overall** (21351 of 28586 statements), and
   `distroforge/ui/` is the weakest surface at 58.6%. The GUI is covered by
   offscreen reachability, responsiveness and parity contracts rather than by
@@ -189,12 +200,14 @@ about what they do not:
   nothing clones and nothing pip-installs — and CI runs the same gates. See
   `docs/debian-canonical-compliance.md`, which is the source of truth for what is
   and is not enforced.
-- **`lintian` runs, but never in a gate.** `debian-package --execute` invokes it
-  to produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and
-  `debian/control` lists it under `Suggests`; but CI does not run it,
-  `debian/rules` does not run it, and the rendered `sbuild` command passes
-  `--no-run-lintian`. Policy lint is therefore a maintainer action, not an
-  automatic verdict.
+- **`lintian` is a weekly gate now.** This entry used to say it never ran in one.
+  `debian-package --execute` invokes it to produce `LINTIAN.txt`,
+  `doctor --debian-dev` audits its presence, `debian/control` lists it under
+  `Suggests`, and the golden path runs it on a real `.deb` every week, accepting
+  `passed` or `review required` and nothing else. `debian/rules` still does not run
+  it and the rendered `sbuild` command still passes `--no-run-lintian`. Per-push CI
+  still does not lint a `.deb`; it checks the shape of the invocation instead,
+  because there is no `.deb` on a push to lint.
 
 ## First Extraction Targets
 

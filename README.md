@@ -223,15 +223,19 @@ catalog shipped by your installation.
 
 ## Development
 
-Install the development dependencies, then run the two checks CI runs, on
-Python 3.11, 3.12 and 3.13:
+Install the development dependencies, then run every check per-push CI runs, on
+Python 3.11 through 3.14 against both Qt bindings:
 
 ```bash
-.venv/bin/python -m ruff check .
-.venv/bin/python -m pytest
+make check
 ```
 
-Before a package review, also run the source-only packaging verdict, which CI
+That is `ruff`, `mypy`, `pytest`, `shellcheck` over the Debian maintainer scripts, and
+`compile()` over the `python3` payloads embedded in them. This section used to name two
+of the five and stop the Python list at 3.13, both of which had been wrong since the
+matrix and the gates grew.
+
+Before a package review, also run the source-only packaging verdict, which per-push CI
 does not run:
 
 ```bash
@@ -241,18 +245,24 @@ does not run:
 The suite is offline, rootless and tool-free by design: it never runs
 `debootstrap`, `mksquashfs`, `xorriso`, `qemu`, `apt` or `sbuild`, so a green
 suite proves the plan and the contracts, not that a real ISO boots. Line
-coverage is 74.7% overall and 58.6% under `distroforge/ui/`. Static typing
-(`mypy`), shell linting (`shellcheck`), `pre-commit` and `lintian` are
-maintainer tools audited by `distroforge doctor --debian-dev`; none of them
-gates a change.
+coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
+
+What proves a real ISO boots is [the golden path](docs/golden-path.md): a weekly
+workflow, outside the suite, that bootstraps a rootfs, builds an ISO, boots it under UEFI
+firmware, and builds the `.deb` through `lintian` and its own autopkgtest suite. `mypy`,
+`shellcheck` and `pre-commit` gate every push; `lintian` gates that weekly run. This
+paragraph used to say none of the four gated a change, which had been wrong for three of
+them since they were wired into CI.
 
 Focused bug reports and pull requests are welcome. New workflows should
 preserve dry-run behavior, CLI/GUI parity, explicit privilege boundaries, test
 coverage, and Debian/Ubuntu policy compliance.
 
 Debian package builds are an explicit maintainer operation during alpha
-development. See [Packaging and release hygiene](docs/packaging-release.md)
-before producing package artifacts.
+development, with one standing exception: the weekly
+[golden path](docs/golden-path.md), which is that authorization given once. See
+[Packaging and release hygiene](docs/packaging-release.md) before producing package
+artifacts.
 
 ## Project layout
 

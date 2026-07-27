@@ -89,8 +89,11 @@ def pytest_collection_modifyitems(items) -> None:
     privileged command. Root -- and the owner of the directory -- can write it anyway,
     so the PermissionError never arrives and the assertion fails for a reason that has
     nothing to do with the code. Rootless is the supported configuration: debian/control
-    declares Rules-Requires-Root: no and the CI job that uses the distribution's own
-    interpreter runs the suite as an unprivileged user for exactly this reason.
+    declares Rules-Requires-Root: no and ci.yml's distro-dependencies job runs the suite as
+    an unprivileged user for exactly this reason. It is the only job that does: the golden
+    path builds the package as the container's root, because autopkgtest's null backend has
+    to install what it built, so these tests skip there and that job is not where they are
+    covered.
     """
     if os.geteuid() != 0:
         return

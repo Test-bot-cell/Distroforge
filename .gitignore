@@ -30,7 +30,14 @@ dist/
 .pybuild/
 pip-wheel-metadata/
 
-# Debian package build outputs. During alpha, package builds are explicit only.
+# Where the golden-path workflow stages what it uploads. Never created by make check or
+# by any local command; listed because a maintainer reproducing that workflow by hand will
+# create it, and an untracked directory of .deb files beside the source is exactly what the
+# patterns below exist to keep out of a commit.
+golden-path-evidence/
+
+# Debian package build outputs. During alpha, package builds are explicit only, with the
+# single standing exception of the weekly golden path -- see docs/golden-path.md.
 *.deb
 *.dsc
 *.build

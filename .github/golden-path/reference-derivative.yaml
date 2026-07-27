@@ -1,0 +1,49 @@
+# The reference derivative: the one image this project builds for real, every week.
+#
+# It lives here, next to the workflow that consumes it, and deliberately not in
+# examples/. Two reasons. Both shipped examples set qa.scenarios
+# (examples/minimal-bootstrap.yaml:11, examples/developer-workstation.yaml:19) and that
+# path cannot be used unattended: QaMatrixService builds its QemuInvocation without
+# timeout_seconds (core/qa.py:52), so CommandRunner.run receives no timeout
+# (core/command.py:118) and a guest that never reaches a login prompt hangs until the
+# job's six-hour ceiling. And every choice below is a CI compromise -- disk budget,
+# wall clock -- which is the opposite of what a shipped example should recommend.
+# core/packaging.py:1013 would also report an undeclared examples/*.yaml as a policy
+# finding, so putting it there would mean shipping these compromises to users.
+#
+# The bounded way to ask the same question qa.scenarios asks is `boot-proof`, which
+# polls the serial log to a deadline (core/prebuild_vm.py:252) instead of waiting
+# forever. The workflow runs it as a separate, asserted step.
+
+# The whole point: build the rootfs from the archive rather than remaster an existing
+# ISO. This is the single field that chooses between the two (core/build_sequence.py:99)
+# and the reason no source ISO is needed (core/iso_doctor.py:90).
+source_mode: bootstrap
+
+# Non-empty on purpose. An empty list leaves APPLY_PACKAGES with nothing to do, and
+# that step is where apt runs inside the chroot -- a whole leg of the chain that a
+# package-less definition never exercises. Two small ones: the binding constraint on a
+# GitHub-hosted runner is disk, not CPU.
+packages:
+  - less
+  - ca-certificates
+
+# Measured on the 2.6 GB minbase rootfs of a real from-scratch build
+# (docs/build-pipeline.md:105-110): zstd 37.1 s and 1466 MiB against the xz release
+# default's 93.4 s and 1443 MiB -- 2.5x faster for 1.5% more image. lz4 is faster still
+# (3.9 s) but 14.8% larger, and the point of a reference derivative is to resemble what
+# a release build produces, not to take the fastest lab shortcut. lzma is refused
+# before the build starts because no kernel can mount it (core/validate.py:462).
+squashfs:
+  compression: zstd
+
+# No customization.desktop, and that is the disk budget talking rather than a view about
+# desktops. GitHub documents 14 GB of SSD for a standard runner; the rootfs, its squashfs
+# and the ISO already come to roughly 6 GB without one, and core/preflight.py:18 warns
+# below 12 GiB free. A desktop derivative stays a maintainer-run build.
+
+# Default anyway (core/sanitize.py:12), stated because an image that ships the apt lists
+# it was built with is the classic derivative leak, and a reference build should be
+# readable as the shape to copy.
+sanitize:
+  apt_lists: true

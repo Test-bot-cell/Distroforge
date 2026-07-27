@@ -1,5 +1,6 @@
-# One entry point for verifying DistroForge. `make check` is what CI runs and
-# what a change is expected to pass before it is committed.
+# One entry point for verifying DistroForge. `make check` is what per-push CI runs and
+# what a change is expected to pass before it is committed. The weekly golden path
+# (.github/workflows/golden-path.yml) runs what this deliberately does not.
 #
 # Nothing here installs anything or builds an artifact. Package and ISO builds are
 # always explicit, never a side effect of checking your work.

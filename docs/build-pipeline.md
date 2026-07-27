@@ -724,6 +724,12 @@ One thing here is **not machine-verified**: whether the staged GRUB finds
 `boot/grub/grub.cfg` from its own baked-in prefix. A signed GRUB's prefix is fixed at the
 vendor's build time and cannot be re-set — that is the point of signing. The
 `EFI/BOOT/grub.cfg` trampoline written into the image is the documented mitigation, and
-confirming it needs a real ISO booted under UEFI firmware, which no automated gate in this
-project performs. The refusal described under *Boot record reproduction* guarantees the
-media carries an amorce; it cannot guarantee that amorce chain-loads.
+confirming it needs a real ISO booted under UEFI firmware. That sentence used to end "which
+no automated gate in this project performs"; the weekly golden path performs exactly that
+— `boot-proof --backend qemu --firmware uefi` on a freshly bootstrapped ISO, asserted down
+to `proof_level == "runtime"` so a structural scan cannot stand in for a boot. See
+`docs/golden-path.md`. What is still not machine-verified is the *signed* GRUB's prefix:
+the weekly proof boots without Secure Boot, so it exercises the trampoline but not the
+vendor-signed chain, and an enforcing-Secure-Boot proof remains a maintainer-run step. The
+refusal described under *Boot record reproduction* guarantees the media carries an amorce;
+it cannot guarantee that amorce chain-loads.
