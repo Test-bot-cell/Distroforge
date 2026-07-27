@@ -346,14 +346,20 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
 
 
 def test_the_maintainer_address_is_one_that_can_receive_mail() -> None:
-    """Policy 5.6.2: the Maintainer field is a mailbox, not a signature.
+    """Policy 3.3, not 5.6.2: the Maintainer field is a mailbox, not a signature.
 
-    The BTS forwards every bug report to it and ftp-master sends upload results to it,
-    so an address that cannot receive makes the package unuploadable no matter how
-    clean it builds. This tree carried maintainers@distroforge.invalid for its whole
-    history, and the obvious next mistake is a GitHub noreply -- correct as a commit
-    author identity, which is what the repository already uses, and inbound-blocked by
-    design.
+    5.6.2 governs only the field's syntax. The substantive rule is 3.3, "The maintainer
+    of a package", and it asks for more than not bouncing: the address "must accept mail
+    from those role accounts in Debian used to send automated mails regarding the
+    package", naming the bug-tracking system and the archive maintenance software. An
+    over-eager spam filter violates it as surely as a dead domain does -- see #1063752,
+    filed at serious severity against a package whose maintainer address rejected
+    ftpmaster's mail over DMARC, and reassigned to lists.debian.org once the cause was
+    found in the list's own configuration.
+
+    This tree carried maintainers@distroforge.invalid for its whole history, and the
+    obvious next mistake is a GitHub noreply -- correct as a commit author identity,
+    which is what the repository already uses, and inbound-blocked by design.
 
     Nothing upstream of this test catches either. lintian's bogus-mail-host fires only
     `unless is_domain($host)`, and Net::Domain::TLD counts invalid, test, example and

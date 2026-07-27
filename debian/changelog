@@ -1,3 +1,25 @@
+distroforge (0.3.5-11) resolute; urgency=medium
+
+  * Name the right rule, and write down the step no test can take. The check
+    added in 0.3.5-10 cited Policy 5.6.2, which governs only the syntax of the
+    Maintainer field. The substantive rule is 3.3: the address must accept mail
+    from the Debian role accounts that send automated mail about the package,
+    which that section spells out as the bug-tracking system, the archive
+    maintenance software, and other role accounts the project agrees on.
+    Checked against the published Policy text rather than from memory.
+  * An over-eager spam filter breaks 3.3 as surely as a domain that cannot
+    resolve. #1063752 was filed at serious severity over a maintainer address
+    bouncing ftpmaster on DMARC, and was reassigned to lists.debian.org once
+    the cause turned out to be the mailing list's own configuration.
+  * The same docstring sent the reader to debian/README.source "for the manual
+    step", and README.source said nothing at all about the maintainer address.
+    It now carries that section: why the field names a forwarding alias, what
+    Policy 3.3 requires, which two halves the offline tests hold, and the one
+    check that has to happen before an upload -- one message sent to the
+    address from outside the forwarding provider, confirmed to arrive.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 17:45:21 +0200
+
 distroforge (0.3.5-10) resolute; urgency=medium
 
   * Give the package a maintainer address that can receive mail. Every entry so

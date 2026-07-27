@@ -48,3 +48,31 @@ artifacts such as .venv, __pycache__, .pytest_cache, .ruff_cache and egg-info.
 
 If build dependency inspection is needed, review the dependencies listed in
 debian/control without producing package artifacts.
+
+The maintainer address
+----------------------
+
+debian/control names a forwarding alias, github@distroforge.anonaddy.com, and not
+a personal mailbox: the field is republished in every archive index and package
+page, so it is a public address by construction, and an alias can be rotated
+without touching the mailbox behind it. Every entry up to 0.3.5-9 named
+maintainers@distroforge.invalid instead, a domain RFC 2606 reserves so that it
+can never resolve.
+
+Policy 3.3 asks for more than a well-formed field. The address "must accept mail
+from those role accounts in Debian used to send automated mails regarding the
+package", which the section spells out as non-spam mail from the bug-tracking
+system, all mail from the archive maintenance software, and other role accounts
+commonly agreed on by the project. Rejecting that mail is a serious bug and not
+an untidiness: #1063752 was filed at that severity because a maintainer address
+bounced ftpmaster over DMARC.
+
+Two tests in tests/test_policy_compliance.py hold the halves of this a machine
+can check with no network -- that the address is in no RFC 2606 reserved TLD and
+is no GitHub noreply, and that _DEB_MAINTAINER in core/desktop_source.py still
+agrees with debian/control. Neither proves delivery. Before an upload, send one
+message to the address from a mailbox outside the forwarding provider, confirm it
+arrives, and confirm that nothing at the destination files mail from an unknown
+role account as spam. That check belongs to the upload and not to the build: it
+needs the network and a real mailbox, and it goes stale whenever the alias is
+rotated or the filtering behind it changes.
