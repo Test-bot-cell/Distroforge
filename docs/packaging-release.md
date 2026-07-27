@@ -211,6 +211,63 @@ distribution names the real target channel (`noble`, `resolute`, `trixie`, `expe
 `unstable`, or the private archive suite) rather than the one that happened to fit the last
 local build.
 
+## Changelog Cadence
+
+The revision number was a commit counter. Measured 2026-07-27 at `0.3.5-17`: seventeen
+revisions of `0.3.5` exist, two of them from early June and **fifteen written inside 23.7
+hours**, fourteen of those inside a single stretch of 11.6. Of the sixteen finalized ones,
+one carries a tag, one more is installed on the maintainer's machine as `0.3.5-3`, and
+`gh api .../releases` answers `[]` — so **fourteen revisions name a package that exists
+nowhere**. Each was a real change with a real entry; what none of them was is a release.
+
+It is worth being exact about what that does and does not breach, because the usual
+one-line objection — "one revision, one upload" — is not a rule anyone wrote:
+
+- Policy 4.4 carries no requirement that an entry correspond to an upload.
+- Policy 3.2.2 says the Debian revision "doesn't need to start at 1 or be consecutive".
+- The one hard constraint nearby, never reusing a version number, is scoped by Policy
+  itself to "once the package has been accepted into the archive". This package has not
+  been. Bumping is the compliant direction; reusing would not be.
+- dpkg contradicts the strict reading outright. `dpkg-parsechangelog -v0.3.5-13` on this
+  tree emits **one** `Version:` with four stanza headers inside its `Changes:` block:
+  folding N stanzas into one upload is what that option exists for.
+- `UNRELEASED` appears nowhere in Policy or the developers-reference — zero occurrences
+  across either manual. It is a devscripts idea that gbp and lintian also read, and
+  lintian's opinion of it is a tag at severity *info*.
+
+So nothing here was non-compliant. It was uninformative, which is a different fault and
+not a smaller one: a version number that cannot be resolved to an artifact is a label with
+nothing behind it, and this repository already carries the cost of that elsewhere.
+
+The cadence, from `0.3.5-17` onward:
+
+1. During a cycle, **one** `UNRELEASED` entry collects bullets. Adding a change means
+   adding a bullet to it, not opening `0.3.5-18`.
+2. At release, `dch -r` finalizes it — that is precisely what it does, "if the
+   distribution is set to UNRELEASED, change it to the distribution from the previous
+   changelog entry" — and `make tag` anchors it.
+3. One revision, one tag, one artifact.
+
+This is what devscripts and gbp already assume rather than something invented here, and it
+was **not available in this repository until 0.3.5-17**. `debian_changelog_suite()` read
+the top stanza's `Distribution` field, so a stanza left `UNRELEASED` for a whole cycle sent
+the package to the fallback lintian vendor for that whole cycle, with the consequences the
+comment on `LINTIAN_PROFILE` exists to describe. Keeping an entry open was a way to make
+DistroForge grade its own package `failed`. The fix is the precondition for the cadence,
+which is why they arrived together.
+
+`test_no_finalized_changelog_revision_is_left_without_a_release_tag` gates both halves: at
+most one open entry, and nothing finalized above the newest tagged entry without a tag of
+its own. It is a ratchet. The fifteen untagged revisions below the tag are grandfathered,
+because a tag invented for them now would be a claim about which commit was uploaded when,
+and there is no such fact to record. What it stops is the sixteenth.
+
+The option not taken is gbp's own answer to the same problem, snapshot mode: `gbp dch -S`
+writes `~<n>.gbp<commit>` versions for "quick test and install cycles" and `--release`
+unmangles them. It solves the counter problem by making the counter explicit rather than by
+removing it, at the price of versions no human reads at a glance, and it has never run
+here.
+
 ## Release Tags
 
 `debian/changelog` reached 46 versions with this repository holding no tags at all, local
@@ -243,6 +300,15 @@ The first tag under this convention is `debian/0.3.5-16` on `38217da`, cut and p
 2026-07-27. Annotated: `git cat-file -t` answers `tag`. Signed: `git verify-tag` reports a
 good signature, and GitHub's `GET /repos/{owner}/{repo}/git/tags/{sha}` answers
 `"verified": true` with `"reason": "valid"`.
+
+Those two both run where the key already is, so the check that means something is the third:
+a clone taken from `origin` alone, verified against nothing but the filtered public export
+described under *Publishing the Signing Key*. Measured 2026-07-27 — the fresh clone resolves
+the same tag object `b7e5f3b` to the same commit `38217da`; the 2930-byte filtered export
+imported into an **empty** `GNUPGHOME` gives `git tag -v` return code **0** and a good
+signature; the same command with nothing imported returns **1**. The failing control is what
+makes the 0 evidence about the published key rather than about an ambient keyring. The tag
+object also carries no personal address: its tagger is the GitHub noreply identity.
 
 Signing needs the key's passphrase, which makes `make tag` a command to run where somebody
 is watching. `gpg-agent` launches pinentry, and an unanswered dialog does not report itself

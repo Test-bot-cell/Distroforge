@@ -877,3 +877,81 @@ def test_the_release_tag_procedure_is_wired_to_something() -> None:
         if "tools/release-tag.sh" in path.read_text(encoding="utf-8")
     ]
     assert documented, "no document explains how a release version gets anchored to a commit"
+
+
+def test_no_finalized_changelog_revision_is_left_without_a_release_tag() -> None:
+    """The revision number was a commit counter. Measured, and it is not a Policy breach.
+
+    Debian Policy says less here than it is usually quoted as saying: 4.4 carries no
+    one-revision-per-upload requirement, 3.2.2 states outright that the Debian revision
+    "doesn't need to start at 1 or be consecutive", and the only hard rule in the area --
+    never reuse a version number -- is scoped to "once the package has been accepted into
+    the archive", which this package never has been. dpkg goes further and contradicts the
+    strict reading: `dpkg-parsechangelog -v<older>` folds every newer stanza into one
+    upload's Changes field, measured on this tree as one Version with four stanza headers
+    inside it. So this gate is not enforcing Policy. It is enforcing that a version number
+    means something here.
+
+    What it was worth, measured 2026-07-27 at 0.3.5-17: 16 finalized revisions, of which
+    exactly one carries a tag and one more is installed on the maintainer's machine, 0
+    GitHub releases -- 14 revisions naming a package that exists nowhere. Fifteen of the
+    seventeen were written inside 23.7 hours and fourteen inside 11.6.
+
+    The cadence that replaces it is what devscripts and gbp already assume rather than an
+    invention: one UNRELEASED stanza collects bullets for a whole cycle, `dch -r`
+    finalizes it at release, and `make tag` anchors it. UNRELEASED is a devscripts idea,
+    not a dpkg or Policy one -- the string appears nowhere in either manual -- and the
+    strongest machine-readable opinion about it is a lintian tag at severity *info*.
+
+    Positional, not by version comparison: stanzas are newest-first and the trailer test
+    above already asserts strict date ordering across the whole file, so "above the newest
+    tagged stanza" is a checked property and needs no dpkg. A ratchet, like the typing
+    one: the 15 untagged revisions below the tag are grandfathered history that cannot be
+    anchored after the fact, while finalizing the next one without tagging it fails here.
+    """
+    lines = (ROOT / "debian/changelog").read_text(encoding="utf-8").splitlines()
+    stanzas = [
+        (match.group(1), match.group(2).split()[0])
+        for line in lines
+        if (match := re.match(r"^distroforge \(([^)]+)\)\s+([^;]+);", line))
+    ]
+    assert stanzas, "debian/changelog has no version line"
+
+    # The cumulative half of the cadence, and the half that needs no git: a second open
+    # stanza is the old habit returning under a new name.
+    open_entries = [version for version, suite in stanzas if suite.upper() == "UNRELEASED"]
+    assert len(open_entries) <= 1, (
+        f"{len(open_entries)} entries are open at once ({', '.join(open_entries)}); a cycle "
+        "collects its bullets in one UNRELEASED entry"
+    )
+    if open_entries:
+        assert stanzas[0][0] == open_entries[0], (
+            f"{open_entries[0]} is UNRELEASED but sits below {stanzas[0][0]}, so a finalized "
+            "entry was written on top of an unreleased one"
+        )
+
+    if not _git_history_available():
+        pytest.skip("no git binary or no .git here, so there is no history to check")
+    listed = _git("tag", "--list", "debian/*")
+    assert listed.returncode == 0, listed.stderr
+    anchored = {line.strip() for line in listed.stdout.splitlines() if line.strip()}
+    if not anchored:
+        pytest.skip(
+            "no packaging tags here: actions/checkout fetches none by default, so this "
+            "gate is real in packaging-static, which sets fetch-depth: 0, and in any "
+            "full clone, and vacuous in the matrix jobs"
+        )
+
+    for version, suite in stanzas:
+        # DEP-14 mangling restated as it is above, and for the same reason: gbp is not
+        # installed on the runners, and an independent recomputation disagrees loudly.
+        tag = "debian/" + version.replace(":", "%").replace("~", "_").replace("..", ".#.")
+        if tag in anchored:
+            return
+        assert suite.upper() == "UNRELEASED", (
+            f"{version} is finalized as {suite!r} and carries no {tag}, so it names a "
+            "release that exists nowhere -- either tag it with `make tag` or fold its "
+            "bullets back into the open entry"
+        )
+    pytest.skip("no entry in this changelog is tagged, so there is no anchor to measure from")
+

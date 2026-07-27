@@ -75,7 +75,10 @@ the gap is part of the rule, not an exception to it:
   cycle, no vendor claims that name, so reading the top stanza alone sent the profile to
   the `debian` fallback and reinstated the same regression between every pair of releases.
   It went unseen because no shipped stanza had ever said `UNRELEASED` -- each was written
-  already naming its suite -- until 0.3.5-17 opened one and the gate went red on it.
+  already naming its suite -- until 0.3.5-17 opened one and the gate went red on it. That
+  fix is also what makes the release cadence in `docs/packaging-release.md` possible:
+  before it, keeping an entry `UNRELEASED` for a cycle mis-graded the package for the
+  length of that cycle, so the correct changelog discipline and this bug could not coexist.
   The verdict is read from the emitted tags rather than the exit code, since `lintian`
   exits 0 on a package that carries warnings.
 - Tags are fixed, never overridden. The package ships no

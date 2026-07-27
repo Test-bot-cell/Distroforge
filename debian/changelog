@@ -39,8 +39,31 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     checking it was there, so a wrong vendor arrived as FileNotFoundError
     instead of as a diagnosis; lintian ships its base vendor as a built-in
     with no directory under vendors/, which is the case that hits.
+  * Stopped using the Debian revision as a commit counter. Measured at this
+    entry: 17 revisions of 0.3.5, 15 of them written inside 23.7 hours and 14
+    inside 11.6, of which one carries a tag, one is installed here as 0.3.5-3
+    and zero are GitHub releases -- 14 revisions naming a package that exists
+    nowhere. Not a Policy breach, and worth stating why rather than repeating
+    the usual objection: Policy 4.4 requires no upload per entry, Policy 3.2.2
+    says the revision need not be consecutive, the no-reuse rule is scoped to
+    packages accepted into an archive, and dpkg-parsechangelog -v folds many
+    stanzas into one upload by design -- measured here as one Version with
+    four stanza headers in its Changes field. It was uninformative rather than
+    non-compliant. From this entry on, one UNRELEASED entry collects a cycle's
+    bullets, dch -r finalizes it and make tag anchors it, gated by a ratchet
+    that allows one open entry and refuses a finalized one above the newest
+    tag. The 15 untagged revisions below it are grandfathered: a tag invented
+    for them now would claim a fact that does not exist. This cadence was
+    impossible here until the vendor fix above, since an entry left UNRELEASED
+    for a cycle mis-graded the package for that whole cycle.
+  * Verified the published tag the one way the earlier checks could not.
+    git verify-tag and GitHub's endpoint both run where the key already is; a
+    clone taken from origin alone, with the documented filtered export
+    imported into an empty GNUPGHOME, returns 0 with a good signature and
+    returns 1 with nothing imported. The failing control is what makes the 0
+    evidence about the published key rather than about an ambient keyring.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:41:12 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 20:59:50 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 
