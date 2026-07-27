@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 QEMU_SYSTEM = "qemu-system-x86_64"
+
+# Hardware acceleration. Every automated launch used to run under TCG, QEMU's
+# interpreter, on a host that had /dev/kvm available and readable -- only the
+# interactive preview asked. Measured 2026-07-27 on this build machine, booting one
+# desktop kernel and its 88 MB initramfs from the same media: 7.5 s to the end of the
+# initramfs under TCG against 4.5 s with -enable-kvm, and 217 bytes of identical
+# Secure Boot firmware output either way, so the acceleration changes the speed and
+# not the shape of the run. `-cpu host` was measured too and is deliberately not
+# passed: it produced no improvement here (5.0 s, slower than plain KVM), and leaving
+# it out keeps the guest CPU model identical with and without acceleration, so a boot
+# proof stays comparable between an accelerated host and an emulating one.
+KVM_DEVICE = Path("/dev/kvm")
 
 # Debian and Ubuntu shipped OVMF_CODE.fd until the firmware was rebuilt at a 4 MB
 # flash size, and since then only the _4M names exist. That literal was the default
@@ -40,6 +53,28 @@ _OVMF_SECBOOT_VARS = (
 # blame for a machine that never left the firmware. The type is therefore dictated
 # by the firmware rather than offered as a choice, and no option surface exposes it.
 SECURE_BOOT_MACHINE = "q35,smm=on"
+
+
+def kvm_is_usable() -> bool:
+    """Whether this host can hand QEMU hardware acceleration.
+
+    Openable for reading and writing, not merely present. On this build machine
+    /dev/kvm is ``root:clock`` mode 0660 carrying a POSIX ACL that grants the
+    developer rw, so neither the owning group nor the caller's group list answers the
+    question -- access(2) does, ACLs included. The check it replaces,
+    ``Path("/dev/kvm").exists() or has_binary("kvm")``, answered a different question
+    twice: a device file can exist and still refuse to open, and the ``kvm`` wrapper
+    script is installed by the qemu-system-x86 package on hosts that have no
+    virtualisation at all.
+
+    What it does not promise is that acceleration will initialise: a device that opens
+    can still fail at KVM_CREATE_VM, on a machine whose hypervisor exposes no nested
+    virtualisation. QEMU's own "Could not access KVM kernel module" is the report for
+    that, and it is a clearer one than anything this could infer. What this does
+    guarantee is that a host with no device -- every GitHub runner -- never gets the
+    flag, so the automated proofs still run there, emulated.
+    """
+    return os.access(KVM_DEVICE, os.R_OK | os.W_OK)
 
 
 def default_ovmf_code(override: str = "", *, secure_boot: bool = False) -> str:

@@ -1,3 +1,48 @@
+distroforge (0.3.5-7) resolute; urgency=medium
+
+  * Let the automated QEMU proofs use the hardware acceleration the host
+    already offers. The lab, the boot-check, the QA matrix and the screenshot
+    capture all ran under TCG, QEMU's interpreter, because the flag was
+    reachable only from the interactive preview: five launch sites said nothing
+    and took the dataclass default. They now share one probe, kvm_is_usable(),
+    which asks whether /dev/kvm opens rather than whether it exists -- on this
+    build machine it is root:clock mode 0660 with a POSIX ACL granting the
+    developer rw, so neither the owning group nor the caller's group list
+    answers the question and access(2) does, ACLs included. Measured
+    2026-07-27, booting one desktop kernel and its 88 MB initramfs from the
+    same media under the lab's own defaults: 7.5 s to the end of the initramfs
+    emulated against 4.5 s accelerated, with the Secure Boot firmware emitting
+    the same 217 bytes either way. -cpu host was measured too and is
+    deliberately not passed: it bought nothing here (5.0 s), and leaving it out
+    keeps the guest CPU model identical with and without acceleration, so a
+    proof from an accelerated host stays comparable to one from a runner that
+    has to emulate.
+  * Stop the interaction lab dying on a host that cannot accelerate. Its
+    option defaults to True and was passed through unchecked, so QEMU exited on
+    "Could not access KVM kernel module" rather than falling back to the
+    emulation that would have worked. The preview's own check went the other
+    way and was two wrong questions -- Path("/dev/kvm").exists() or
+    has_binary("kvm") -- since a device node can exist and refuse to open, and
+    that wrapper ships with qemu-system-x86 on hosts with no virtualisation at
+    all.
+  * Record the answer in qemu-lab-report.json as accelerated. Two runs of the
+    same command on the same ISO differ by more than half their wall-clock
+    depending on it, and until it was written down a reader had no way to tell
+    which of the two they were holding, nor whether a run that exhausted its
+    timeout had been emulating the whole way.
+  * Keep the host out of the suite's answer. A session fixture aims the probe
+    at a path that cannot exist, so no test asserts one argv on a developer's
+    machine and a different one on a runner, and a walk over every
+    QemuInvocation( call in the package keeps a seventh launch site from
+    quietly going back to emulation. The install smoke planner is the one
+    deliberate exception: it writes command lines into a report for someone to
+    run later, possibly on another machine, so the planning host's acceleration
+    has no business in them.
+  * Correct the 0.3.5-6 timestamp, which was two hours ahead of the commit
+    that wrote it and would have dated this entry before it.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:47:11 +0200
+
 distroforge (0.3.5-6) resolute; urgency=medium
 
   * Stop a failed release bundle leaving its autopkgtest stash in /tmp. A
@@ -18,7 +63,7 @@ distroforge (0.3.5-6) resolute; urgency=medium
     and that neither survives, and was verified to fail on the code it
     replaces.
 
- -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 18:34:02 +0200
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:28:18 +0200
 
 distroforge (0.3.5-5) resolute; urgency=medium
 

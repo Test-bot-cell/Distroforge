@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from distroforge.core.qemu_invocation import (
     default_ovmf_code,
     default_ovmf_vars,
     is_secure_boot_firmware,
+    kvm_is_usable,
 )
 
 ISO = Path("/img/image.iso")
@@ -223,6 +225,90 @@ def test_the_secure_boot_machine_is_the_one_the_installed_firmware_declares() ->
         assert all(name.startswith(f"pc-{machine}-") for name in targets), targets
         if "requires-smm" in descriptor.get("features", ()):
             assert "smm=on" in properties.split(",")
+
+
+# Hardware acceleration. Every automated launch ran under TCG on hosts that had a
+# perfectly usable /dev/kvm, because only the interactive preview ever asked -- and it
+# asked a question that was not the one that matters.
+
+
+def test_kvm_probe_declines_a_device_that_is_not_there(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(qemu_invocation, "KVM_DEVICE", tmp_path / "kvm")
+
+    assert kvm_is_usable() is False
+
+
+def test_kvm_probe_accepts_a_device_it_can_read_and_write(tmp_path, monkeypatch) -> None:
+    device = tmp_path / "kvm"
+    device.write_bytes(b"")
+    monkeypatch.setattr(qemu_invocation, "KVM_DEVICE", device)
+
+    assert kvm_is_usable() is True
+
+
+@pytest.mark.unprivileged
+def test_kvm_probe_declines_a_device_it_cannot_open(tmp_path, monkeypatch) -> None:
+    # Present is not the same as usable, which is the whole reason the check moved off
+    # Path.exists(): a host whose /dev/kvm refuses to open must emulate, not die inside
+    # QEMU on "Could not access KVM kernel module".
+    device = tmp_path / "kvm"
+    device.write_bytes(b"")
+    device.chmod(0o000)
+    monkeypatch.setattr(qemu_invocation, "KVM_DEVICE", device)
+
+    assert kvm_is_usable() is False
+
+
+def test_acceleration_is_one_flag_and_nothing_else(tmp_path, monkeypatch) -> None:
+    device = tmp_path / "kvm"
+    device.write_bytes(b"")
+    monkeypatch.setattr(qemu_invocation, "KVM_DEVICE", device)
+
+    argv = QemuInvocation(iso=ISO, enable_kvm=kvm_is_usable()).argv()
+
+    assert "-enable-kvm" in argv
+    # No -cpu. Measured on this host it bought nothing, and passing it would give the
+    # guest a different CPU depending on whether the host could accelerate, which is
+    # exactly the kind of difference a boot proof must not have.
+    assert "-cpu" not in argv
+
+
+def _qemu_invocation_calls(source: str) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "QemuInvocation"
+    ]
+
+
+def test_every_service_that_launches_qemu_decides_whether_to_accelerate() -> None:
+    """Found by walking the package, so a seventh launch site cannot quietly emulate.
+
+    Six services build a QEMU command line through this module. Five of them said
+    nothing about acceleration and therefore got the dataclass default, which is off:
+    the flag was reachable only from the interactive preview, and a maintainer running
+    the automated proofs had no way to ask for it.
+    """
+    core = Path(qemu_invocation.__file__).parent
+    checked = 0
+    for module in sorted(core.glob("*.py")):
+        if module.name == "qemu_invocation.py":
+            continue
+        calls = _qemu_invocation_calls(module.read_text(encoding="utf-8"))
+        for call in calls:
+            keywords = {keyword.arg for keyword in call.keywords}
+            if module.name == "qemu_smoke.py":
+                # The one exception, and not an oversight: the smoke planner emits
+                # command lines into a report for someone to run later, possibly on
+                # another machine. Baking the planning host's acceleration into a
+                # published plan would describe a run nobody performed.
+                assert "enable_kvm" not in keywords, module.name
+                continue
+            assert "enable_kvm" in keywords, f"{module.name} launches QEMU unaccelerated"
+            checked += 1
+    assert checked >= 6, f"expected every launch site to be covered, saw {checked}"
 
 
 # The OVMF resolver. Its absence was not a style problem: /usr/share/OVMF/OVMF_CODE.fd

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
-from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
+from .qemu_invocation import (
+    QemuInvocation,
+    default_ovmf_code,
+    default_ovmf_vars,
+    kvm_is_usable,
+)
 
 # QEMU `-display` value for each user-facing preview display mode. SPICE maps to
 # `spice-app`, which starts a SPICE server and opens the bundled viewer; it needs
@@ -139,9 +144,7 @@ class QemuPreviewService:
             )
         )
         self._prepare_firmware(artifacts)
-        enable_kvm = self.options.enable_kvm and (
-            Path("/dev/kvm").exists() or self.runner.has_binary("kvm")
-        )
+        enable_kvm = self.options.enable_kvm and kvm_is_usable()
         argv = QemuInvocation(
             iso=self.iso_path,
             memory_mb=self.options.memory_mb,

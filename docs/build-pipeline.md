@@ -259,6 +259,42 @@ install smoke matrix, the boot-check and the QA matrix — is built from one can
 `QemuInvocation` in `core/qemu_invocation.py`, so the argv stays auditable and consistent
 instead of drifting across call sites.
 
+### Hardware acceleration
+
+Every automated launch ran under TCG, QEMU's interpreter, on hosts with a perfectly
+usable `/dev/kvm`: the flag was reachable only from the interactive preview, so the lab,
+the boot-check, the QA matrix and the screenshot capture each spent their timeout budget
+on emulation without ever asking. They now ask, through one probe — `kvm_is_usable()`
+beside `default_ovmf_code` — and it asks the question that matters. `/dev/kvm` on this
+build machine is `root:clock` mode 0660 with a POSIX ACL granting the developer rw, so
+neither the owning group nor the caller's group list answers it; `access(2)` does, ACLs
+included. The check it replaces in the preview, `Path("/dev/kvm").exists() or
+has_binary("kvm")`, answered a different question twice: a device node can exist and
+still refuse to open, and the `kvm` wrapper is installed by `qemu-system-x86` on hosts
+with no virtualisation at all. A host with no usable device — every GitHub runner —
+simply keeps emulating, which is also why the interaction lab no longer dies inside QEMU
+on `Could not access KVM kernel module` when its default-on option meets such a host.
+
+Measured 2026-07-27, booting one desktop kernel and its 88 MB initramfs from the same
+media under the lab's own defaults: **7.5 s** to the end of the initramfs emulated
+against **4.5 s** accelerated, and the Secure Boot firmware emitting the same 217 bytes
+either way, so acceleration changes the speed of a run and not its shape. `-cpu host`
+was measured too and is deliberately **not** passed: it bought nothing here (5.0 s), and
+leaving it out keeps the guest CPU model identical with and without acceleration, so a
+proof from an accelerated host stays comparable to one from an emulating runner. What
+the measurement does *not* establish is the folklore that a desktop `graphical.target`
+is unreachable under emulation — that needs a full ISO and has not been run.
+
+`qemu-lab-report.json` records the answer as `accelerated`. Two runs of the same command
+on the same ISO differ by more than half their wall-clock depending on it, and until it
+was written down a reader could not tell which of the two they were holding, nor whether
+a run that exhausted its timeout had been emulating the whole way. The one launch site
+that stays unaccelerated is the install smoke *planner*: it emits command lines into a
+report for someone to run later, possibly on another machine, and baking the planning
+host's acceleration into a published plan would describe a run nobody performed.
+`tests/test_qemu_invocation.py` walks the package for `QemuInvocation(` calls, so a
+seventh launch site cannot quietly go back to emulating.
+
 ### Which UEFI firmware a run uses
 
 The firmware images are **detected, not hardcoded**. `--prebuild-vm-ovmf-code` and

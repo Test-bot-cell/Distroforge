@@ -9,7 +9,12 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
-from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
+from .qemu_invocation import (
+    QemuInvocation,
+    default_ovmf_code,
+    default_ovmf_vars,
+    kvm_is_usable,
+)
 from .qmp import QmpControl, stop_by_pidfile
 
 
@@ -172,6 +177,7 @@ class QemuLabService:
                 secure_boot=self.options.secure_boot,
                 tpm_socket=artifacts.tpm_socket if self.options.tpm else None,
                 network="user" if self.options.network else "none",
+                enable_kvm=kvm_is_usable(),
             ).argv()
         )
 
@@ -268,6 +274,12 @@ class QemuLabService:
             "network": self.options.network,
             "memory_mb": self.options.memory_mb,
             "cpus": self.options.cpus,
+            # Whether this proof was accelerated. Two runs of the same command on the
+            # same ISO differ by more than half their wall-clock time depending on the
+            # answer, and until it was recorded here the report gave a reader no way to
+            # tell which of the two they were holding -- nor whether a run that ran out
+            # of its timeout had been emulating all along.
+            "accelerated": kvm_is_usable(),
             "disk_size": self.options.disk_size,
             "timeout_seconds": self.options.timeout_seconds,
             "artifacts": {

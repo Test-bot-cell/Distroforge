@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from distroforge.core import boot_proof
+from distroforge.core import boot_proof, qemu_invocation
 from distroforge.core.boot_proof import resolve_firmware, run_boot_proof
 from distroforge.core.build import BuildOptions
 from distroforge.core.command import CommandRunner
@@ -87,6 +87,37 @@ def test_a_dry_run_still_plans_the_assertion_it_will_not_perform(tmp_path) -> No
     lab._validate_serial_log()
 
     assert len(_asserted(runner)) == 1
+
+
+# Acceleration, and a report that says which kind of run produced it. The lab asked
+# for none: it launched under TCG on hosts whose /dev/kvm was there and openable, and
+# the report it wrote looked identical either way.
+
+
+def test_the_lab_accelerates_when_the_host_can_and_records_it(tmp_path, monkeypatch) -> None:
+    device = tmp_path / "kvm"
+    device.write_bytes(b"")
+    monkeypatch.setattr(qemu_invocation, "KVM_DEVICE", device)
+    _runner, lab = _validating_lab(tmp_path, None)
+    artifacts = lab._artifacts()
+
+    lab._write_report(artifacts)
+
+    assert "-enable-kvm" in lab._qemu_argv(artifacts)
+    assert json.loads(artifacts.report.read_text(encoding="utf-8"))["accelerated"] is True
+
+
+def test_an_emulating_host_still_runs_and_the_report_says_which_it_was(tmp_path) -> None:
+    # No monkeypatch: the session fixture aims the probe at a path that cannot exist,
+    # which is the CI runner's answer. The proof must still run there -- it just has to
+    # stop passing itself off as the same evidence as an accelerated one.
+    _runner, lab = _validating_lab(tmp_path, None)
+    artifacts = lab._artifacts()
+
+    lab._write_report(artifacts)
+
+    assert "-enable-kvm" not in lab._qemu_argv(artifacts)
+    assert json.loads(artifacts.report.read_text(encoding="utf-8"))["accelerated"] is False
 
 
 def test_qemu_lab_uefi_tpm_artifacts_are_explicit(tmp_path) -> None:

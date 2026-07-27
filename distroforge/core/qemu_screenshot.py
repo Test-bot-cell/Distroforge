@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, kvm_is_usable
 from .qmp import QmpControl, stop_by_pidfile
 
 
@@ -47,6 +47,7 @@ class QemuScreenshotService:
                         qmp_socket=qmp_socket,
                         pid_file=pid_file,
                         daemonize=True,
+                        enable_kvm=kvm_is_usable(),
                     ).argv(),
                     description=f"Boot ISO for screenshot capture into {target}",
                 )

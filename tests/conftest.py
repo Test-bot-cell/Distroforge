@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+
+from distroforge.core import qemu_invocation
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Qt reads XDG_RUNTIME_DIR at startup and warns when it is unset or wrong-moded;
@@ -58,6 +61,24 @@ def _isolated_config_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     config_home = tmp_path_factory.mktemp("xdg-config")
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("XDG_CONFIG_HOME", str(config_home))
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _unaccelerated_qemu() -> Iterator[None]:
+    """Decide QEMU acceleration for the suite instead of letting the host decide it.
+
+    Every service that launches QEMU asks `qemu_invocation.kvm_is_usable()`, which
+    reads a real device node. Left alone, the argv a test asserts against would carry
+    `-enable-kvm` on a developer's machine and not on a CI runner -- the same test,
+    two outcomes, neither of them about the code. Pointing the probe at a path that
+    cannot exist makes emulation the answer everywhere.
+
+    The probe itself is tested in `test_qemu_invocation.py` against files it creates,
+    and the two tests that assert the accelerated argv point this at one of those.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(qemu_invocation, "KVM_DEVICE", Path("/nonexistent/dev/kvm"))
         yield
 
 

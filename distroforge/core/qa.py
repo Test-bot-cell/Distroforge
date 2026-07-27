@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, kvm_is_usable
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class QaMatrixService:
                 firmware=scenario.firmware,
                 legacy_bios=True,
                 disk=disk,
+                enable_kvm=kvm_is_usable(),
             ).argv()
             self.runner.run(
                 CommandSpec(

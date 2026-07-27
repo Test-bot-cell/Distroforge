@@ -9,7 +9,12 @@ from pathlib import Path
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
 from .interaction_plan import InteractionPlan, InteractionStep
-from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
+from .qemu_invocation import (
+    QemuInvocation,
+    default_ovmf_code,
+    default_ovmf_vars,
+    kvm_is_usable,
+)
 from .qmp import QmpControl, stop_by_pidfile
 
 
@@ -180,7 +185,11 @@ class QemuInteractionService:
                 ovmf_vars=str(artifacts.ovmf_vars),
                 secure_boot=self.options.secure_boot,
                 network="user" if self.plan.network else "none",
-                enable_kvm=self.options.enable_kvm,
+                # Asked for, and available. The option defaults to True, and passing it
+                # through unchecked is what made every interaction run on a host without
+                # /dev/kvm die inside QEMU on "Could not access KVM kernel module"
+                # instead of falling back to the emulation that would have worked.
+                enable_kvm=self.options.enable_kvm and kvm_is_usable(),
             ).argv()
         )
 

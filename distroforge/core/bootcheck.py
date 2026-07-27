@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, kvm_is_usable
 
 
 @dataclass
@@ -30,6 +30,7 @@ class BootCheckService:
                     serial="stdio",
                     display="none",
                     timeout_seconds=self.options.timeout_seconds,
+                    enable_kvm=kvm_is_usable(),
                 ).argv(),
                 description="Boot smoke test generated ISO",
             )
