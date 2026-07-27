@@ -255,6 +255,17 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     context that exists only inside a running step, with a negative control
     on the extractor so it cannot pass by finding nothing, and a check that
     GITHUB_ENV is written above the steps that read it.
+  * Stopped one of those new tests from asking the host a question it meant
+    to ask the code. test_the_probe_is_not_asked_of_a_dry_run_runner handed
+    a real CommandRunner to the privilege preflight, which returns a
+    "privilege" issue at core/preflight.py:164 when no sudo binary exists,
+    before reaching the askpass branch the test is about. ci.yml's
+    distro-dependencies container has no sudo, so the test passed on the
+    maintainer's workstation and failed in CI on a fact about the image.
+    Reproduced locally with an emptied PATH, fixed by pinning has_binary
+    while leaving dry_run real, since dry_run is the subject. The job that
+    caught it is the one that exists to run the suite the way debian/rules
+    does, as an unprivileged user in a minimal container.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

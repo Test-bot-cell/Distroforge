@@ -314,6 +314,13 @@ def test_the_probe_is_not_asked_of_a_dry_run_runner(monkeypatch: pytest.MonkeyPa
         "distroforge.core.preflight.sys.stdin", type("S", (), {"isatty": lambda self: False})()
     )
     runner = CommandRunner(dry_run=True)
+    # Answer the "is sudo installed" question here instead of letting the host answer it.
+    # core/preflight.py:164 returns a "privilege" issue before ever reaching the askpass
+    # branch when the binary is missing, and ci.yml's distro-dependencies container has no
+    # sudo in it -- so this test passed on the maintainer's workstation and failed in CI on
+    # a fact about the image rather than about the code. dry_run stays real, since that is
+    # the whole subject.
+    monkeypatch.setattr(runner, "has_binary", lambda name: name == "sudo")
     issues = _validate_host_privilege(BuildOptions(), runner, execute=True)
     assert [issue.code for issue in issues] == ["sudo-askpass"]
     assert runner.history == [], "the probe must not be handed to a runner that fakes success"
