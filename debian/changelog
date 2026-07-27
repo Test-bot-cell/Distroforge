@@ -19,6 +19,9 @@ distroforge (0.3.5-4) resolute; urgency=medium
   * Refuse to build an ISO from a tree carrying no boot image for either
     firmware, and report missing mtools at validation rather than an hour
     into the build.
+  * Correct docs/platform-refactor-audit.md, which still recorded that mypy,
+    pre-commit and shellcheck were "not wired anywhere" long after make check
+    and CI had begun running all three.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 08:03:10 +0200
 

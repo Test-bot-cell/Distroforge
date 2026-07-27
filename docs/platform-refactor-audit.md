@@ -181,11 +181,14 @@ about what they do not:
   `distroforge/ui/` is the weakest surface at 58.6%. The GUI is covered by
   offscreen reachability, responsiveness and parity contracts rather than by
   exhaustive widget tests.
-- **`mypy`, `pre-commit` and `shellcheck` are not wired anywhere.** They appear
-  only as tools that `doctor --debian-dev` audits on a maintainer workstation:
-  no `pyproject.toml` configuration, no CI step, no `debian/control` entry and
-  no `.pre-commit-config.yaml`. The shell scripts under `debian/` are
-  consequently unlinted, and no static type check gates a change.
+- **`mypy`, `pre-commit` and `shellcheck` are wired now.** This entry used to
+  record the opposite, and stayed behind when they landed. `make check` is the
+  single entry point (`ruff`, `mypy`, `pytest`, `shellcheck` and
+  `tools/check-maintainer-scripts.py`), `.pre-commit-config.yaml` is deliberately
+  offline — every hook is `repo: local` with `language: system` or `pygrep`, so
+  nothing clones and nothing pip-installs — and CI runs the same gates. See
+  `docs/debian-canonical-compliance.md`, which is the source of truth for what is
+  and is not enforced.
 - **`lintian` runs, but never in a gate.** `debian-package --execute` invokes it
   to produce `LINTIAN.txt`, `doctor --debian-dev` audits its presence, and
   `debian/control` lists it under `Suggests`; but CI does not run it,
