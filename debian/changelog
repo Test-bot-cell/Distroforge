@@ -1,3 +1,33 @@
+distroforge (0.3.5-15) resolute; urgency=medium
+
+  * The signing key now carries a user id for the address debian/control
+    publishes. That was the one gap docs/packaging-release.md recorded as
+    still open: the Maintainer field named github@distroforge.anonaddy.com
+    while the key had no user id for it, so a keyring exported for an apt
+    repository would have authenticated the archive without naming the
+    maintainer it belongs to. Added with gpg --quick-add-uid, which needs
+    the maintainer's own passphrase; the documented export filter already
+    accepted that address, so no procedure changed.
+  * Re-measured the documented export, because adding a user id moves every
+    number in it: the whole key is now 3579 bytes with three user ids, the
+    filtered form 2930 bytes with the two published ones, and the personal
+    mailbox is still excluded. The filtered export imported into an empty
+    GNUPGHOME verifies real signatures -- git verify-commit returns 0 on
+    two commits of this branch -- while a keyring with nothing imported
+    returns 1, which is what makes the 0 evidence about the export rather
+    than about an ambient keyring.
+  * Recorded one consequence instead of leaving it to be discovered: gpg
+    treats the most recently self-signed user id as primary, so that alias
+    is now the identity gpg prints for a signature made by this key, and
+    debsign can select the key from a changelog trailer. The copy GitHub
+    holds is unaffected -- it stores what was uploaded, the noreply user id
+    is still on it, and commit verification there is unchanged.
+  * The figures in 0.3.5-14 are deliberately left as written. A changelog
+    entry records the state at its own version, so it is superseded here
+    rather than rewritten.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 18:23:22 +0200
+
 distroforge (0.3.5-14) resolute; urgency=medium
 
   * Keep a personal mailbox out of anything this project publishes. The signing

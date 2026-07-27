@@ -224,9 +224,10 @@ maintainer's own key is never exported by any code path.
 It becomes a question the day this project publishes an apt repository, because a
 `signed-by=` keyring has to be published for anyone to verify it, and a full export
 carries every user id on the key. The signing key here,
-`93D942241BECDD422606C36C4C0D75219B5506CF`, carries two: the GitHub noreply used as the
-commit author identity, and a personal mailbox. Exporting it whole would publish the
-personal one to everyone who ever installs from the repository.
+`93D942241BECDD422606C36C4C0D75219B5506CF`, carries three: the project alias named in the
+`Maintainer` field, the GitHub noreply used as the commit author identity, and a personal
+mailbox. Exporting it whole would publish the personal one to everyone who ever installs
+from the repository.
 
 Export the published identities only:
 
@@ -236,22 +237,29 @@ gpg --export \
     93D942241BECDD422606C36C4C0D75219B5506CF > distroforge-archive-keyring.gpg
 ```
 
-Measured 2026-07-27: the whole key exports as 2927 bytes carrying both user ids, the
-filtered form as 2278 bytes carrying one. Imported into an empty `GNUPGHOME`, the filtered
-export verifies a real signature made by that key -- `gpg --verify` returns 0 and reports a
-good signature -- so dropping the user id costs nothing an archive needs. Verification uses
-the key material, not the labels on it.
+Measured 2026-07-27: the whole key exports as 3579 bytes carrying all three user ids, the
+filtered form as 2930 bytes carrying the two published ones. Imported into an empty
+`GNUPGHOME`, the filtered export verifies real signatures made by that key -- `git
+verify-commit` returns 0 on two real commits and gpg reports a good signature -- while the
+same command against a keyring with nothing imported returns 1, which is what makes the 0
+evidence about the export rather than about an ambient keyring. Dropping a user id costs
+nothing an archive needs: verification uses the key material, not the labels on it.
 
-Two things the filter cannot do. It governs one export and not a key already uploaded
-somewhere: a keyserver that has the key with its personal user id will not forget it, and
-neither will anyone who fetched it. Checked 2026-07-27 -- `keys.openpgp.org` and
-`keyserver.ubuntu.com` both answer 404 for that fingerprint, so nothing personal is
-published yet and this stays a precaution rather than a repair. And it cannot add what is
-missing: the `Maintainer` field names `github@distroforge.anonaddy.com` while the key has no
-user id for that address, so a keyring exported today authenticates the archive without
-naming the maintainer it belongs to. Adding that user id to the key is a change to the
-maintainer's own keyring and needs their passphrase; the filter above already accepts it, so
-it needs no change here once added.
+What the filter cannot do: it governs one export, not a key already uploaded somewhere. A
+keyserver that holds the key with its personal user id will not forget it, and neither will
+anyone who fetched it. Checked 2026-07-27 -- `keys.openpgp.org` and `keyserver.ubuntu.com`
+both answer 404 for that fingerprint, so nothing personal is published yet and this stays a
+precaution rather than a repair.
+
+The gap it could not close is now closed. The `Maintainer` field names
+`github@distroforge.anonaddy.com` and the key had no user id for that address, so a keyring
+exported before 2026-07-27 would have authenticated the archive without naming the
+maintainer it belongs to. `gpg --quick-add-uid <fingerprint> 'DistroForge maintainers
+<github@distroforge.anonaddy.com>'` added it, and the filter above already accepted the
+address, so nothing in this procedure changed. One consequence to know about: gpg treats the
+most recently self-signed user id as primary, so that alias is now the identity gpg prints
+for a signature made by this key. The copy GitHub holds is unaffected -- it stores what was
+uploaded, the noreply user id is still on it, and commit verification there is unchanged.
 
 Two tests hold the parts of this a machine can check. One rejects any mailbox appearing in
 the tree that is not a published identity -- an allowlist, deliberately, because a denylist

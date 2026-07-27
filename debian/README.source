@@ -76,3 +76,8 @@ arrives, and confirm that nothing at the destination files mail from an unknown
 role account as spam. That check belongs to the upload and not to the build: it
 needs the network and a real mailbox, and it goes stale whenever the alias is
 rotated or the filtering behind it changes.
+
+Since 2026-07-27 the signing key carries a user id for this same address, which is
+what lets debsign select the key from a changelog trailer and lets a published
+keyring name the maintainer it authenticates for. How that keyring is exported
+without carrying the personal user id alongside it is in docs/packaging-release.md.

@@ -455,10 +455,11 @@ def test_a_documented_key_export_cannot_publish_an_unfiltered_key() -> None:
     handed to everyone who installs from the archive.
 
     Verified 2026-07-27 that the documented form does what it claims: the whole key
-    exports as 2927 bytes with two user ids, the filtered form as 2278 with one, and the
-    filtered export imported into an empty GNUPGHOME verifies a real signature made by
-    that key. Also asserts the procedure still exists -- deleting it would leave nothing
-    for this test to check and no filter for the next person to copy.
+    exports as 3579 bytes with three user ids, the filtered form as 2930 with the two
+    published ones, and the filtered export imported into an empty GNUPGHOME verifies a
+    real signature made by that key while an empty keyring rejects it. Also asserts the
+    procedure still exists -- deleting it would leave nothing for this test to check and
+    no filter for the next person to copy.
     """
     documented = 0
     for path in sorted((ROOT / "docs").glob("*.md")):
