@@ -55,7 +55,15 @@ jobs:
     # BuildOptions.use_sudo exists precisely so only the privileged commands are
     # privileged -- and because a root-owned dist/ is a worse thing to hand to
     # upload-artifact than a runner-owned one.
-    runs-on: ubuntu-latest
+    # The suite this derivative targets, named, rather than "whatever GitHub calls latest".
+    # The first real run bootstrapped resolute on `ubuntu-latest`, which is 24.04: measured
+    # in its own log, `azure.archive.ubuntu.com/ubuntu noble` and `mmdebstrap 1.4.3-6`, the
+    # 2024 archive's version, asked to assemble a suite from 2026. Nothing in the file said
+    # so -- `ubuntu-latest` names a moving target and `--release 26.04` names a fixed one,
+    # and the two were never compared. GitHub publishes `ubuntu-26.04` for x64
+    # (actions/runner-images#14226, public preview), so the label can name the suite; the
+    # step below refuses the run if it ever stops matching.
+    runs-on: ubuntu-26.04
     # Headroom, not a measurement. The first run records the real figure in its own log
     # and this number should come down to it. The parts with measured costs are the
     # squashfs repack (37.1 s for zstd on four cores, docs/build-pipeline.md:107) and the
@@ -63,8 +71,39 @@ jobs:
     timeout-minutes: 90
     env:
       QT_QPA_PLATFORM: offscreen
+      # One literal for the suite, read by the guard below and by `distroforge new`, so the
+      # release this job builds and the release it checks itself against cannot drift apart.
+      DERIVATIVE_RELEASE: "26.04"
     steps:
       - uses: actions/checkout@v4
+
+      - name: The runner has to be the suite this derivative bootstraps
+        # Reports first, then refuses. Two independent facts were assumed equal for the
+        # whole first run: the version the runner image *is*, and the version the
+        # definition asks mmdebstrap for. `ubuntu-26.04` is a public preview label and
+        # `-latest` migrates on GitHub's own schedule, so neither one holds still on its
+        # own -- what has to hold is that they agree.
+        #
+        # The codename comes from the product's registry, distroforge/data/releases.toml,
+        # read with tomllib rather than imported: this runs before pip, so it costs twenty
+        # seconds to learn the job is pointless instead of ten minutes.
+        run: |
+          image=$(awk -F= '$1=="VERSION_ID"{gsub(/"/,"",$2); print $2}' /etc/os-release)
+          codename=$(awk -F= '$1=="VERSION_CODENAME"{print $2}' /etc/os-release)
+          wanted=$(python3 - "$DERIVATIVE_RELEASE" <<'PY'
+          import pathlib, sys, tomllib
+
+          data = tomllib.loads(pathlib.Path("distroforge/data/releases.toml").read_text())
+          print(data["releases"][sys.argv[1]]["codename"])
+          PY
+          )
+          echo "runner image: $image ($codename)"
+          echo "derivative:   $DERIVATIVE_RELEASE ($wanted)"
+          if [ "$image" != "$DERIVATIVE_RELEASE" ] || [ "$codename" != "$wanted" ]; then
+            echo "SUITE MISMATCH: this job would assemble $wanted with ${codename}'s mmdebstrap, apt and dpkg."
+            echo "That is what the first run did, and it produced a rootfs with no package manager."
+            exit 1
+          fi
 
       - name: Choose where the derivative is built
         # The project root, deliberately outside the checkout. core/project.py:27 hard-codes
@@ -105,6 +144,11 @@ jobs:
         # It stays a step rather than becoming a comment, because a runner image changes
         # under you and a figure in a comment cannot notice. The du names what there is
         # to reclaim if disk ever does bind; it costs 80 seconds.
+        #
+        # All three were measured on `ubuntu-latest`, which was 24.04, and this job has
+        # since moved to `ubuntu-26.04` -- the image changing under you, on purpose. The
+        # figures above are therefore the previous image's, kept as what the next run has
+        # to be compared against rather than as what this runner is.
         run: |
           df -h /
           nproc && free -h
@@ -144,15 +188,24 @@ jobs:
       - name: Install
         # pip, not the distribution's python3-*, unlike ci.yml's distro-dependencies job.
         # That job's whole subject is what the archive provides; this one's subject is the
-        # external toolchain, and the runner image is 24.04 whose python3-pydantic is 1.10
-        # (ci.yml:143), too old to import this package at all.
+        # external toolchain, so the interpreter is pinned here instead of taken from the
+        # image -- which ships 3.14 and would silently become the version these assertions
+        # were written against.
+        #
+        # The reason this line used to give was that the runner is 24.04, whose
+        # python3-pydantic is 1.10 and cannot import this package at all. That was true of
+        # the image and is no longer the image: 26.04 has python3-pydantic 2.12.5-2,
+        # measured, which satisfies debian/control's (>= 2.7). The archive is not the
+        # obstacle here any more; the pin is a choice about what this job is testing.
         run: python -m pip install -e .
 
       - name: Create the project
         # core/project.py:76 raises without project.json, and core/boot_proof.py:176 writes
         # its report without creating the directory first -- Project.create is what makes
         # <root>/dist exist (core/project.py:100).
-        run: python -m distroforge new reference-derivative "$DERIVATIVE_ROOT" --release 26.04
+        run: |
+          python -m distroforge new reference-derivative "$DERIVATIVE_ROOT" \
+            --release "$DERIVATIVE_RELEASE"
 
       - name: Build the ISO, for real
         # No --boot-proof here even though iso-build offers one: it passes no firmware, so
@@ -291,10 +344,17 @@ jobs:
           path: golden-path-evidence
 
   debian-package:
-    # container: ubuntu:devel for the same reason ci.yml's distro-dependencies job uses it
-    # -- debian/control requires python3-pydantic (>= 2.7) and the 24.04 runner image
-    # ships 1.10 (ci.yml:143) -- and because the suite debian/changelog targets is the only
-    # honest place to build the package for it.
+    # A container for the same reason ci.yml's distro-dependencies job uses one -- the
+    # archive's own Python packaging, not pip's -- and pinned to the suite
+    # debian/changelog targets, which is the only honest place to build the package for it.
+    #
+    # It said `ubuntu:devel` and claimed to be that suite. Measured in the first run's log:
+    # `archive.ubuntu.com/ubuntu stonking InRelease`. `devel` is whatever is in development,
+    # which since 26.04 released is 26.10, so this leg built and autopkgtested the package
+    # against a suite one release *past* the one debian/changelog names -- the same class of
+    # error as the job above bootstrapping resolute on noble, in the opposite direction.
+    # The image is now named, and the step below refuses the run if it stops matching the
+    # changelog.
     #
     # A container is enough here, unlike the job above: nothing in this leg mounts. It runs
     # as the container's root, which autopkgtest's null backend needs in order to install
@@ -306,8 +366,11 @@ jobs:
     # Every run: script below is POSIX sh, not bash. Measured, not assumed: ci.yml's job in
     # this same image logs "shell: sh -e {0}", so a bashism here would fail inside the
     # container while passing every local check.
+    # `ubuntu-latest` here, unlike the job above, because the host contributes nothing to
+    # this leg but a kernel and a container runtime: the suite is the image's, and pinning
+    # the host as well would only make the run depend on a preview label for nothing.
     runs-on: ubuntu-latest
-    container: ubuntu:devel
+    container: ubuntu:26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -325,11 +388,29 @@ jobs:
           mk-build-deps --install --remove \
             --tool 'apt-get -y --no-install-recommends' debian/control
 
-      - name: Report what the suite provides
+      - name: Report what the suite provides, and that it is the right one
+        # The suite comes from the product, not from a second copy of the rule: the top
+        # changelog stanza is UNRELEASED between releases, and debian_changelog_suite is the
+        # function that already knows to walk down to the newest stanza naming a target --
+        # the same one lintian_vendor_for_suite is fed, so the image this builds in and the
+        # profile it is graded against can no longer disagree. Reading debian/changelog with
+        # sed here instead would be that second copy.
+        #
+        # After the toolchain step, because that is what puts python3 in a bare image.
         run: |
           python3 --version
           dpkg-query -f '${Package} ${Version}\n' -W lintian autopkgtest python3-pydantic
           lintian --version
+          image=$(awk -F= '$1=="VERSION_CODENAME"{print $2}' /etc/os-release)
+          suite=$(python3 -c 'from pathlib import Path
+          from distroforge.core.packaging import debian_changelog_suite
+          print(debian_changelog_suite(Path(".")))')
+          echo "container: $image -- changelog targets: $suite"
+          if [ "$image" != "$suite" ]; then
+            echo "SUITE MISMATCH: this leg would build and autopkgtest a $suite package on $image."
+            echo "That is what the first run did, on stonking, with debian/changelog naming resolute."
+            exit 1
+          fi
 
       - name: Build the package, lint it, and run its autopkgtest suite
         # One command, because build_debian_package already is the chain: dpkg-buildpackage

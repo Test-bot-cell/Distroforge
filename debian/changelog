@@ -317,6 +317,35 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     crw-rw---- root kvm 10, 232, so the parenthesis was an assumption dressed
     as an example and is deleted from the docstring and from
     docs/build-pipeline.md. The rule each illustrated is unchanged.
+  * Named the suite the golden path builds, instead of inheriting whatever is
+    current. Measured in the first run's log: the ISO leg ran on
+    runs-on: ubuntu-latest, which is noble, so 2024's mmdebstrap 1.4.3-6, apt
+    and dpkg were asked to assemble resolute; the package leg ran in
+    container: ubuntu:devel, which since 26.04 released is stonking, so a
+    resolute package was built, linted and autopkgtested one release past the
+    suite debian/changelog names -- while a comment in both golden-path.yml
+    and ci.yml claimed that container was the suite the changelog targets.
+    Three suites in one workflow, chosen by nobody: two labels named a moving
+    target, one named a fixed release, and nothing compared them. Both are
+    now named -- ubuntu-26.04 for the runner, ubuntu:26.04 for the container
+    in both workflows -- and, because a preview label can be withdrawn and
+    -latest migrates on GitHub's schedule, each leg checks itself before it
+    spends the runner: the ISO leg against the codename releases.toml gives
+    for $DERIVATIVE_RELEASE, read with tomllib before pip has run, and the
+    package leg against debian_changelog_suite(), the same answer
+    lintian_vendor_for_suite is fed. Three tests hold the coupling from
+    outside: no job may build in ubuntu:devel, rolling or latest, every
+    container must name the changelog's suite, and runs-on must be
+    ubuntu-$DERIVATIVE_RELEASE with the creation step passing that variable
+    rather than a second literal. All three fail against the workflows they
+    replace.
+  * Gave 26.10 its codename. releases.toml said "next", which is not a
+    codename but the word that stood in for one, and that field is what every
+    pocket, sources.list line and mmdebstrap suite for a release is built
+    from -- so the shipped ubuntu-26.10-skeleton starter could only ever have
+    asked the archive for a suite that does not exist. Measured against
+    archive.ubuntu.com/ubuntu/dists/stonking/Release: Suite stonking, Version
+    26.10.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

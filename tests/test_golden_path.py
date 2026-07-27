@@ -39,7 +39,9 @@ import yaml
 
 from distroforge.core.build import BuildOptions
 from distroforge.core.command import CommandRunner, CommandSpec
+from distroforge.core.packaging import debian_changelog_suite
 from distroforge.core.preflight import _validate_host_privilege
+from distroforge.core.releases import get_release, load_releases
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github/workflows/golden-path.yml"
@@ -395,3 +397,111 @@ def test_every_verdict_is_printed_before_it_is_asserted() -> None:
                 f"{name}: step {step.get('name')!r} asserts before it reports, so a "
                 "failing run prints the assertion and not the reason for it"
             )
+
+
+# Images whose whole meaning is "whatever is current". Each one names a different suite
+# depending on the day it is pulled, which is the opposite of what a package built for a
+# named suite needs.
+_FLOATING_IMAGES = ("ubuntu:devel", "ubuntu:rolling", "ubuntu:latest")
+
+
+def _containers() -> list[tuple[str, str, str]]:
+    """Every (workflow, job, image) that builds inside a container image."""
+    found: list[tuple[str, str, str]] = []
+    for path in (WORKFLOW, CI_WORKFLOW):
+        for name, job in _load(path)["jobs"].items():
+            container = job.get("container")
+            image = container if isinstance(container, str) else (container or {}).get("image", "")
+            if image:
+                found.append((path.name, name, image))
+    return found
+
+
+def test_no_job_builds_against_whatever_happens_to_be_current() -> None:
+    """The suite a job builds in has to be named, not inherited from a moving tag.
+
+    Measured in the golden path's first real run, not inferred: the leg that built,
+    linted and autopkgtested the package ran ``container: ubuntu:devel`` and its log
+    reads ``archive.ubuntu.com/ubuntu stonking InRelease``. ``devel`` is whatever is in
+    development, so once 26.04 released that image became 26.10 and the job silently
+    started answering a question about the *next* distribution -- while two comments,
+    here and in ci.yml, said it was the suite debian/changelog targets.
+
+    Nothing could have caught that, because the label and the changelog were never
+    compared. This is that comparison.
+    """
+    containers = _containers()
+    assert containers, (
+        "both workflows lost their containers, and with them the only job that tests "
+        "against the distribution's own Python rather than setup-python's"
+    )
+    for workflow, job, image in containers:
+        assert image not in _FLOATING_IMAGES, (
+            f"{workflow}: job {job!r} builds in {image}, which names no suite -- it names "
+            "whatever Ubuntu is developing on the day the run happens"
+        )
+
+
+def test_every_container_is_the_suite_debian_changelog_targets() -> None:
+    """And the named suite is the one this source is packaged for.
+
+    ``debian_changelog_suite`` is asked rather than the top stanza read, for the reason
+    that function documents: between releases the top stanza is UNRELEASED and names no
+    target. It is the same answer ``lintian_vendor_for_suite`` is fed, so a package can
+    no longer be built on one suite and graded against another's profile.
+    """
+    suite = debian_changelog_suite(REPO_ROOT)
+    assert suite, "debian/changelog names no target suite, so no image can be checked against it"
+    versions = {release.codename: version for version, release in load_releases().items()}
+    assert suite in versions, (
+        f"debian/changelog targets {suite!r}, which distroforge/data/releases.toml does "
+        "not know -- the registry, the changelog and the CI image are one fact in three "
+        "files and this is where they are held together"
+    )
+    accepted = {f"ubuntu:{versions[suite]}", f"ubuntu:{suite}"}
+    for workflow, job, image in _containers():
+        assert image in accepted, (
+            f"{workflow}: job {job!r} builds in {image} while debian/changelog targets "
+            f"{suite}; one of {sorted(accepted)} names that suite"
+        )
+
+
+def test_the_runner_is_the_suite_the_derivative_bootstraps() -> None:
+    """The ISO leg's runner image must be the release it asks mmdebstrap for.
+
+    The first run bootstrapped resolute on ``ubuntu-latest``, which is 24.04: its log
+    reads ``azure.archive.ubuntu.com/ubuntu noble`` and ``mmdebstrap 1.4.3-6``, the 2024
+    archive's version, assembling a suite from 2026. It exited 0 with a rootfs that had
+    ``env`` and no ``apt-get``, and the build died five phases later inside the chroot.
+
+    Two labels, one floating and one fixed, never compared -- the same defect as the
+    container above. Both halves are checked: the label here, so a reviewer sees it, and
+    ``/etc/os-release`` against the registry at run time, because a preview label can be
+    withdrawn and ``-latest`` migrates on GitHub's schedule.
+    """
+    job = _load(WORKFLOW)["jobs"]["reference-derivative"]
+    release = job.get("env", {}).get("DERIVATIVE_RELEASE", "")
+    assert release, (
+        "the job declares no DERIVATIVE_RELEASE, so the release it builds is a literal "
+        "somewhere in its steps and nothing can compare it with runs-on"
+    )
+    get_release(release)  # raises if the registry has never heard of it
+    assert job["runs-on"] == f"ubuntu-{release}", (
+        f"the derivative bootstraps {release} on {job['runs-on']!r}, so its mmdebstrap, "
+        "apt and dpkg are another release's"
+    )
+    creations = [step for step in job["steps"] if "distroforge new" in step.get("run", "")]
+    assert creations, "no step creates the project any more"
+    for step in creations:
+        assert "$DERIVATIVE_RELEASE" in step["run"], (
+            "the release is a literal in this step and a literal in runs-on, which is two "
+            "copies of one fact: pass $DERIVATIVE_RELEASE"
+        )
+    scripts = _scripts(_load(WORKFLOW))
+    assert "releases.toml" in scripts and "VERSION_CODENAME" in scripts, (
+        "nothing compares the image the job is running on with the release it builds, so "
+        "a migrated label would be found again by a broken build rather than by a step"
+    )
+    assert "debian_changelog_suite" in scripts, (
+        "nothing compares the container with debian/changelog either"
+    )

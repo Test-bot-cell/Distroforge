@@ -138,9 +138,10 @@ to a job nobody watches live. Until then, an enforcing-Secure-Boot proof is a
 maintainer-run step — see `docs/build-pipeline.md` for how the firmware pair is detected
 and why `-M q35,smm=on` is required.
 
-**The Debian package** leg runs in `container: ubuntu:devel`, for the same reason
-`ci.yml`'s `distro-dependencies` job does: `debian/control` requires
-`python3-pydantic (>= 2.7)` and the 24.04 runner image ships 1.10. Build dependencies
+**The Debian package** leg runs in `container: ubuntu:26.04` — the suite
+`debian/changelog` targets, named rather than inherited (see *Three suites where the
+derivative names one*) — for the same reason `ci.yml`'s `distro-dependencies` job uses a
+container at all: the archive's own Python packaging rather than pip's. Build dependencies
 come from `mk-build-deps`, which reads `debian/control`, so the build's dependencies
 cannot drift from the ones the package declares — a hand-written apt list here would be a
 second copy of that field, and a second copy is the thing that goes stale.
@@ -192,7 +193,9 @@ instead of quotes from documentation.
 The runner is not what the definition assumed. `ubuntu-latest` resolves to **noble**
 (24.04), with **145 GB** on `/` and **88 GB free** — not the 14 GB the Actions docs
 state, which `.github/golden-path/reference-derivative.yaml` had cited as the reason to
-skip a desktop. 4 CPUs, 15 GiB RAM. `sudo` authenticates with no prompt.
+skip a desktop. 4 CPUs, 15 GiB RAM. `sudo` authenticates with no prompt. Those figures
+are the noble image's; the ISO leg has since moved to `ubuntu-26.04`, so the next run
+re-measures them, which is why that step exists at all.
 
 **`/dev/kvm` exists** — `crw-rw---- 1 root kvm 10, 232`. `core/qemu_invocation.py:74`
 says "a host with no device — every GitHub runner — never gets the flag"; that
@@ -233,9 +236,55 @@ before asserting there was none.
 Still open: **why** a `--variant=minbase` mmdebstrap produced a tree with `env` and no
 `apt-get`, in 23 seconds, exiting 0. `mmdebstrap --simulate` for the same suite, variant
 and mirror resolves 129 packages including `apt (3.2.0 Ubuntu:26.04/resolute)` — on a
-26.04 host. The runner is noble, bootstrapping a suite two years newer with 2024's
-mmdebstrap, apt and dpkg. That is a hypothesis, not a diagnosis; the next run's report
-carries the failing command's own output, which is what will settle it.
+26.04 host. The next run's report carries the failing command's own output, which is what
+will answer it; the section below removes the toolchain from the list of suspects, and it
+does not by itself make mmdebstrap's silence acceptable. Whatever the cause turns out to
+be, a bootstrap that exits 0 with no package manager in the tree has to be refused where
+it happens: `rootfs_verdict` calls such a tree *complete*, because its test is
+`var/lib/dpkg/status` plus an `os-release`, and the build carried on for five more phases
+before the chroot said `apt-get` was missing.
+
+## Three suites where the derivative names one
+
+The first run built the derivative on one suite, packaged for a second, and targeted a
+third. All three were measured in its log; nobody chose the arrangement, which is the
+point — two labels named *whatever is current* and were never compared with the one label
+that names a release.
+
+| Leg | Label | What it resolved to |
+| --- | --- | --- |
+| ISO | `runs-on: ubuntu-latest` | **noble** (24.04), `mmdebstrap 1.4.3-6` |
+| Package | `container: ubuntu:devel` | **stonking** (26.10) |
+| The source itself | `--release 26.04`, `debian/changelog` | **resolute** (26.04) |
+
+So the ISO leg asked 2024's mmdebstrap, apt and dpkg to assemble a suite from 2026, and
+the package leg built, linted and autopkgtested a resolute package on the suite *after*
+resolute — while a comment in both `golden-path.yml` and `ci.yml` said the container was
+"the suite `debian/changelog` targets". It was, until 26.04 released and `devel` moved on.
+
+Both labels now name the suite: `runs-on: ubuntu-26.04` (GitHub publishes it for x64,
+`actions/runner-images#14226`, public preview) and `container: ubuntu:26.04`, in `ci.yml`
+too. Because a preview label can be withdrawn and `-latest` migrates on GitHub's own
+schedule, the names are not trusted — each leg checks itself before it spends the runner:
+
+- the ISO leg compares `/etc/os-release` with the codename `distroforge/data/releases.toml`
+  gives for `$DERIVATIVE_RELEASE`, read with `tomllib` before `pip` has run, so learning
+  the job is pointless costs twenty seconds rather than ten minutes;
+- the package leg compares `/etc/os-release` with `debian_changelog_suite()` — the
+  function `lintian_vendor_for_suite` is already fed, so the image a package is built in
+  and the profile it is graded against cannot disagree.
+
+`tests/test_golden_path.py` holds the same coupling from the outside: no job may build in
+`ubuntu:devel`, `ubuntu:rolling` or `ubuntu:latest`, every container must name the suite
+`debian/changelog` targets, and the ISO job's `runs-on` must be `ubuntu-$DERIVATIVE_RELEASE`
+with the creation step passing that variable instead of a second literal.
+
+One thing this turned up on the way. `releases.toml` gave 26.10 the codename `next`,
+which is not a codename but the word that stood in for one — and that field is what every
+pocket, `sources.list` line and mmdebstrap suite for a release is built from, so a starter
+pointing at 26.10 could only ever have asked the archive for a suite that does not exist.
+Measured against `archive.ubuntu.com/ubuntu/dists/stonking/Release`: `Suite: stonking`,
+`Version: 26.10`.
 
 ## Two figures that are headroom, not measurements
 

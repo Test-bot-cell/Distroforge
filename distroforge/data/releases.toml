@@ -39,7 +39,12 @@ compression = "xz"
 
 [releases."26.10"]
 family = "ubuntu"
-codename = "next"
+# "next" until 2026-07-28, which is not a codename: it is the word that stood in for one
+# while nobody had looked. Every pocket, sources.list line and mmdebstrap suite for this
+# release is built from this field, so a starter pointing at 26.10 asked the archive for a
+# suite named "next" and could only ever have got a 404. Measured against
+# archive.ubuntu.com/ubuntu/dists/stonking/Release: Suite stonking, Version 26.10.
+codename = "stonking"
 label = "Ubuntu 26.10"
 series = "interim"
 supported = false
