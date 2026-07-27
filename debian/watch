@@ -2,11 +2,19 @@
 # missing.
 #
 # Upstream and this packaging are the same Git repository. No upstream tarball
-# has ever been published and there is no release tag: the orig tarball is
-# generated from the tree at build time, as debian/README.source describes. So
-# there is no location uscan could poll, which is the situation uscan(1) and
-# lintian expect a comments-only watch file to document.
+# has ever been published: the orig tarball is generated from the tree at build
+# time, as debian/README.source describes. So there is no location uscan could
+# poll, which is the situation uscan(1) and lintian expect a comments-only watch
+# file to document.
 #
-# When upstream starts publishing release tags, replace this with a mode=git
-# rule against refs/tags. Do not add one before then -- a rule that resolves to
-# nothing is worse than a file that states the truth.
+# This file used to promise a mode=git rule "when upstream starts publishing
+# release tags". That promise was wrong twice over. Packaging versions are now
+# tagged debian/<version>, per docs/packaging-release.md, and it changed nothing
+# here: those are packaging tags on this same tree, not an upstream release
+# published anywhere, so a rule against them would have uscan poll this package
+# against itself and report it up to date forever. And a git-mode rule could not
+# be signature-checked even if one were wanted, because pgpmode=gittag is not
+# implemented by the devscripts in resolute (uscan 2.26.7).
+#
+# What would justify a rule is upstream becoming something other than this
+# repository -- a tarball or a tag published elsewhere. Not a tag here.

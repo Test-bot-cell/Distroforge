@@ -14,16 +14,17 @@ export PYTHONDONTWRITEBYTECODE := 1
 # Qt has no display in a terminal or in CI; tests/conftest.py sets the same value.
 export QT_QPA_PLATFORM ?= offscreen
 
-.PHONY: check lint typecheck test shellcheck maintainer-scripts clean-pyc help
+.PHONY: check lint typecheck test shellcheck maintainer-scripts clean-pyc tag help
 
 help:
 	@echo "make check              run every check below"
 	@echo "make lint               ruff"
 	@echo "make typecheck          mypy, ratcheted against the debt list in pyproject"
 	@echo "make test               pytest"
-	@echo "make shellcheck         the Debian maintainer scripts"
+	@echo "make shellcheck         the Debian maintainer scripts and tools/*.sh"
 	@echo "make maintainer-scripts compile the Python payloads embedded in them"
 	@echo "make clean-pyc          drop stale bytecode caches"
+	@echo "make tag                sign the release tag for the newest changelog version"
 
 check: lint typecheck test shellcheck maintainer-scripts
 
@@ -47,10 +48,16 @@ MAINTAINER_SCRIPTS = $(wildcard debian/*.preinst debian/*.postinst debian/*.prer
                                debian/*.postrm) \
                      $(filter-out debian/tests/control,$(wildcard debian/tests/*))
 
+# Swept for the same reason, not named: tools/*.sh is shell that runs on a maintainer's
+# machine at release time. A release script that nothing checks is the same shape of
+# problem as a maintainer script that nothing checks.
+TOOL_SCRIPTS = $(wildcard tools/*.sh)
+
 shellcheck:
 	@command -v shellcheck >/dev/null || { echo "shellcheck is not installed"; exit 1; }
 	@test -n "$(MAINTAINER_SCRIPTS)" || { echo "no maintainer scripts found"; exit 1; }
-	shellcheck --exclude=SC1090,SC1091 $(MAINTAINER_SCRIPTS)
+	@test -n "$(TOOL_SCRIPTS)" || { echo "no tools/*.sh found"; exit 1; }
+	shellcheck --exclude=SC1090,SC1091 $(MAINTAINER_SCRIPTS) $(TOOL_SCRIPTS)
 
 # Declared in check: with no recipe, this target ran nothing and reported success --
 # the same "wired to nothing" shape as the payload it guards. tests/ exercises the
@@ -60,3 +67,8 @@ maintainer-scripts:
 
 clean-pyc:
 	find . -path ./.venv -prune -o -name '__pycache__' -type d -print0 | xargs -0 rm -rf
+
+# Deliberately outside check: it reaches the network and creates a signed Git object.
+# Releasing is asked for, never a side effect of verifying your work.
+tag:
+	tools/release-tag.sh

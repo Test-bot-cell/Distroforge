@@ -211,6 +211,91 @@ distribution names the real target channel (`noble`, `resolute`, `trixie`, `expe
 `unstable`, or the private archive suite) rather than the one that happened to fit the last
 local build.
 
+## Release Tags
+
+`debian/changelog` reached 46 versions with this repository holding no tags at all, local
+or remote, and no GitHub release. Nothing recorded which commit any of those versions was.
+A changelog says a version existed; only a tag says where.
+
+The name is DEP-14's and is pinned in `debian/gbp.conf` rather than inherited:
+`debian-tag = debian/%(version)s`, so version `0.3.5-16` is tag `debian/0.3.5-16`. DEP-14
+mangles what Git will not accept in a ref -- `:` becomes `%`, `~` becomes `_`, `..` becomes
+`.#.` -- which no version here has needed yet. `sign-tags = True` is pinned in the same
+file for a reason that is easy to miss: gbp does not defer to Git on this.
+`gbp/git/repository.py` passes `--no-sign` when the option is unset, which overrides
+`tag.gpgsign = true` in the repository config, so leaving it out produces an unsigned
+release tag over commits that are every one of them signed.
+
+Cut a tag with `make tag`, which runs `tools/release-tag.sh`. It refuses more than it does:
+an `UNRELEASED` changelog entry, a dirty working tree, a branch other than the one
+`gbp.conf` calls `debian-branch`, a `HEAD` whose own signature does not verify, a version
+already tagged here or on the remote, and a `HEAD` that is not what `origin` already holds
+-- there is deliberately no offline path around that last one, because a tag naming a
+commit nobody else can resolve means nothing to anyone. It asks gbp itself what the tag
+should be called instead of reimplementing the mangling, then checks after the fact that
+what gbp created is annotated, is named what was announced, and carries a good signature.
+
+It stops there. Publishing is `git push origin refs/tags/<tag>`, typed separately, because
+a tag that has been pushed must not be moved afterwards and that should not happen as a
+side effect of asking for a tag.
+
+Versions released before the convention existed are not retro-tagged. The tags that would
+have to be invented for them are claims about which commit was uploaded when, and this
+repository's history begins at an imported 0.3.5-1 baseline -- most of those 46 versions
+have no commit here to point at. Anchoring starts where the mechanism does.
+
+## Branch and Tag Protection
+
+Two repository rulesets, created 2026-07-27. Tag protection is rulesets and not the older
+per-repository "tag protection rules", which GitHub fully deprecated on 2024-08-30 and
+whose three REST endpoints are closing down. Rulesets have no `enforce_admins` field; an
+empty `bypass_actors` is what means nobody is exempt, including the repository owner, who
+is the only person who pushes here. An exemption for the owner would have made all of this
+decorative.
+
+`main` and `develop` carry four rules: `deletion`, `non_fast_forward`,
+`required_linear_history`, `required_signatures`. `refs/tags/debian/*` carries three:
+`deletion`, `non_fast_forward`, `update`. The third is the one that is easy to leave out
+and matters most for a tag -- `non_fast_forward` only refuses to rewind a ref, so moving a
+release tag forward onto a descendant commit would sail through it, and `update` is what
+makes the tag immutable rather than merely un-rewindable. The consequence is deliberate:
+a mistagged `debian/*` tag cannot be removed without disabling the ruleset on purpose,
+which is the correct cost, since the answer to a bad tag is the next version and not a
+quiet correction of the last one.
+
+`required_signatures` is on the branches and deliberately not on the tags. GitHub's
+documentation describes that rule only in terms of commits on a branch and says nothing
+about whether it is enforced on a tag push; the REST enum accepts it for any target, which
+is not the same as it doing anything. A rule whose effect cannot be verified is worse than
+no rule, because it reads like protection -- so the tag signature is asserted where it can
+be checked, by the test that reads the tag object and requires a PGP signature block in it.
+
+Two protections a GitHub repository would normally also carry are deliberately absent, for
+one shared reason. This project's release step is a true fast-forward: `main` and `develop`
+hold the identical commit SHA, signed by the maintainer's key and Verified on GitHub.
+GitHub offers no fast-forward merge for pull requests -- the merge-method enum is closed at
+merge, squash and rebase in the REST endpoint, the repository settings, the ruleset rule and
+the merge queue alike, and "Rebase and merge" is documented to
+always create new commit SHAs and to land commits without their signatures. Routing `main`
+through a pull request would therefore trade an identical signed SHA for a rewritten
+unsigned one. Required status checks fall to the same argument from the other side: GitHub
+evaluates them against the commit being pushed, a new commit has no results yet, so
+requiring them forecloses direct pushes and forces exactly that pull-request flow. There is
+one documented exception, and it does not help here: a locally created merge commit may be
+pushed unchecked if its content matches the merge GitHub generated for an up-to-date green
+pull request -- still the pull-request flow, and a merge commit, which
+`required_linear_history` refuses on these branches anyway.
+
+What stands in their place is that CI runs on every push to `develop`, and `main` is
+fast-forwarded only to a `develop` that is green -- the same condition, checked before the
+push instead of at it. `required_signatures` is the part that does move server-side,
+because a signature is checkable at push time without waiting for anything to run.
+
+Enforcement was read back rather than assumed: `GET /repos/{owner}/{repo}/rules/branches/`
+returns all four rules for both branches when asked with the owner's own token, and
+returns nothing for a branch the ruleset does not cover. A rejected force-push would be
+the stronger evidence and has not been run.
+
 ## Publishing the Signing Key
 
 Nothing in this tool exports a public key, and that is worth stating because the exposure

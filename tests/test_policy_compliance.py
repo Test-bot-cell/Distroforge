@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import configparser
 import datetime
 import fnmatch
 import json
@@ -488,8 +489,9 @@ def test_the_maintainer_stamped_into_generated_debs_tracks_debian_control() -> N
 
     Deliberately a coupling assertion and not a spelling one -- it states that the two
     agree, not what they say, so it survives the address changing and fails only if
-    the change misses a site. Debian Policy 5.6.2 requires the maintainer address to
-    be a working one, and neither lintian check reaches this constant: `bogus-mail-host`
+    the change misses a site. Debian Policy 3.3 requires the maintainer address to be a
+    working one -- 5.6.2 governs only the field's syntax, as the test 130 lines above this
+    one says -- and neither lintian check reaches this constant: `bogus-mail-host`
     fires only when the host is not a domain, and `.invalid` is a domain as far as
     Net::Domain::TLD is concerned (it is an RFC 2606 reserved TLD, present in that
     list), while `mail-address-loops-or-bounces` knows exactly one address.
@@ -716,3 +718,146 @@ def test_the_rules_test_arguments_import_the_staged_package_not_the_checkout(tmp
 
     assert regressed.returncode != 0
     assert (ROOT / "distroforge/data/vulndb.json").is_file()
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=False
+    )
+
+
+def _is_git_checkout() -> bool:
+    return _git("rev-parse", "--git-dir").returncode == 0
+
+
+def test_gbp_conf_names_only_things_this_repository_actually_has() -> None:
+    """The release configuration named a branch that has never existed here.
+
+    `debian/gbp.conf` carried `upstream-branch = upstream` from the 0.3.5-1 baseline
+    import onward, while `distroforge doctor` lists gbp as this package's release
+    workflow. There is no `upstream` branch and there never was -- upstream and the
+    packaging are one tree -- so the first gbp command to resolve it would have failed.
+    Nothing caught that because nothing had ever run the workflow: 46 changelog versions
+    and not one tag.
+
+    The tag format and `sign-tags` are asserted by value and not merely for presence.
+    Both match gbp 0.9.42's own defaults, which makes this look redundant and is exactly
+    why it is not: gbp/git/repository.py passes `--no-sign` when `sign-tags` is unset,
+    overriding `tag.gpgsign = true` in the repository config, so an unpinned file yields
+    an unsigned release tag over commits that are all signed. And what a release tag is
+    called is a contract, which must not change because a different gbp ran the command
+    -- the same reasoning that keeps Rules-Requires-Root written out in debian/control.
+
+    interpolation=None is required rather than stylistic: the value holds `%(version)s`
+    and a default ConfigParser raises InterpolationMissingOptionError reading it.
+    """
+    parser = configparser.ConfigParser(interpolation=None)
+    read = parser.read(ROOT / "debian/gbp.conf", encoding="utf-8")
+    assert read, "debian/gbp.conf is unreadable or gone"
+
+    maintained = {"main", "develop"}
+    defaults = parser["DEFAULT"]
+    for option in ("debian-branch", "upstream-branch"):
+        assert defaults[option] in maintained, (
+            f"gbp.conf {option} = {defaults[option]!r}, which is not a branch this project keeps"
+        )
+    assert defaults["debian-tag"] == "debian/%(version)s", "DEP-14 names the packaging tag"
+    assert defaults["sign-tags"] == "True", "gbp writes --no-sign unless this says True"
+    assert parser["buildpackage"]["upstream-tree"] == "BRANCH", (
+        "gbp's default is TAG, which hunts for an upstream/<version> tag this workflow never cuts"
+    )
+
+    # The value check above cannot see a branch that was renamed away, so resolve them for
+    # real where the refs are there to resolve. A shallow checkout has only the branch it
+    # was made from, which is what actions/checkout produces by default, so asking there
+    # would fail over the fetch depth rather than over the configuration.
+    if not _is_git_checkout() or _git("rev-parse", "--is-shallow-repository").stdout.strip() != "false":
+        return
+    for option in ("debian-branch", "upstream-branch"):
+        name = defaults[option]
+        resolved = any(
+            _git("rev-parse", "--verify", "--quiet", ref).returncode == 0
+            for ref in (f"refs/heads/{name}", f"refs/remotes/origin/{name}")
+        )
+        assert resolved, f"gbp.conf {option} names {name!r}, which no ref in this repository resolves"
+
+
+def test_every_packaging_tag_names_the_version_its_own_commit_declares() -> None:
+    """A tag is a claim about which commit a version is, so the claim gets checked.
+
+    Nothing anchored a released version to a commit: 46 versions in debian/changelog and
+    zero tags, local or on the remote. The risk once tags exist is the mislabelled one --
+    `debian/0.3.5-15` sitting on a commit whose changelog says something else -- because
+    that misdirects anyone bisecting a regression or reproducing an upload, and no
+    amount of signing catches it.
+
+    Read from the tagged commit's own changelog rather than from the working tree, so it
+    answers "does this tag name what its commit claimed to be" and not "does it match
+    whatever is checked out now". The mangling is deliberately restated here from DEP-14
+    rather than imported from gbp: gbp is not installed on the CI runners, and a test that
+    recomputes the invariant independently disagrees loudly if the implementation drifts.
+    """
+    if not _is_git_checkout():
+        pytest.skip("not a Git checkout")
+
+    listed = _git("tag", "--list", "debian/*")
+    assert listed.returncode == 0, listed.stderr
+    tags = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if not tags:
+        pytest.skip(
+            "no packaging tags here: actions/checkout fetches none by default, so this "
+            "gate is real in packaging-static, which sets fetch-depth: 0, and in any "
+            "full clone, and vacuous in the matrix jobs"
+        )
+
+    changelog = (ROOT / "debian/changelog").read_text(encoding="utf-8")
+    known_versions = set(re.findall(r"^distroforge \(([^)]+)\)", changelog, re.MULTILINE))
+
+    for tag in tags:
+        assert _git("cat-file", "-t", tag).stdout.strip() == "tag", (
+            f"{tag} is a lightweight tag, so it carries neither a tagger nor a signature"
+        )
+        assert "-----BEGIN PGP SIGNATURE-----" in _git("cat-file", "tag", tag).stdout, (
+            f"{tag} is unsigned, over commits that are all signed"
+        )
+
+        shown = _git("show", f"{tag}:debian/changelog")
+        assert shown.returncode == 0, f"{tag} has no debian/changelog: {shown.stderr.strip()}"
+        declared = re.match(r"^distroforge \(([^)]+)\)", shown.stdout.splitlines()[0])
+        assert declared, f"{tag} points at a commit whose changelog has no version line"
+
+        version = declared.group(1)
+        expected = "debian/" + version.replace(":", "%").replace("~", "_").replace("..", ".#.")
+        assert tag == expected, f"{tag} sits on a commit whose changelog declares {version}"
+        assert version in known_versions, (
+            f"{tag} names {version}, which the current changelog no longer records"
+        )
+
+
+def test_the_release_tag_procedure_is_wired_to_something() -> None:
+    """Same shape as the key-export guard: the procedure is what there is to check.
+
+    A convention pinned in debian/gbp.conf and a script nobody calls would be the defect
+    this whole change was about -- configuration that reads correctly and runs never. So
+    this asserts the three ends are joined: the Makefile has a `tag` target, the target
+    runs the script, the script is executable, and a document explains it. Deleting any
+    one of them fails here instead of quietly leaving the next version unanchored.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert re.search(r"^tag:\n\ttools/release-tag\.sh$", makefile, re.MULTILINE), (
+        "the Makefile tag target no longer runs tools/release-tag.sh"
+    )
+    assert re.search(r"^\.PHONY:.*\btag\b", makefile, re.MULTILINE), (
+        "tag is not phony, so a file named tag would silence the target"
+    )
+
+    script = ROOT / "tools/release-tag.sh"
+    assert script.is_file(), "tools/release-tag.sh is gone"
+    assert os.access(script, os.X_OK), "tools/release-tag.sh is not executable"
+
+    documented = [
+        path.name
+        for path in sorted((ROOT / "docs").glob("*.md"))
+        if "tools/release-tag.sh" in path.read_text(encoding="utf-8")
+    ]
+    assert documented, "no document explains how a release version gets anchored to a commit"

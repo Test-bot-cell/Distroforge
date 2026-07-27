@@ -17,11 +17,14 @@ repos:
         types_or: [python, pyi]
         require_serial: true
 
+      # tools/*.sh is in scope alongside the packaging scripts: tools/release-tag.sh runs
+      # on a maintainer's machine at release time, and the Makefile's shellcheck target
+      # sweeps the same two sets, so a script added to either is checked by both gates.
       - id: shellcheck
-        name: shellcheck (maintainer scripts)
+        name: shellcheck (maintainer scripts and tools/*.sh)
         entry: shellcheck
         language: system
-        files: ^debian/(distroforge\.(postinst|preinst|prerm|postrm)|tests/(?!control$)[^/]+)$
+        files: ^(debian/(distroforge\.(postinst|preinst|prerm|postrm)|tests/(?!control$)[^/]+)|tools/[^/]+\.sh)$
 
       - id: maintainer-script-payloads
         name: "python3 payloads embedded in packaging scripts must compile"

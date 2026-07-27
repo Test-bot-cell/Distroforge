@@ -1,3 +1,64 @@
+distroforge (0.3.5-16) resolute; urgency=medium
+
+  * Released versions are anchored to commits. This changelog reached 46
+    versions while the repository held no tag at all, local or remote, and
+    no GitHub release: a changelog says a version existed, only a tag says
+    where. debian/gbp.conf now pins DEP-14's debian/<version> naming and
+    `make tag` cuts one through tools/release-tag.sh. Publishing the tag
+    stays a separate command, since a pushed tag must not be moved after.
+  * Fixed two dead settings in debian/gbp.conf, the file that governs all
+    of the above. upstream-branch named "upstream" from the 0.3.5-1
+    baseline import onward -- a branch that has never existed here, since
+    upstream and the packaging are one tree -- and upstream-tree was left
+    at gbp's default of TAG, which sends export-orig looking for an
+    upstream/<version> tag this workflow never creates. distroforge doctor
+    advertises gbp as the release workflow, so neither was harmless; both
+    survived because nothing had ever run it.
+  * Pinned sign-tags = True, which is not the redundancy it looks like:
+    gbp/git/repository.py passes --no-sign when that option is unset,
+    overriding tag.gpgsign = true in the repository config. Unpinned, the
+    first release tag of this project would have been unsigned, sitting
+    over 53 commits that are every one of them signed.
+  * Three tests hold it. One resolves the branches gbp.conf names against
+    real refs, which is what would have caught the dead one. One requires
+    every debian/* tag to be annotated, to carry a signature block, and to
+    name the version that its own commit's changelog declares, read from
+    the tagged tree rather than the checkout. One asserts the target, the
+    script and the document are still joined, the same shape of guard as
+    the key-export procedure. packaging-static now checks out with
+    fetch-depth: 0, because actions/checkout fetches no tags: the tag gate
+    would have passed on an empty list and reported itself green.
+  * Protected main, develop and refs/tags/debian/* with two repository
+    rulesets and no bypass actors, so they bind the owner, who is the only
+    person who pushes. Branches: deletion, non_fast_forward,
+    required_linear_history, required_signatures. Tags additionally take
+    update, without which a tag could still be moved forward onto a
+    descendant. required_signatures is deliberately not on the tags: the
+    documentation describes it only for commits on a branch, and a rule
+    whose effect cannot be verified reads like protection without being
+    it, so the tag's signature is asserted by the test instead.
+  * Recorded why a pull-request flow and required status checks are
+    excluded rather than leaving it to look like an omission. GitHub has
+    no fast-forward merge -- the method enum is closed at merge, squash
+    and rebase, and rebase is documented to always write new SHAs and to
+    drop the signatures -- so routing main through a pull request would
+    trade an identical signed commit for a rewritten unsigned one, which
+    is the property this project keeps. Required checks are evaluated
+    against the commit being pushed, which has no results yet, so they
+    forbid direct pushes and force that same flow.
+  * Corrected two files that asserted the opposite of the above.
+    debian/watch said "there is no release tag" and promised a mode=git
+    rule once tags existed; both were wrong, since packaging tags on this
+    same tree give uscan nothing to poll but this package itself.
+    debian/README.source repeated the claim. A test docstring still cited
+    Policy 5.6.2 for the maintainer address 130 lines below the test that
+    says the rule is 3.3, left behind when that was corrected in 0.3.5-11.
+  * tools/*.sh is now swept by both shellcheck gates, the Makefile target
+    and the pre-commit hook, so a release script cannot ship unchecked the
+    way debian/tests/gui-import nearly did.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:03:21 +0200
+
 distroforge (0.3.5-15) resolute; urgency=medium
 
   * The signing key now carries a user id for the address debian/control

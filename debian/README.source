@@ -28,12 +28,24 @@ upstream tree, not in debian/, because upstream and the packaging are the same
 project -- which is what maintainer-manual-page and maintainer-desktop-entry ask
 for.
 
-debian/watch carries comments and no rule. Upstream publishes no tarball and has
-no release tag, so uscan has nothing to poll; a rule resolving to nothing would
-be worse than a file stating the situation. Note that pgpmode=gittag, the
-obvious way to verify a signed release tag, is not implemented by the devscripts
-in resolute (uscan 2.26.7), so a git-mode rule could not be signature-checked
-here even once tags exist.
+debian/watch carries comments and no rule. Upstream publishes no tarball, and
+upstream is this same repository, so there is nothing for uscan to poll that is
+not this package itself; a rule resolving to nothing would be worse than a file
+stating the situation. Packaging versions are tagged debian/<version> from
+0.3.5-16 onward and that changes none of it, for the reasons the watch file
+gives. Note that pgpmode=gittag, the obvious way to verify a signed release tag,
+is not implemented by the devscripts in resolute (uscan 2.26.7).
+
+Release tags
+------------
+
+debian/gbp.conf pins the tag naming (DEP-14's debian/<version>) and pins
+sign-tags, because gbp passes --no-sign when that option is unset and would
+otherwise override tag.gpgsign in the repository config. `make tag` cuts one
+through tools/release-tag.sh; docs/packaging-release.md says what it refuses and
+why publishing the tag is a separate command. Versions before 0.3.5-16 are not
+retro-tagged: this repository's history starts at an imported 0.3.5-1 baseline,
+so most of the earlier changelog versions have no commit here to point at.
 
 Standalone development remains driven by pyproject.toml and a local virtual
 environment. Debian package builds should use distribution Python packages from

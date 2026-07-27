@@ -63,6 +63,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        # fetch-depth: 0 because two gates here need history that checkout does not
+        # fetch by default. It fetches one commit and no tags, which would leave the
+        # packaging-tag guard passing on an empty list and the gbp.conf branch check
+        # unable to resolve any branch but the one being pushed -- both green for the
+        # wrong reason. 53 commits cost nothing to clone.
+        with:
+          fetch-depth: 0
       - name: Install packaging checkers
         run: |
           sudo apt-get update
