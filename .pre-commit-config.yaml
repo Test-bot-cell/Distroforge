@@ -54,3 +54,13 @@ repos:
         entry: 'addopts.*--strict-(markers|config)'
         language: pygrep
         files: ^(pyproject\.toml|pytest\.ini|setup\.cfg|tox\.ini)$
+
+      # The changelog is edited last, after the gate has already been run, which is
+      # how a line of 81 characters reached CI and turned every job red for a
+      # lintian tag. Its own policy tests now run when it changes, at commit time.
+      - id: changelog-policy
+        name: "the newest changelog entry obeys the packaging policy tests"
+        entry: python3 -m pytest -q tests/test_policy_compliance.py -k changelog
+        language: system
+        pass_filenames: false
+        files: ^debian/changelog$
