@@ -743,6 +743,37 @@ def _git_history_available() -> bool:
     return _git("rev-parse", "--git-dir").returncode == 0
 
 
+def _tag_ref_rewritten_by_checkout() -> str | None:
+    """The one tag this repository cannot be asked about, and why it cannot.
+
+    actions/checkout does not check a tag out by the tag's own ref. Measured from the run
+    on debian/0.3.5-16 and reproduced offline in three commands: after resolving the ref it
+    fetches `+<commit sha>:refs/tags/<tag>`, so the local ref stops naming the annotated
+    tag object and names the commit instead. `cat-file -t` then answers `commit`, and
+    nothing in the repository names the tag object any more.
+
+    It happens in both directions of the matrix. With the default checkout the pinning
+    fetch is the *only* fetch -- `--no-tags --depth=1` still creates that one ref -- so a
+    tag push leaves exactly one `debian/*` tag present and it is a commit by construction.
+    With `fetch-depth: 0` the first fetch does bring the real tag object in, and the
+    pinning fetch runs second and overwrites it.
+
+    The consequence was a whole CI run on a release tag accusing that tag of being
+    lightweight and unsigned, while `git verify-tag` and GitHub's own endpoint both called
+    it good. The accusation was about actions/checkout, not about the tag.
+
+    Deliberately narrow, and it fails in the safe direction: it requires the runner to
+    identify itself, it exempts only the single tag GITHUB_REF names, and if that variable
+    ever stops carrying `refs/tags/<name>` the exemption stops firing and a tag push goes
+    red again exactly as it did -- a silent false pass is not reachable from here.
+    """
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return None
+    ref = os.environ.get("GITHUB_REF", "")
+    prefix = "refs/tags/"
+    return ref[len(prefix) :] or None if ref.startswith(prefix) else None
+
+
 def test_gbp_conf_names_only_things_this_repository_actually_has() -> None:
     """The release configuration named a branch that has never existed here.
 
@@ -821,21 +852,30 @@ def test_every_packaging_tag_names_the_version_its_own_commit_declares() -> None
     tags = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
     if not tags:
         pytest.skip(
-            "no packaging tags here: actions/checkout fetches none by default, so this "
-            "gate is real in packaging-static, which sets fetch-depth: 0, and in any "
-            "full clone, and vacuous in the matrix jobs"
+            "no packaging tags here: on a branch push actions/checkout fetches no "
+            "tags, so this gate is real in packaging-static, which sets fetch-depth: "
+            "0, and in any full clone. It is not vacuous in the matrix jobs on a tag "
+            "push: checkout creates the ref for the tag it checks out even with "
+            "--no-tags, pointing it at the commit"
         )
 
     changelog = (ROOT / "debian/changelog").read_text(encoding="utf-8")
     known_versions = set(re.findall(r"^distroforge \(([^)]+)\)", changelog, re.MULTILINE))
 
+    pinned = _tag_ref_rewritten_by_checkout()
     for tag in tags:
-        assert _git("cat-file", "-t", tag).stdout.strip() == "tag", (
-            f"{tag} is a lightweight tag, so it carries neither a tagger nor a signature"
-        )
-        assert "-----BEGIN PGP SIGNATURE-----" in _git("cat-file", "tag", tag).stdout, (
-            f"{tag} is unsigned, over commits that are all signed"
-        )
+        kind = _git("cat-file", "-t", tag).stdout.strip()
+        if not (tag == pinned and kind == "commit"):
+            assert kind == "tag", (
+                f"{tag} is a lightweight tag, so it carries neither a tagger nor a signature"
+            )
+            assert "-----BEGIN PGP SIGNATURE-----" in _git("cat-file", "tag", tag).stdout, (
+                f"{tag} is unsigned, over commits that are all signed"
+            )
+        # Otherwise this ref is the commit sha actions/checkout wrote over the tag object,
+        # so there is no tag object here to read a tagger or a signature out of. Only those
+        # two assertions are unanswerable; everything below reads the commit, which is the
+        # same commit either way, so the mislabelling check this test exists for still runs.
 
         shown = _git("show", f"{tag}:debian/changelog")
         assert shown.returncode == 0, f"{tag} has no debian/changelog: {shown.stderr.strip()}"
@@ -937,9 +977,11 @@ def test_no_finalized_changelog_revision_is_left_without_a_release_tag() -> None
     anchored = {line.strip() for line in listed.stdout.splitlines() if line.strip()}
     if not anchored:
         pytest.skip(
-            "no packaging tags here: actions/checkout fetches none by default, so this "
-            "gate is real in packaging-static, which sets fetch-depth: 0, and in any "
-            "full clone, and vacuous in the matrix jobs"
+            "no packaging tags here: on a branch push actions/checkout fetches no "
+            "tags, so this gate is real in packaging-static, which sets fetch-depth: "
+            "0, and in any full clone. It is not vacuous in the matrix jobs on a tag "
+            "push: checkout creates the ref for the tag it checks out even with "
+            "--no-tags, pointing it at the commit"
         )
 
     for version, suite in stanzas:

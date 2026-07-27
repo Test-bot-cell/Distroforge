@@ -66,6 +66,25 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     scope requirement would be retroactively false over signed commits that
     cannot be rewritten -- and it checks four non-conforming shapes first, so
     a pattern that quietly accepts everything fails instead of passing.
+  * Fixed a release gate that accused a correct tag. Pushing debian/0.3.5-16
+    started a CI run on the tag ref and every job went red on
+    "debian/0.3.5-16 is a lightweight tag, so it carries neither a tagger nor
+    a signature" -- while git verify-tag and GitHub's own endpoint both called
+    that same tag good. Measured from the run log and reproduced offline in
+    three commands: actions/checkout resolves the ref and then fetches
+    +<commit sha>:refs/tags/<tag>, so the local ref stops naming the annotated
+    tag object and names the commit. cat-file -t answers commit and nothing
+    names the tag object any more. Configuration cannot avoid it: the default
+    checkout creates that one ref even with --no-tags --depth=1, and with
+    fetch-depth: 0 the pinning fetch runs second and overwrites the real
+    object it had just fetched. Two skip messages also carried the premise
+    that the matrix jobs fetch no tags, which is false on a tag push -- the
+    one tag checkout creates there is the one it overwrites. The gate now
+    exempts only the single tag GITHUB_REF names, only the two assertions
+    that need a tag object, and keeps the version-mislabelling check that is
+    the reason it exists. Proved in four controls: it passes under runner
+    environment, fails without it, fails on a second lightweight tag the
+    variable does not name, and fails when GITHUB_REF names a branch.
   * Verified the published tag the one way the earlier checks could not.
     git verify-tag and GitHub's endpoint both run where the key already is; a
     clone taken from origin alone, with the documented filtered export
@@ -73,7 +92,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     returns 1 with nothing imported. The failing control is what makes the 0
     evidence about the published key rather than about an ambient keyring.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:08:13 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:16:49 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

@@ -320,6 +320,24 @@ the agent will tell you which one you have: `gpg-connect-agent 'KEYINFO --list' 
 `1` in its seventh field for a key whose passphrase is cached and `-` for one that will
 prompt.
 
+Pushing the tag starts a CI run on the tag ref, and that run cannot check the tag object no
+matter how it is configured. `actions/checkout` resolves the ref, then fetches
+`+<commit sha>:refs/tags/<tag>` — measured in the run on `debian/0.3.5-16`, and reproduced
+offline in three commands — so the local ref stops naming the annotated tag object and names
+the commit. `cat-file -t` answers `commit`, and nothing in the checkout names the tag object
+any more. It happens with the default checkout, where that pinning fetch is the only fetch
+and `--no-tags --depth=1` still creates the one ref, and it happens after `fetch-depth: 0`
+has already fetched the real object, because the pin runs second and wins.
+
+That is worth stating because the symptom accuses the wrong thing: the whole matrix went red
+on `debian/0.3.5-16` reporting it lightweight and unsigned, at the same time as `git
+verify-tag` and GitHub's endpoint both called it good. The gate now recognises the single tag
+`GITHUB_REF` names, skips only the two assertions that need a tag object, and keeps checking
+that the tag's commit declares the matching version. It fails in the safe direction: if
+`GITHUB_REF` ever stops carrying `refs/tags/<name>`, the exemption stops firing and a tag
+push goes red again rather than passing quietly. The tag object itself is checked where a
+tag object exists — in `packaging-static` on branch pushes, and in any full clone.
+
 Versions released before the convention existed are not retro-tagged. The tags that would
 have to be invented for them are claims about which commit was uploaded when, and this
 repository's history begins at an imported 0.3.5-1 baseline -- most of those 46 versions
