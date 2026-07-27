@@ -127,8 +127,10 @@ class PrebuildVmDefinition(BaseModel):
     qmp_socket: str = "qemu-lab.qmp"
     pid_file: str = "qemu-lab.pid"
     report_name: str = "qemu-lab-report.json"
-    ovmf_code: str = "/usr/share/OVMF/OVMF_CODE.fd"
-    ovmf_vars: str = "/usr/share/OVMF/OVMF_VARS.fd"
+    # Empty means auto-detect on the host that runs the VM, which is the only
+    # correct default for a definition file: it travels between machines.
+    ovmf_code: str = ""
+    ovmf_vars: str = ""
 
 
 class BrandingDefinition(BaseModel):

@@ -13,6 +13,7 @@ from .desktop_source import load_desktop_source_profiles
 from .doctor import REQUIRED_TOOLS, run_doctor
 from .iso import BootLayout
 from .project import Project
+from .qemu_invocation import default_ovmf_code, default_ovmf_vars, is_secure_boot_firmware
 
 
 @dataclass(frozen=True)
@@ -477,7 +478,8 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
                 "Prebuild VM timeout must be at least 30 seconds",
             )
         )
-    if getattr(options, "secure_boot", False) and getattr(options, "firmware", "bios") != "uefi":
+    secure_boot = bool(getattr(options, "secure_boot", False))
+    if secure_boot and getattr(options, "firmware", "bios") != "uefi":
         issues.append(
             ValidationIssue(
                 "error",
@@ -485,6 +487,33 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
                 "Prebuild VM Secure Boot requires UEFI firmware",
             )
         )
+    if getattr(options, "firmware", "bios") == "uefi":
+        # The absent firmware image was not a hypothetical: the default named
+        # /usr/share/OVMF/OVMF_CODE.fd, which no ovmf package has shipped since the
+        # firmware moved to a 4 MB flash size, so every UEFI run died on it.
+        code = default_ovmf_code(getattr(options, "ovmf_code", ""), secure_boot=secure_boot)
+        store = default_ovmf_vars(getattr(options, "ovmf_vars", ""), secure_boot=secure_boot)
+        missing = [path for path in (code, store) if not Path(path).exists()]
+        if missing:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "prebuild-vm-ovmf-missing",
+                    f"UEFI firmware image not found: {', '.join(missing)}. Install the ovmf package.",
+                )
+            )
+        elif secure_boot and not is_secure_boot_firmware(code, store):
+            # Refused rather than silently substituted, because the caller named these
+            # paths. Enabling the flag on the plain build reports Secure Boot on a VM
+            # running with it off, which is worse than not offering it.
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "prebuild-vm-secure-boot-firmware",
+                    "Secure Boot needs the .secboot firmware code and the .ms variable store "
+                    f"holding the enrolled keys, not {code} with {store}",
+                )
+            )
     return issues
 
 

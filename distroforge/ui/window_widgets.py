@@ -4,6 +4,7 @@ from distroforge.ai.backend import backend_names
 from distroforge.ai.registers import get_register, register_keys
 from distroforge.core.branding_palettes import load_branding_palettes
 from distroforge.core.interaction_plan import available_interaction_plans
+from distroforge.core.qemu_invocation import default_ovmf_code, default_ovmf_vars
 from distroforge.core.source_starter import list_source_starters
 from distroforge.core.workflows import WORKFLOW_LEVELS, get_workflow_level
 from distroforge.ui import preferences
@@ -338,15 +339,22 @@ def build_window_widgets(window) -> None:
         "the lab VM -- capture screenshots, send keys and query state during the boot test."
     )
     window.prebuild_vm_pid_file_edit = QLineEdit("qemu-lab.pid")
-    window.prebuild_vm_ovmf_code_edit = QLineEdit("/usr/share/OVMF/OVMF_CODE.fd")
+    # Left empty on purpose, with the detected path as placeholder text: the field
+    # used to be pre-filled with a literal that no current ovmf package ships, so it
+    # looked configured while naming a missing file.
+    window.prebuild_vm_ovmf_code_edit = QLineEdit()
+    window.prebuild_vm_ovmf_code_edit.setPlaceholderText(default_ovmf_code())
     window.prebuild_vm_ovmf_code_edit.setToolTip(
         "OVMF firmware code image -- the read-only UEFI firmware QEMU runs for UEFI boots. "
-        "Provided by the ovmf package."
+        "Provided by the ovmf package. Leave empty to use the one detected on this host, "
+        "shown in grey."
     )
-    window.prebuild_vm_ovmf_vars_edit = QLineEdit("/usr/share/OVMF/OVMF_VARS.fd")
+    window.prebuild_vm_ovmf_vars_edit = QLineEdit()
+    window.prebuild_vm_ovmf_vars_edit.setPlaceholderText(default_ovmf_vars())
     window.prebuild_vm_ovmf_vars_edit.setToolTip(
         "OVMF UEFI variable store -- the writable NVRAM template holding boot entries and "
-        "Secure Boot keys. Copied per run so the system template stays pristine."
+        "Secure Boot keys. Copied per run so the system template stays pristine. Leave "
+        "empty to use the one detected on this host, shown in grey."
     )
     window.prebuild_vm_success_patterns_edit = QLineEdit("login:,Reached target")
     window.artifacts_output_iso_edit = QLineEdit()

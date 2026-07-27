@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
 from .qmp import QmpControl, stop_by_pidfile
 
 
@@ -32,8 +32,10 @@ class PrebuildVmOptions:
     qmp_socket: str = "qemu-lab.qmp"
     pid_file: str = "qemu-lab.pid"
     report_name: str = "qemu-lab-report.json"
-    ovmf_code: str = "/usr/share/OVMF/OVMF_CODE.fd"
-    ovmf_vars: str = "/usr/share/OVMF/OVMF_VARS.fd"
+    # Empty means auto-detect through default_ovmf_code/default_ovmf_vars, which is
+    # what an unset flag and an empty GUI field already meant.
+    ovmf_code: str = ""
+    ovmf_vars: str = ""
 
     def summary(self) -> str:
         if not self.enabled:
@@ -165,7 +167,7 @@ class QemuLabService:
                 display="none",
                 daemonize=True,
                 firmware=self.options.firmware,
-                ovmf_code=self.options.ovmf_code,
+                ovmf_code=default_ovmf_code(self.options.ovmf_code, secure_boot=self.options.secure_boot),
                 ovmf_vars=str(artifacts.ovmf_vars),
                 secure_boot=self.options.secure_boot,
                 tpm_socket=artifacts.tpm_socket if self.options.tpm else None,
@@ -176,14 +178,15 @@ class QemuLabService:
     def _prepare_firmware(self, artifacts: QemuLabArtifacts) -> None:
         if self.options.firmware != "uefi":
             return
+        template = default_ovmf_vars(self.options.ovmf_vars, secure_boot=self.options.secure_boot)
         self.runner.run(
             CommandSpec(
-                argv=("copy-file", self.options.ovmf_vars, str(artifacts.ovmf_vars)),
+                argv=("copy-file", template, str(artifacts.ovmf_vars)),
                 description="Prepare writable OVMF variables store",
             )
         )
         if not self.runner.dry_run:
-            shutil.copy2(self.options.ovmf_vars, artifacts.ovmf_vars)
+            shutil.copy2(template, artifacts.ovmf_vars)
 
     def _prepare_tpm(self, artifacts: QemuLabArtifacts) -> None:
         if not self.options.tpm:

@@ -19,6 +19,17 @@ distroforge (0.3.5-4) resolute; urgency=medium
   * Refuse to build an ISO from a tree carrying no boot image for either
     firmware, and report missing mtools at validation rather than an hour
     into the build.
+  * Detect the OVMF firmware images rather than naming them. The default was
+    /usr/share/OVMF/OVMF_CODE.fd in nine places, a file no ovmf package has
+    shipped since the firmware moved to a 4 MB flash size, so every UEFI QEMU
+    run in the product failed on a missing file. --prebuild-vm-ovmf-code and
+    --prebuild-vm-ovmf-vars now default to empty, meaning auto-detect, and the
+    matching GUI fields show the detected path as placeholder text.
+  * Pair --prebuild-vm-secure-boot with the .secboot firmware build and the .ms
+    variable store holding the enrolled keys, and refuse a named pair that
+    cannot enforce Secure Boot instead of substituting one: the flag used to
+    report Secure Boot on a VM running with it off. Add the first tests for
+    validate_prebuild_vm_options, which had none.
   * Correct docs/platform-refactor-audit.md, which still recorded that mypy,
     pre-commit and shellcheck were "not wired anywhere" long after make check
     and CI had begun running all three.

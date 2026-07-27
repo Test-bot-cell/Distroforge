@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
 
 # QEMU `-display` value for each user-facing preview display mode. SPICE maps to
 # `spice-app`, which starts a SPICE server and opens the bundled viewer; it needs
@@ -29,8 +29,9 @@ class QemuPreviewOptions:
     qmp_socket: str = "preview.qmp"
     pid_file: str = "preview.pid"
     transcript_name: str = "preview-session.json"
-    ovmf_code: str = "/usr/share/OVMF/OVMF_CODE.fd"
-    ovmf_vars: str = "/usr/share/OVMF/OVMF_VARS.fd"
+    # Empty means auto-detect; see default_ovmf_code.
+    ovmf_code: str = ""
+    ovmf_vars: str = ""
 
     def display_arg(self) -> str:
         return _DISPLAY_ARGS.get(self.display, self.display)
@@ -151,7 +152,7 @@ class QemuPreviewService:
             pid_file=artifacts.pid_file,
             daemonize=True,
             firmware=self.options.firmware,
-            ovmf_code=self.options.ovmf_code,
+            ovmf_code=default_ovmf_code(self.options.ovmf_code, secure_boot=self.options.secure_boot),
             ovmf_vars=str(artifacts.ovmf_vars) if self.options.firmware == "uefi" else None,
             secure_boot=self.options.secure_boot,
             network="user" if self.options.network else "none",
@@ -201,14 +202,15 @@ class QemuPreviewService:
     def _prepare_firmware(self, artifacts: QemuPreviewArtifacts) -> None:
         if self.options.firmware != "uefi":
             return
+        template = default_ovmf_vars(self.options.ovmf_vars, secure_boot=self.options.secure_boot)
         self.runner.run(
             CommandSpec(
-                argv=("copy-file", self.options.ovmf_vars, str(artifacts.ovmf_vars)),
+                argv=("copy-file", template, str(artifacts.ovmf_vars)),
                 description="Prepare writable OVMF variables store for preview",
             )
         )
         if not self.runner.dry_run:
-            shutil.copy2(self.options.ovmf_vars, artifacts.ovmf_vars)
+            shutil.copy2(template, artifacts.ovmf_vars)
 
     def _write_transcript(
         self, artifacts: QemuPreviewArtifacts, argv: tuple[str, ...], enable_kvm: bool

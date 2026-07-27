@@ -9,7 +9,7 @@ from pathlib import Path
 from .command import CommandRunner, CommandSpec
 from .integrity import IntegrityService
 from .interaction_plan import InteractionPlan, InteractionStep
-from .qemu_invocation import QemuInvocation
+from .qemu_invocation import QemuInvocation, default_ovmf_code, default_ovmf_vars
 from .qmp import QmpControl, stop_by_pidfile
 
 
@@ -27,8 +27,9 @@ class QemuInteractionOptions:
     pid_file: str = "interaction.pid"
     screenshot_name: str = "interaction.ppm"
     report_name: str = "qemu-interaction-report.json"
-    ovmf_code: str = "/usr/share/OVMF/OVMF_CODE.fd"
-    ovmf_vars: str = "/usr/share/OVMF/OVMF_VARS.fd"
+    # Empty means auto-detect; see default_ovmf_code.
+    ovmf_code: str = ""
+    ovmf_vars: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,7 +176,7 @@ class QemuInteractionService:
                 display=self.options.display,
                 daemonize=True,
                 firmware=self.plan.firmware,
-                ovmf_code=self.options.ovmf_code,
+                ovmf_code=default_ovmf_code(self.options.ovmf_code, secure_boot=self.options.secure_boot),
                 ovmf_vars=str(artifacts.ovmf_vars),
                 secure_boot=self.options.secure_boot,
                 network="user" if self.plan.network else "none",
@@ -186,14 +187,15 @@ class QemuInteractionService:
     def _prepare_firmware(self, artifacts: QemuInteractionArtifacts) -> None:
         if self.plan.firmware != "uefi":
             return
+        template = default_ovmf_vars(self.options.ovmf_vars, secure_boot=self.options.secure_boot)
         self.runner.run(
             CommandSpec(
-                argv=("copy-file", self.options.ovmf_vars, str(artifacts.ovmf_vars)),
+                argv=("copy-file", template, str(artifacts.ovmf_vars)),
                 description="Prepare writable OVMF variables store",
             )
         )
         if not self.runner.dry_run:
-            shutil.copy2(self.options.ovmf_vars, artifacts.ovmf_vars)
+            shutil.copy2(template, artifacts.ovmf_vars)
 
     def _run_step(self, step: InteractionStep, artifacts: QemuInteractionArtifacts) -> None:
         if step.action == "wait-serial":

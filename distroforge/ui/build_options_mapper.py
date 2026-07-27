@@ -219,10 +219,10 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             pid_file=window.prebuild_vm_pid_file_edit.text().strip() or "qemu-lab.pid",
             report_name=window.prebuild_vm_report_name_edit.text().strip()
             or "qemu-lab-report.json",
-            ovmf_code=window.prebuild_vm_ovmf_code_edit.text().strip()
-            or "/usr/share/OVMF/OVMF_CODE.fd",
-            ovmf_vars=window.prebuild_vm_ovmf_vars_edit.text().strip()
-            or "/usr/share/OVMF/OVMF_VARS.fd",
+            # Empty stays empty: the core auto-detects, so the GUI does not have to
+            # carry a copy of a path that changed under it once already.
+            ovmf_code=window.prebuild_vm_ovmf_code_edit.text().strip(),
+            ovmf_vars=window.prebuild_vm_ovmf_vars_edit.text().strip(),
         ),
         qemu_screenshot=QemuScreenshotOptions(enabled=window.qemu_screenshot_check.isChecked()),
         policy=PolicyOptions(

@@ -5,6 +5,7 @@ from pathlib import Path
 from distroforge.core.command import CommandRunner
 from distroforge.core.prebuild_vm import PrebuildVmOptions, QemuLabService
 from distroforge.core.qemu_screenshot import QemuScreenshotOptions, QemuScreenshotService
+from distroforge.core.validate import validate_prebuild_vm_options
 
 # Source paths are anchored here, not at the working directory: pybuild runs the
 # test phase from the staged build tree, where a relative "distroforge/..." would
@@ -39,7 +40,14 @@ def test_qemu_lab_uefi_tpm_artifacts_are_explicit(tmp_path) -> None:
     commands = [spec.argv for spec in runner.history]
     qemu = next(argv for argv in commands if argv and argv[0] == "qemu-system-x86_64")
 
-    assert any(argv[0] == "copy-file" and "OVMF_VARS.fd" in argv[1] for argv in commands)
+    # The enrolled .ms store, not the plain one. Only it carries the Microsoft keys a
+    # signed shim chains to, so copying the plain template would boot with Secure Boot
+    # off while the report said it was on. Asserted by suffix rather than by full path
+    # so the test does not depend on which ovmf is installed on the runner.
+    assert any(
+        argv[0] == "copy-file" and argv[1].endswith(".ms.fd") and argv[2].endswith("OVMF_VARS.fd")
+        for argv in commands
+    )
     assert any(argv[:2] == ("swtpm", "socket") for argv in commands)
     assert any("if=pflash" in part for part in qemu)
     assert any("tpm-tis" in part for part in qemu)
@@ -74,3 +82,52 @@ def test_qemu_screenshot_uses_qmp_not_stdio_monitor(tmp_path) -> None:
     assert '"execute": "screendump"' in screendump[-1]
     assert '"filename"' in screendump[-1] and "qemu-boot.ppm" in screendump[-1]
     assert any(argv[:1] == ("qmp-command",) and argv[-1] == '{"execute": "quit", "arguments": {}}' for argv in commands)
+
+
+# validate_prebuild_vm_options had no test at all, which is how a firmware default
+# pointing at a file no ovmf package ships, and a Secure Boot flag that could be set
+# on a firmware build unable to enforce it, both survived.
+
+
+def _uefi_options(**overrides) -> PrebuildVmOptions:
+    return PrebuildVmOptions(enabled=True, firmware="uefi", **overrides)
+
+
+def test_uefi_validation_refuses_a_firmware_image_that_is_not_installed(tmp_path) -> None:
+    options = _uefi_options(ovmf_code=str(tmp_path / "absent.fd"))
+
+    codes = [issue.code for issue in validate_prebuild_vm_options(options)]
+
+    assert "prebuild-vm-ovmf-missing" in codes
+
+
+def test_secure_boot_refuses_a_firmware_build_that_cannot_enforce_it(tmp_path) -> None:
+    plain_code = tmp_path / "OVMF_CODE_4M.fd"
+    plain_vars = tmp_path / "OVMF_VARS_4M.fd"
+    plain_code.write_bytes(b"")
+    plain_vars.write_bytes(b"")
+    options = _uefi_options(secure_boot=True, ovmf_code=str(plain_code), ovmf_vars=str(plain_vars))
+
+    issues = validate_prebuild_vm_options(options)
+
+    # Refused rather than silently swapped: the caller named these paths, and a run
+    # that reports Secure Boot while the firmware ignores it is worse than no offer.
+    assert [issue.code for issue in issues] == ["prebuild-vm-secure-boot-firmware"]
+
+
+def test_secure_boot_accepts_the_enrolled_pair(tmp_path) -> None:
+    code = tmp_path / "OVMF_CODE_4M.secboot.fd"
+    store = tmp_path / "OVMF_VARS_4M.ms.fd"
+    code.write_bytes(b"")
+    store.write_bytes(b"")
+    options = _uefi_options(secure_boot=True, ovmf_code=str(code), ovmf_vars=str(store))
+
+    assert validate_prebuild_vm_options(options) == []
+
+
+def test_a_disabled_lab_is_never_asked_about_firmware(tmp_path) -> None:
+    # The gate must stay on `enabled`: a project that never runs a VM must not fail
+    # validation because the build host has no ovmf installed.
+    options = PrebuildVmOptions(enabled=False, firmware="uefi", ovmf_code=str(tmp_path / "absent.fd"))
+
+    assert validate_prebuild_vm_options(options) == []

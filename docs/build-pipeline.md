@@ -138,6 +138,33 @@ install smoke matrix, the boot-check and the QA matrix — is built from one can
 `QemuInvocation` in `core/qemu_invocation.py`, so the argv stays auditable and consistent
 instead of drifting across call sites.
 
+### Which UEFI firmware a run uses
+
+The firmware images are **detected, not hardcoded**. `--prebuild-vm-ovmf-code` and
+`--prebuild-vm-ovmf-vars` (and the matching GUI fields, which show the detected path as
+placeholder text) default to empty, meaning "use what is installed"; `default_ovmf_code`
+and `default_ovmf_vars` in `core/qemu_invocation.py` are the single answer, called by
+every option surface the way `package_artifact_dir` is.
+
+This is not a refactor for tidiness. `/usr/share/OVMF/OVMF_CODE.fd` was the default in
+nine places and has not been shipped since the firmware was rebuilt at a 4 MB flash size,
+so on any current Debian or Ubuntu **every UEFI launch in the product failed on a missing
+file** — a path no test covered, because `validate_prebuild_vm_options` had no test at
+all. The detection prefers the `_4M` names and keeps the historical ones as fallbacks for
+an older host.
+
+Secure Boot is a property of the firmware *pair*, not of the `-global … secure=on` flag:
+only the `.secboot` code build enforces it, and only the `.ms` variable store carries the
+enrolled Microsoft keys a signed shim chains to. `--prebuild-vm-secure-boot` therefore
+resolves that pair, and validation refuses an explicitly named pair that cannot enforce
+Secure Boot rather than substituting one silently — a VM reporting Secure Boot while
+running with it off is worse than not offering the option.
+
+A known gap: `distroforge boot-proof` has no firmware selector, so its QEMU backend always
+runs the BIOS profile. UEFI is reachable today through
+`build --prebuild-vm --prebuild-vm-firmware uefi`. On a BIOS host that distinction is the
+difference between a real proof and a green report about the half that already worked.
+
 The interactive preview is the drivable, human-facing counterpart to the headless lab.
 `distroforge preview PROJECT` plans the session as a dry-run and prints the exact QEMU
 command; `--execute` actually launches it. `--display` selects `gtk`, `spice`, or `none`:
