@@ -1,3 +1,25 @@
+distroforge (0.3.5-6) resolute; urgency=medium
+
+  * Stop a failed release bundle leaving its autopkgtest stash in /tmp. A
+    rebuild with --replace deletes output_dir wholesale, so an autopkgtest
+    report or directory living inside it is first copied aside into a
+    tempfile.mkdtemp() of its own. The two stashes were removed on the success
+    path only, with no try/finally, and create_hermetic_release_bundle raises
+    FileNotFoundError for a missing release artifact -- an ordinary outcome,
+    not a hypothetical one: it is what a bundle built against a half-built
+    artifact directory does every time, and shutil.copy2 and copytree can fail
+    between the same two points. Measured 2026-07-27 against the real /tmp:
+    one such failed rebuild left exactly 2 directories, and leaves 0 now. The
+    stash lifetime moves into a try/finally, keeping both the ignore_errors
+    removal and its position ahead of the report writers.
+  * The regression test records every mkdtemp rather than only checking that
+    the spool ends up empty, because an empty spool is equally what a run that
+    never stashed anything produces. It asserts that two stashes were created
+    and that neither survives, and was verified to fail on the code it
+    replaces.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 18:34:02 +0200
+
 distroforge (0.3.5-5) resolute; urgency=medium
 
   * Stop the test suite leaving temporary directories behind on every run. Six

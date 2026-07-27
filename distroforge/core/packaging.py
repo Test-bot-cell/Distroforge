@@ -421,50 +421,56 @@ def create_hermetic_release_bundle(
     autopkgtest_report = _resolve_autopkgtest_report(root, artifact_dir, autopkgtest_report)
     stashed_autopkgtest: Path | None = None
     stashed_autopkgtest_report: Path | None = None
-    if output_dir.exists() and any(output_dir.iterdir()):
-        if not replace:
-            raise FileExistsError(f"{output_dir} is not empty; pass --replace to rebuild this bundle")
-        if autopkgtest_report and autopkgtest_report.exists():
-            try:
-                autopkgtest_report.resolve().relative_to(output_dir)
-            except ValueError:
-                pass
-            else:
-                stashed_autopkgtest_report = Path(tempfile.mkdtemp(prefix="distroforge-autopkgtest-report-")) / "AUTOPKGTEST-DOCTOR.json"
-                shutil.copy2(autopkgtest_report, stashed_autopkgtest_report)
-                autopkgtest_report = stashed_autopkgtest_report
+    # The stashes below outlive the rmtree that empties output_dir, so their removal has to
+    # be reached on every exit -- including the FileNotFoundError a few lines down, which a
+    # half-built artifact directory raises as a matter of course. Without the finally, that
+    # ordinary failure left two directories in /tmp for good.
+    try:
+        if output_dir.exists() and any(output_dir.iterdir()):
+            if not replace:
+                raise FileExistsError(f"{output_dir} is not empty; pass --replace to rebuild this bundle")
+            if autopkgtest_report and autopkgtest_report.exists():
+                try:
+                    autopkgtest_report.resolve().relative_to(output_dir)
+                except ValueError:
+                    pass
+                else:
+                    stashed_autopkgtest_report = Path(tempfile.mkdtemp(prefix="distroforge-autopkgtest-report-")) / "AUTOPKGTEST-DOCTOR.json"
+                    shutil.copy2(autopkgtest_report, stashed_autopkgtest_report)
+                    autopkgtest_report = stashed_autopkgtest_report
+            if autopkgtest_dir and autopkgtest_dir.exists():
+                try:
+                    autopkgtest_dir.resolve().relative_to(output_dir)
+                except ValueError:
+                    pass
+                else:
+                    stashed_autopkgtest = Path(tempfile.mkdtemp(prefix="distroforge-autopkgtest-")) / "AUTOPKGTEST"
+                    shutil.copytree(autopkgtest_dir, stashed_autopkgtest)
+                    autopkgtest_dir = stashed_autopkgtest
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        required = _release_artifacts(artifact_dir, version)
+        copied: list[Path] = []
+        for path in required:
+            if not path.exists():
+                raise FileNotFoundError(path)
+            target = output_dir / path.name
+            shutil.copy2(path, target)
+            copied.append(target)
+        build_log = _latest_build_log(artifact_dir, version)
+        if build_log:
+            target = output_dir / build_log.name
+            shutil.copy2(build_log, target)
+            copied.append(target)
         if autopkgtest_dir and autopkgtest_dir.exists():
-            try:
-                autopkgtest_dir.resolve().relative_to(output_dir)
-            except ValueError:
-                pass
-            else:
-                stashed_autopkgtest = Path(tempfile.mkdtemp(prefix="distroforge-autopkgtest-")) / "AUTOPKGTEST"
-                shutil.copytree(autopkgtest_dir, stashed_autopkgtest)
-                autopkgtest_dir = stashed_autopkgtest
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    required = _release_artifacts(artifact_dir, version)
-    copied: list[Path] = []
-    for path in required:
-        if not path.exists():
-            raise FileNotFoundError(path)
-        target = output_dir / path.name
-        shutil.copy2(path, target)
-        copied.append(target)
-    build_log = _latest_build_log(artifact_dir, version)
-    if build_log:
-        target = output_dir / build_log.name
-        shutil.copy2(build_log, target)
-        copied.append(target)
-    if autopkgtest_dir and autopkgtest_dir.exists():
-        _copy_tree(autopkgtest_dir, output_dir / "AUTOPKGTEST")
-    if autopkgtest_report and autopkgtest_report.exists():
-        shutil.copy2(autopkgtest_report, output_dir / "AUTOPKGTEST-DOCTOR.json")
-    if stashed_autopkgtest_report:
-        shutil.rmtree(stashed_autopkgtest_report.parent, ignore_errors=True)
-    if stashed_autopkgtest:
-        shutil.rmtree(stashed_autopkgtest.parent, ignore_errors=True)
+            _copy_tree(autopkgtest_dir, output_dir / "AUTOPKGTEST")
+        if autopkgtest_report and autopkgtest_report.exists():
+            shutil.copy2(autopkgtest_report, output_dir / "AUTOPKGTEST-DOCTOR.json")
+    finally:
+        if stashed_autopkgtest_report:
+            shutil.rmtree(stashed_autopkgtest_report.parent, ignore_errors=True)
+        if stashed_autopkgtest:
+            shutil.rmtree(stashed_autopkgtest.parent, ignore_errors=True)
 
     checks = _write_hermetic_bundle_reports(
         root,

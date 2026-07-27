@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
+
+import pytest
 
 from distroforge.cli import main
 from distroforge.core.command import CommandResult, CommandRunner
@@ -416,6 +419,72 @@ def test_hermetic_release_bundle_writes_manifest_and_reports(tmp_path, monkeypat
     assert "AUTOPKGTEST-DOCTOR.json" in (output / "BUNDLE-CONTRACT.json").read_text(encoding="utf-8")
     assert "autopkgtest doctor: passed: passed" in (output / "VERIFY-REPORT.txt").read_text(encoding="utf-8")
     assert "OpenAI-shaped key path hits: 0" in (output / "OPENAI-SECRET-AUDIT.txt").read_text(encoding="utf-8")
+
+
+def test_a_failed_rebuild_does_not_leave_its_autopkgtest_stash_in_the_temporary_directory(
+    tmp_path, monkeypatch
+) -> None:
+    """`--replace` copies the autopkgtest evidence out of the way, then must put it back.
+
+    A rebuild deletes `output_dir` wholesale, so any autopkgtest report or directory living
+    *inside* it is first copied to a `mkdtemp` of its own. Those two stashes were removed on
+    the success path only, with no `try`/`finally` around them, and the function raises
+    `FileNotFoundError` for a missing release artifact well before reaching the removal --
+    an ordinary error, not a hypothetical one: it is exactly what a bundle built against a
+    half-built artifact directory does.
+
+    The test records every `mkdtemp` rather than merely checking that the spool ends up
+    empty, because an empty spool is also what a run that never stashed anything produces.
+    Asserting that two stashes were created *and* that neither survives is the difference
+    between a regression test and an assertion that cannot fail.
+    """
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    stashes: list[str] = []
+    mkdtemp = tempfile.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        created = mkdtemp(*args, **kwargs)
+        stashes.append(created)
+        return created
+
+    monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
+
+    root = tmp_path / "root"
+    (root / "debian").mkdir(parents=True)
+    (root / "debian/changelog").write_text(
+        "distroforge (0.3.4-2) resolute; urgency=medium\n\n"
+        "  * Test release.\n\n"
+        " -- DistroForge maintainers <maintainers@distroforge.invalid>  Wed, 03 Jun 2026 12:00:00 +0200\n",
+        encoding="utf-8",
+    )
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+
+    # The evidence of the previous run, inside the directory the rebuild is about to delete.
+    output = tmp_path / "bundle"
+    (output / "AUTOPKGTEST").mkdir(parents=True)
+    (output / "AUTOPKGTEST/summary").write_text("smoke PASS\n", encoding="utf-8")
+    (output / "AUTOPKGTEST-DOCTOR.json").write_text(
+        json.dumps({"schema": "distroforge.autopkgtest-doctor.v1", "status": "passed"}) + "\n",
+        encoding="utf-8",
+    )
+
+    # artifact_dir is empty, so the first required release artifact is missing.
+    with pytest.raises(FileNotFoundError):
+        create_hermetic_release_bundle(
+            root,
+            output_dir=output,
+            artifact_dir=artifact_dir,
+            autopkgtest_dir=output / "AUTOPKGTEST",
+            autopkgtest_report=output / "AUTOPKGTEST-DOCTOR.json",
+            replace=True,
+        )
+
+    assert len(stashes) == 2, "the report and the directory should both have been stashed"
+    assert [path for path in stashes if os.path.exists(path)] == []
+    assert list(spool.iterdir()) == []
 
 
 def test_hermetic_build_plan_is_deterministic_for_supported_backends(tmp_path) -> None:
