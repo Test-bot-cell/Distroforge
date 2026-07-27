@@ -697,6 +697,12 @@ def test_this_package_resolves_to_the_vendor_it_actually_targets() -> None:
     resolved = lintian_vendor_for_suite(suite)
     assert resolved in LINTIAN_VENDORS
     claimed = LINTIAN_VENDORS_ROOT / resolved / "main/data/changes-file/known-dists"
+    if not claimed.is_file():
+        # lintian ships its base vendor as a built-in profile with no directory under
+        # vendors/, so the fallback has no suite list to check against. Reading one anyway
+        # raised FileNotFoundError, which said nothing about what had gone wrong.
+        assert resolved == LINTIAN_PROFILE, f"{resolved!r} is an installed vendor with no suite list"
+        return
     assert suite in claimed.read_text(encoding="utf-8").split(), (
         f"{resolved!r} was chosen for {suite!r} but does not list it"
     )
@@ -712,6 +718,36 @@ def test_the_changelog_suite_reader_takes_the_first_of_several(tmp_path) -> None
     assert debian_changelog_suite(root) == "resolute"
     (root / "debian/changelog").write_text("nonsense\n", encoding="utf-8")
     assert debian_changelog_suite(root) == ""
+
+
+def test_an_unreleased_entry_does_not_hand_the_package_to_another_vendor(tmp_path) -> None:
+    """UNRELEASED is what a changelog says for the whole of a development cycle.
+
+    No lintian vendor claims that name, so reading the top stanza alone resolved to the
+    pinned fallback and brought back the regression the comment on LINTIAN_PROFILE
+    describes -- an Ubuntu-targeted package graded against the Debian profile and rated
+    "failed" for a correct Distribution field -- for every run between two releases. It
+    stayed invisible because the shipped changelog had never once said UNRELEASED; every
+    stanza was written already naming its suite. Opening 0.3.5-17 said it out loud.
+    """
+    trailer = " -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:41:12 +0200\n"
+    root = tmp_path / "pkg"
+    (root / "debian").mkdir(parents=True)
+    (root / "debian/changelog").write_text(
+        f"distroforge (0.3.5-17) UNRELEASED; urgency=medium\n\n  * In progress.\n\n{trailer}"
+        f"\ndistroforge (0.3.5-16) resolute; urgency=medium\n\n  * Released.\n\n{trailer}",
+        encoding="utf-8",
+    )
+
+    assert debian_changelog_suite(root) == "resolute"
+    vendors = _vendors_root(tmp_path, {"debian": ("sid",), "ubuntu": ("resolute",)})
+    assert lintian_vendor_for_suite(debian_changelog_suite(root), vendors_root=vendors) == "ubuntu"
+
+    # A changelog with nothing but UNRELEASED in it names no target, and the pinned
+    # fallback is the right answer there rather than a guess.
+    (root / "debian/changelog").write_text(f"distroforge (0.1-1) UNRELEASED; urgency=low\n\n  * New.\n\n{trailer}", encoding="utf-8")
+    assert debian_changelog_suite(root) == ""
+    assert lintian_vendor_for_suite(debian_changelog_suite(root), vendors_root=vendors) == LINTIAN_PROFILE
 
 
 def test_lintian_errors_block_and_a_silent_run_passes() -> None:

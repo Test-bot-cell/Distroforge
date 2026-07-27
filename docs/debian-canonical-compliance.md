@@ -70,6 +70,12 @@ the gap is part of the rule, not an exception to it:
   verdict is graded from tags, DistroForge rated its own compliant package `failed`.
   Resolving from the changelog keeps the verdict reproducible, because the changelog
   travels with the source while the build host does not.
+  The suite is read from the newest stanza that names one, skipping `UNRELEASED`. That is
+  not a nicety: `UNRELEASED` is what the top stanza says for the whole of a development
+  cycle, no vendor claims that name, so reading the top stanza alone sent the profile to
+  the `debian` fallback and reinstated the same regression between every pair of releases.
+  It went unseen because no shipped stanza had ever said `UNRELEASED` -- each was written
+  already naming its suite -- until 0.3.5-17 opened one and the gate went red on it.
   The verdict is read from the emitted tags rather than the exit code, since `lintian`
   exits 0 on a package that carries warnings.
 - Tags are fixed, never overridden. The package ships no

@@ -517,7 +517,16 @@ def debian_changelog_version(root: Path) -> str:
 
 
 def debian_changelog_suite(root: Path) -> str:
-    """The suite the top changelog stanza targets, or "" when it cannot be read.
+    """The suite this source targets, or "" when the changelog names none.
+
+    Deliberately not the top stanza's Distribution field. Between releases that field
+    is UNRELEASED, which is the normal state of a changelog and which no lintian vendor
+    claims -- so reading the top stanza alone sent :func:`lintian_vendor_for_suite` to
+    the pinned fallback and brought back, for the whole development cycle, the exact
+    regression documented on :data:`LINTIAN_PROFILE`: an Ubuntu-targeted package graded
+    against the Debian profile and rated "failed" over a Distribution field that was
+    correct. UNRELEASED names no target. The newest stanza that names one does, and it
+    is also the suite the entry will carry once it is released.
 
     Unreadable is not an error here: the only caller feeds this to
     :func:`lintian_vendor_for_suite`, which falls back to the pinned vendor.
@@ -526,9 +535,16 @@ def debian_changelog_suite(root: Path) -> str:
     changelog = root / "debian/changelog"
     if not changelog.exists():
         return ""
-    lines = changelog.read_text(encoding="utf-8").splitlines()
-    match = re.match(r"^\S+ \([^)]+\)\s+([^;]+);", lines[0] if lines else "")
-    return match.group(1).split()[0] if match else ""
+    for line in changelog.read_text(encoding="utf-8").splitlines():
+        # Only a stanza header starts in column zero; bodies are indented and the
+        # trailer starts with " -- ".
+        match = re.match(r"^\S+ \([^)]+\)\s+([^;]+);", line)
+        if match is None:
+            continue
+        suite = match.group(1).split()[0]
+        if suite.upper() != "UNRELEASED":
+            return suite
+    return ""
 
 
 def _latest_build_log(artifact_dir: Path, version: str) -> Path | None:

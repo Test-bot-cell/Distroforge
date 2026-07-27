@@ -1,3 +1,47 @@
+distroforge (0.3.5-17) UNRELEASED; urgency=medium
+
+  * Corrected a false reassurance in docs/packaging-release.md. It said that
+    keys.openpgp.org and keyserver.ubuntu.com both answering 404 for the
+    signing key's fingerprint meant nothing personal was published yet, so
+    the filtered key export was a precaution rather than a repair. Measured
+    2026-07-27: https://github.com/<login>.gpg answers 200 with 4043 bytes,
+    unauthenticated, serving that key with its personal user id on it, which
+    GitHub does by design for every key uploaded to an account. Two
+    keyservers not holding a key was never evidence that nothing holds it,
+    and the account had not been asked. The section now says what was
+    measured, names the account setting as the only lever, and records that
+    what removing the key does to the Verified badge on commits already
+    signed with it has not been measured.
+  * Recorded the first release tag under the convention 0.3.5-16 added,
+    debian/0.3.5-16 on 38217da: annotated, good local signature, and
+    reported verified by GitHub's git/tags endpoint. Also documented the
+    trap that comes with it -- an unanswered pinentry dialog fails the sign
+    with a timeout sourced to <Pinentry>, which reads like a broken agent
+    and is a command run where nobody was looking -- and the one ruleset
+    scope question that had to be settled by pushing rather than by reading:
+    deletion, non_fast_forward and update freeze an existing debian/* tag
+    without blocking the creation of the next one.
+  * Fixed the lintian vendor resolution for an UNRELEASED changelog entry --
+    a defect this very entry exposed, since opening it turned the gate red.
+    debian_changelog_suite() read the top stanza's Distribution field, which
+    says UNRELEASED for the whole of a development cycle. No lintian vendor
+    claims that name, so the profile fell back to debian and reinstated the
+    regression that comment on LINTIAN_PROFILE is written to prevent: an
+    Ubuntu-targeted package graded against the Debian profile, told
+    bad-distribution-in-changes-file about a correct field, and rated
+    "failed" by DistroForge itself -- between every pair of releases, not
+    once. Measured on this tree: the old reading gives UNRELEASED and
+    profile debian, the new one gives resolute and profile ubuntu. It now
+    reads the newest stanza that names a suite, which is also the suite the
+    entry will carry when released. Nothing had noticed because no shipped
+    stanza had ever said UNRELEASED; every one was written already naming
+    its suite. The test that caught it also read a vendor data file without
+    checking it was there, so a wrong vendor arrived as FileNotFoundError
+    instead of as a diagnosis; lintian ships its base vendor as a built-in
+    with no directory under vendors/, which is the case that hits.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:41:12 +0200
+
 distroforge (0.3.5-16) resolute; urgency=medium
 
   * Released versions are anchored to commits. This changelog reached 46
