@@ -266,6 +266,18 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     while leaving dry_run real, since dry_run is the subject. The job that
     caught it is the one that exists to run the suite the way debian/rules
     does, as an unprivileged user in a minimal container.
+  * Read golden-path.yml once more before spending a runner on it, since
+    every flag it names costs a ninety-minute run to get wrong. All fifteen
+    are real, and the ISO path the boot proof resolves is the one the build
+    writes, because default_output_iso derives from the project name and
+    release rather than from the definition. Two defects were left: both
+    staging steps run under if: always(), so a run that died before there
+    was anything to stage would fail the staging and then the upload,
+    putting two red steps in front of the one that broke. They now write a
+    one-line NO-EVIDENCE note instead. Also recorded that the container job
+    gets "sh -e {0}" and not bash, measured in ci.yml's log for the same
+    image, so a bashism there would pass every local check and fail only
+    inside the container.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

@@ -240,6 +240,15 @@ jobs:
         if: always()
         run: |
           mkdir -p golden-path-evidence
+          if [ ! -d "$DERIVATIVE_ROOT/dist" ]; then
+            # always() means this also runs when the build died early, or before the step
+            # that sets DERIVATIVE_ROOT ran at all. Say so in the bundle instead of letting
+            # tar and then upload-artifact fail: two red steps in front of the one that
+            # actually broke is how a log gets read wrong.
+            echo "no dist directory: the run failed before the project had one" \
+              | tee golden-path-evidence/NO-EVIDENCE.txt
+            exit 0
+          fi
           find "$DERIVATIVE_ROOT/dist" -name '*.iso' -printf 'excluded from evidence: %p (%s bytes)\n' || true
           tar -C "$DERIVATIVE_ROOT/dist" --exclude='*.iso' -cf - . \
             | tar -C golden-path-evidence -xf -
@@ -265,6 +274,10 @@ jobs:
     # as root, so the tests that lock a directory to 0500 and expect a PermissionError skip
     # instead of running (tests/conftest.py:85). ci.yml's distro-dependencies job runs the
     # same suite as an unprivileged builder, which is where those tests are covered.
+    #
+    # Every run: script below is POSIX sh, not bash. Measured, not assumed: ci.yml's job in
+    # this same image logs "shell: sh -e {0}", so a bashism here would fail inside the
+    # container while passing every local check.
     runs-on: ubuntu-latest
     container: ubuntu:devel
     timeout-minutes: 45
@@ -343,6 +356,11 @@ jobs:
           mkdir -p golden-path-evidence
           cp "$RUNNER_TEMP/debian-package.json" golden-path-evidence/ || true
           cp ../*.deb ../*.changes ../*.buildinfo golden-path-evidence/ || true
+          # Same reason as the ISO leg: if the build never got as far as producing anything,
+          # if-no-files-found: error would fail the upload on top of the real failure.
+          [ -n "$(find golden-path-evidence -type f -print -quit)" ] \
+            || echo "no build outputs: the run failed before dpkg-buildpackage wrote any" \
+               | tee golden-path-evidence/NO-EVIDENCE.txt
           find golden-path-evidence -type f | sort
 
       - name: Publish the package
