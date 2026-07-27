@@ -208,7 +208,12 @@ QEMU online/offline install smoke matrix.
      restores it, mode 1777.
 
    The image itself carries neither: the tmpfs is discarded and `run/*` is excluded from the
-   squashfs, so nothing seeded for a build phase can reach whoever boots the ISO.
+   squashfs, so nothing seeded for a build phase can reach whoever boots the ISO. What did
+   reach it is the copy the postinst leaves behind on the *persistent* rootfs at
+   `/etc/.resolv.conf.systemd-resolved.bak` — this machine's nameserver and search domain,
+   picked up by the squashfs, read by nothing in the image, and different between two builds
+   of one definition on two machines. The sanitize phase deletes it, whatever the sanitize
+   options say: keeping the build machine's DNS out of a delivered image is not a preference.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after

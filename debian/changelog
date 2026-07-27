@@ -122,6 +122,13 @@ distroforge (0.3.5-4) resolute; urgency=medium
     the bind it replaced: any uid on the build machine could write into the
     target's /run for a whole phase, including over the resolver that every apt
     call in that phase reads.
+  * Stop shipping the build machine's own DNS inside the image. The same
+    postinst leaves what it found at /etc/.resolv.conf.systemd-resolved.bak on
+    the persistent rootfs -- measured at 929 bytes ending in "nameserver
+    127.0.0.53" and this machine's search domain -- where the squashfs picks it
+    up, nothing in the image reads it, and two builds of one definition on two
+    machines differ. The sanitize phase now deletes it, whatever the sanitize
+    options say.
   * Run the changelog's own policy tests from pre-commit when it changes. The
     entry above went out one character over the lintian line limit, because
     the changelog is written after the gate has been run, and CI answered a

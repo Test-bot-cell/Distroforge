@@ -111,6 +111,19 @@ class SanitizeService:
             chroot.run("find", "/tmp", "/var/tmp", "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "{}", "+")
         if self.options.ssh_host_keys:
             chroot.run("find", "/etc/ssh", "-maxdepth", "1", "-type", "f", "-name", "ssh_host_*", "-delete")
+        self._drop_host_resolver_backup(chroot)
+
+    def _drop_host_resolver_backup(self, chroot: ChrootService) -> None:
+        # Not optional, unlike everything above: no image should carry the nameserver and
+        # search domain of the machine that built it. systemd-resolved's postinst moves
+        # whatever /etc/resolv.conf it finds to this backup before installing its symlink,
+        # and what it finds is mmdebstrap's copy of the build machine's own resolver. Measured
+        # in a desktop rootfs: 929 bytes ending in `nameserver 127.0.0.53` and
+        # `search mshome.net`, on the persistent rootfs, so it is packed into the squashfs and
+        # ships. Two builds of one definition on two machines also differ in it, which is a
+        # reproducibility claim broken by a file nothing in the image reads: only the postrm
+        # of systemd-resolved would, and only to restore a resolver the target never had.
+        chroot.run("rm", "-f", "/etc/.resolv.conf.systemd-resolved.bak")
 
     def _guarded_autoremove(self, chroot: ChrootService) -> None:
         protected = {
