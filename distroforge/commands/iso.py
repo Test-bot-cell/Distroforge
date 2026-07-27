@@ -23,6 +23,10 @@ def register_iso_commands(subparsers) -> None:
     iso_build_parser.add_argument("--output-iso", type=Path)
     iso_build_parser.add_argument("--boot-proof", default="none", choices=["none", "auto", "qemu", "iso-scan"])
     iso_build_parser.add_argument("--json", action="store_true")
+    # Same option, same meaning as `distroforge build --log-file`. Omitted, the log still
+    # gets written, under <root>/logs; the default lives in run_iso_build so demo-iso and
+    # any future caller inherit it rather than each having to remember.
+    iso_build_parser.add_argument("--log-file", type=Path, help="Where to record every command this build runs (default: <root>/logs/iso-build.jsonl)")
 
     iso_accept_parser = subparsers.add_parser("iso-accept", help="Accept or block a produced ISO for publication")
     iso_accept_parser.add_argument("root", type=Path)
@@ -55,7 +59,7 @@ def render_iso_command(args) -> tuple[str, bool] | None:
     if args.command == "iso-build":
         from distroforge.commands.iso_build import render_iso_build
 
-        rendered, blocked = render_iso_build(args.root, args.definition, args.execute, args.output_iso, args.boot_proof, args.json)
+        rendered, blocked = render_iso_build(args.root, args.definition, args.execute, args.output_iso, args.boot_proof, args.json, args.log_file)
         return rendered, blocked
     if args.command == "iso-accept":
         from distroforge.commands.iso_accept import render_iso_accept

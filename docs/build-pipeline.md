@@ -41,6 +41,30 @@ command resolves it through the single helper `default_output_iso(project)` in
 must call that helper rather than rebuild the path. Pass `--iso` explicitly only when the
 ISO does not sit at that default path.
 
+### The command log
+
+Every command a build runs is recorded, one JSON object per line, and the path is resolved
+through a single helper for the same reason the ISO name is: `default_command_log(project,
+entry_point)` in `core/artifact_paths.py`. `distroforge build` writes
+`logs/build.jsonl`, `distroforge iso-build` writes `logs/iso-build.jsonl`, and the two are
+kept apart because appending two different runs into one file interleaves them into
+something no one can read. Successive runs of the same entry point do append, which is what
+a reader of a scheduled job wants. Override with `--log-file` on either command; in the GUI
+the **JSONL log file** field on **Advanced Modules** does the same, and leaving it blank
+means the default rather than no log.
+
+Each line carries the command, its argv, its working directory, whether it needed root,
+its exit status, and a tail of what it printed on stdout and on stderr — for every command,
+not only the ones that failed. That last part was the fix for a specific hole: a build tool
+exiting 0 is a claim about the tool, and when the first real golden-path run had a bootstrap
+exit 0 after 23 seconds leaving a tree with no `apt-get`, the tool's explanation was
+discarded, because a command's own words reached a human only through the exception raised
+for a *failing* command. The tail is capped per stream and says how many characters it
+dropped, so a short record cannot be mistaken for a quiet tool.
+
+What is never recorded is stdin: the log keeps a boolean saying whether there was any. That
+is where a passphrase would be.
+
 Build options are governed by `commands/build_contracts.py`. Each option is assigned to
 Beginner, Power user, Maintainer, or Developer level, plus an expected GUI surface. The
 contract is tested against the parser and GUI so the build cycle remains explicit instead

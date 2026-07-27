@@ -185,6 +185,19 @@ and the reports, from which the image is reproducible. The package leg publishes
 `dist/reports` while the build writes `dist`, so the default reports a successful build's
 own artifacts as missing.
 
+The bundle also carries `logs/`, the command log described in
+[build-pipeline.md](build-pipeline.md) — every command the build ran, its exit status, and a
+tail of what it printed. It is staged **before** the check for a `dist` directory and
+independently of it, because a build that dies early is at once the run whose log matters
+most and the run that has no `dist` to publish. For the same reason, a failing report makes
+the ISO step print the end of that log inline: `.failure` carries only the command that
+exited non-zero, and the first real failure here was *caused* by a command that exited zero.
+
+Before this, there was no command log to stage. `run_iso_build` accepted a `log_path` and
+both of its production callers passed nothing, so `_write_event` returned on its first line
+and `distroforge iso-build --execute` recorded nothing at all. The default now lives in
+`run_iso_build` rather than in each caller.
+
 ## What the first real run measured
 
 Dispatched 2026-07-27, and it is the reason several numbers on this page are now facts
@@ -261,7 +274,9 @@ about the tool, not about the tree, and this build believed it twice over:
 - nothing checked the tree the tool had just made, so the build ran five more phases
   before a chroot said `apt-get` was missing — by which point the tool's own output,
   which would have named what it declined to install, had been discarded, because the
-  runner keeps output only for commands that *fail*;
+  runner then kept output only for commands that *failed*, and passed on no log path at
+  all from this entry point. Both of those are fixed above, so the next run keeps the
+  bootstrap's own words whatever it does with them;
 - and `rootfs_verdict` graded that tree **reusable**, because completeness was
   `var/lib/dpkg/status` plus an `os-release`, both of which it had. A re-run would have
   skipped the bootstrap and hit the same missing `apt-get`, with no bootstrap left in the

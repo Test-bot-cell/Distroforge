@@ -258,6 +258,9 @@ def build_window_widgets(window) -> None:
     window.ci_check = QCheckBox("CI mode")
     window.skip_deps_check = QCheckBox("Skip host dependency precheck")
     window.log_file_edit = QLineEdit()
+    # Say what the blank field does, since the answer changed: it used to mean no log was
+    # kept at all, and now it means the same file `distroforge build` writes.
+    window.log_file_edit.setPlaceholderText("<project>/logs/build.jsonl")
     window.drivers_auto_check = QCheckBox("Auto-install drivers")
     window.oem_check = QCheckBox("OEM reset on first boot")
     window.enable_services_edit = QPlainTextEdit()

@@ -236,6 +236,22 @@ jobs:
           jq -e '.failure == null' "$REPORT" \
             || jq -r '"FAILED: \(.failure.description) (exit \(.failure.returncode))",
                       "  \(.failure.command | join(" "))", "", .failure.output' "$REPORT"
+          # The commands that did *not* fail, when something did. The first real failure
+          # here was caused by a command that exited 0 -- a bootstrap that left no apt-get
+          # -- and .failure only ever carries the one that exited non-zero. The log keeps a
+          # tail of every command's own output now, so print the end of it here rather than
+          # making a reader download the evidence artifact to see what the tool said.
+          if ! jq -e '.failure == null' "$REPORT" >/dev/null; then
+            LOG=$(jq -r '.command_log // empty' "$REPORT")
+            if [ -n "$LOG" ] && [ -f "$LOG" ]; then
+              echo "--- tail of $LOG ---"
+              jq -r 'select(.event == "finish")
+                     | "exit \(.returncode): \(.command)",
+                       ((.stdout // "") + (.stderr // "") | rtrimstr("\n"))' "$LOG" | tail -n 120
+            else
+              echo "--- no command log at '$LOG' ---"
+            fi
+          fi
           jq -e '.status == "built"' "$REPORT"
           jq -e '.execute == true'   "$REPORT"
           jq -e '.output_exists'     "$REPORT"
@@ -321,6 +337,18 @@ jobs:
         if: always()
         run: |
           mkdir -p golden-path-evidence
+          # The command log first, and outside the dist check below, because a build that
+          # dies early is exactly the run whose log matters and exactly the run that has no
+          # dist directory. iso-build writes it without being asked, to <root>/logs
+          # (core/artifact_paths.py default_command_log); before that it wrote nothing at
+          # all, and the first real failure here had no line-by-line record to read.
+          if [ -n "$DERIVATIVE_ROOT" ] && [ -d "$DERIVATIVE_ROOT/logs" ]; then
+            cp -r "$DERIVATIVE_ROOT/logs" golden-path-evidence/logs
+            wc -l golden-path-evidence/logs/*.jsonl || true
+          else
+            echo "no logs directory under '$DERIVATIVE_ROOT'" \
+              | tee golden-path-evidence/NO-COMMAND-LOG.txt
+          fi
           if [ ! -d "$DERIVATIVE_ROOT/dist" ]; then
             # always() means this also runs when the build died early, or before the step
             # that sets DERIVATIVE_ROOT ran at all. Say so in the bundle instead of letting

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Protocol
 
+from distroforge.core.artifact_paths import default_command_log
 from distroforge.core.build import BuildOrchestrator, BuildProgress
 from distroforge.core.command import CommandRunner
 from distroforge.core.doctor import (
@@ -100,8 +101,13 @@ class BuildController:
         assert window.project
         project = window.project
         options = window._build_options()
+        # An empty field means "wherever you normally put it", not "nowhere". It used to
+        # mean nowhere: log_path=None makes _write_event return without writing
+        # (core/command.py:224), so the default GUI build kept no record of the commands it
+        # ran, while `distroforge build` with no --log-file kept one. Same default now, so
+        # cli_equivalent's omission of --log-file for a blank field stays truthful.
         text = window.log_file_edit.text().strip()
-        log_path = Path(text) if text else None
+        log_path = Path(text) if text else default_command_log(project, "build")
         plan_steps = BuildOrchestrator(project, CommandRunner(dry_run=True), options).plan()
         window._populate_plan_steps(plan_steps)
         window._job_step_total = len(plan_steps)

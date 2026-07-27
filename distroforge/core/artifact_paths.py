@@ -46,6 +46,22 @@ def default_output_iso(project: Project) -> Path:
     return project.output_dir / f"{project.name}-{project.release.version}.iso"
 
 
+def default_command_log(project: Project, entry_point: str) -> Path:
+    """Canonical place the command log of a build goes.
+
+    ``entry_point`` names the command that ran, because two of them build -- ``build`` and
+    ``iso-build`` -- and appending both into one file would interleave two runs into a
+    single unreadable stream. The runner opens the file in append mode, so successive runs
+    of the *same* entry point do accumulate, which is what a reader of a weekly job wants.
+
+    One function rather than a literal at each call site: the path was spelled once, in
+    commands/build.py, and the two other entry points that build simply had no log. Under
+    ``logs`` and not under ``dist`` on purpose -- a log is not a distributable, and the
+    golden path stages the two separately.
+    """
+    return project.root / "logs" / f"{entry_point}.jsonl"
+
+
 def package_artifact_dir(root: Path, override: Path | None = None) -> Path:
     """Canonical location of the Debian artifacts built from ``root``.
 

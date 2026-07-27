@@ -83,6 +83,32 @@ class CommandResult:
     stderr: str
 
 
+# How much of each stream the command log keeps. The case that decided the number is a
+# command that exits 0 and does nothing: in the first real golden-path run mmdebstrap
+# returned 0 after 23 seconds and the tree it left had no apt-get, and the reason -- what
+# it declined to install, and why -- was in output nobody kept. Only CommandError carries
+# a command's words to a human, and this command had not failed.
+#
+# A tail, not the whole stream, because apt and mksquashfs emit megabytes of progress and
+# the sentence that explains a refusal is at the end. Both streams, because tools disagree
+# about which one a warning belongs on.
+_LOGGED_OUTPUT_TAIL = 4000
+
+
+def _logged_tail(text: str, limit: int = _LOGGED_OUTPUT_TAIL) -> str | None:
+    """The end of ``text``, saying so when it is only the end.
+
+    Returns None for an empty stream so the log carries no key rather than an empty one:
+    a dry run genuinely has no output, and that is not the same fact as a command that
+    ran and said nothing.
+    """
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"[{len(text) - limit} earlier characters dropped]\n{text[-limit:]}"
+
+
 class CommandError(RuntimeError):
     def __init__(self, result: CommandResult) -> None:
         message = f"Command failed with exit code {result.returncode}: {result.spec.display()}"
@@ -234,6 +260,13 @@ class CommandRunner:
             "description": spec.description,
             "has_stdin": spec.stdin is not None,
             "returncode": result.returncode if result else None,
+            # The command's own words, for every command rather than only the ones that
+            # fail. stdin stays a bare boolean above on purpose -- it is where a
+            # passphrase would be -- but stdout and stderr are what the tool chose to
+            # say about its own work, and a build whose log records only exit statuses
+            # cannot answer why a successful command left nothing behind.
+            "stdout": _logged_tail(result.stdout) if result else None,
+            "stderr": _logged_tail(result.stderr) if result else None,
         }
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")

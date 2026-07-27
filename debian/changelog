@@ -381,6 +381,29 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     had hand-copied the old two-path definition and all four broke in
     assertions about something else, so tests/conftest.py now builds the
     fixture tree from _ROOTFS_REQUIREMENTS itself.
+  * Made a build able to explain a command that exited 0 and did nothing --
+    the failure mode the previous entry refuses but could not diagnose. Two
+    separate holes erased the evidence. CommandRunner._write_event recorded a
+    returncode and never a line of output, for any event, so a command's own
+    words reached a human only through the exception raised for a command that
+    failed; the log now keeps a capped tail of stdout and of stderr for every
+    command, saying how many characters it dropped so a short record cannot be
+    read as a quiet tool. stdin stays a bare boolean, because that is where a
+    passphrase would be. And run_iso_build took a log_path that both of its
+    production callers left unset, so _write_event returned on its first line
+    and "distroforge iso-build --execute" -- the command the weekly golden path
+    runs -- produced no command log at all, while "distroforge build" produced
+    one. The default now lives in the core function rather than in each caller,
+    resolved through a new single helper default_command_log(project,
+    entry_point) alongside default_output_iso; iso-build gains --log-file to
+    override it, the report names the log it wrote so a reader can find it, and
+    a blank JSONL log file field in the GUI now means the same default instead
+    of no log. On failure the golden path prints the end of that log inline,
+    since .failure carries only the command that exited non-zero and the first
+    real failure was caused by one that exited zero, and it stages logs/ into
+    the evidence bundle before and independently of the check for a dist
+    directory -- a build that dies early is at once the run whose log matters
+    most and the run with no dist to publish.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

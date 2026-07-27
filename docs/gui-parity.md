@@ -160,6 +160,11 @@ needed to produce an ISO and prints the explicit apt install command.
 project has not produced an ISO yet and returns one next command.
 `iso-build PROJECT --execute` maps to **ISO Build** on Build & Release. The GUI button
 uses the executing build flow with confirmation, preflight, progress and logs.
+`iso-build --log-file` and `build --log-file` both map to **JSONL log file** on Advanced
+Modules, with a host save-file chooser. Left blank, the GUI writes the same default the CLI
+does when the option is omitted — `logs/build.jsonl` under the project — so the omission
+`cli_equivalent` prints for a blank field stays truthful. It used to mean the GUI kept no
+command log at all.
 `iso-accept PROJECT` maps to **Accept ISO** on Build & Release. It checks the produced ISO
 against `ISO-BUILD.json`, boot proof evidence and the release gate, then writes
 `ISO-ACCEPTANCE.json`.

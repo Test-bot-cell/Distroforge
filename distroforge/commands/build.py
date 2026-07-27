@@ -9,6 +9,7 @@ from distroforge.commands.build_options import (
     build_options_from_args,
 )
 from distroforge.commands.output_policy import print_command_history
+from distroforge.core.artifact_paths import default_command_log
 from distroforge.core.build import BuildOptions, BuildOrchestrator, BuildProgress
 from distroforge.core.command import CommandRunner
 from distroforge.core.definition import apply_definition, load_definition
@@ -74,7 +75,7 @@ def run_build(args: argparse.Namespace) -> None:
     else:
         options = build_options_from_args(project, args)
     apply_cli_overrides(project, args, options)
-    log_path = args.log_file or project.root / "logs" / "build.jsonl"
+    log_path = args.log_file or default_command_log(project, "build")
     runner = CommandRunner(dry_run=not args.execute, log_path=log_path)
 
     def report_progress(update: BuildProgress) -> None:

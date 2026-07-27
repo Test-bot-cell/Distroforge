@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .artifact_paths import default_output_iso
+from .artifact_paths import default_command_log, default_output_iso
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
 from .command import CommandError, CommandRunner
@@ -73,6 +73,13 @@ class IsoBuildReport:
     output_sha256: str = ""
     boot_proof: BootProofReport | None = None
     failure: BuildFailure | None = None
+    command_log: Path | None = None
+    """Where every command this build ran was recorded, named so a reader can find it.
+
+    The report is what callers are told to read, and for one release cycle it described a
+    failure without ever mentioning that a line-by-line log of the run existed -- because
+    it did not: log_path arrived as None from both callers.
+    """
 
     @property
     def blocked(self) -> bool:
@@ -98,6 +105,7 @@ class IsoBuildReport:
             "failure": self.failure.to_dict() if self.failure else None,
             "execute": self.execute,
             "report": str(self.report),
+            "command_log": str(self.command_log) if self.command_log else None,
             "doctor": self.doctor.to_dict(),
             "build_steps": list(self.build_steps),
             "output_exists": self.output_exists,
@@ -120,6 +128,7 @@ class IsoBuildReport:
             f"Output size: {self.output_size}",
             f"Output SHA256: {self.output_sha256 or 'missing'}",
             f"Report: {self.report}",
+            f"Command log: {self.command_log or 'not recorded'}",
             "",
             "Doctor:",
             f"- {self.doctor.status}: {self.doctor.next_command}",
@@ -153,12 +162,24 @@ def run_iso_build(
 ) -> IsoBuildReport:
     options = options or BuildOptions()
     options.output_iso = options.output_iso or default_output_iso(project)
+    # Default the log here rather than trust each caller to remember it. Both production
+    # callers had forgotten: commands/iso_build.py passed nothing and core/demo_iso.py
+    # passed nothing, so log_path stayed None, so _write_event returned before writing a
+    # line (core/command.py:224) and `distroforge iso-build --execute` -- the command the
+    # golden path runs -- produced no command log at all. The one caller that does pass a
+    # path, commands/build.py:77, spells the same default for the other entry point.
+    log_path = log_path or default_command_log(project, "iso-build")
     doctor = diagnose_iso_build(project, options, definition=definition)
     boot_report = None
     steps: tuple[str, ...] = ()
     status = "blocked" if doctor.blocked else "planned"
     failure: BuildFailure | None = None
+    # Named on the report only once a runner exists to write it. A blocked project never
+    # gets one, and a report pointing at a log file that was never opened is worse than a
+    # report that admits there is none.
+    command_log: Path | None = None
     if not doctor.blocked:
+        command_log = log_path
         runner = CommandRunner(dry_run=not execute, log_path=log_path)
         try:
             build = BuildOrchestrator(project, runner, options).run()
@@ -201,6 +222,7 @@ def run_iso_build(
         sha256,
         boot_report,
         failure,
+        command_log,
     )
     project.output_dir.mkdir(parents=True, exist_ok=True)
     report.report.write_text(report.render_json() + "\n", encoding="utf-8")
