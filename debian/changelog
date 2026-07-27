@@ -1,3 +1,27 @@
+distroforge (0.3.5-9) resolute; urgency=medium
+
+  * Enforce the promise that the maintainer address stamped into generated .deb
+    packages tracks debian/control. _DEB_MAINTAINER in core/desktop_source.py is
+    printed straight into the DEBIAN/control of every desktop component package
+    the tool assembles, so it reaches end users rather than staying inside this
+    source tree, and a comment claiming it was "kept in step with the Maintainer
+    field of debian/control" was the only thing holding the two together. That
+    is the shape that goes stale in silence: correcting one site leaves the
+    other behind, and the divergence surfaces in a stranger's package.
+  * The new guard asserts that the two agree rather than what they say, so it
+    survives the address changing and fails only if a change misses a site.
+    Verified to fail on a deliberately desynchronised constant.
+  * Recorded while auditing archive readiness: the address is currently
+    maintainers@distroforge.invalid, which Debian Policy 5.6.2 does not allow
+    for an upload, and which no lintian check catches. bogus-mail-host fires
+    only when the host is not a domain, and Net::Domain::TLD counts .invalid as
+    a domain because it is an RFC 2606 reserved TLD present in that list;
+    mail-address-loops-or-bounces knows exactly one address, unrelated. So the
+    package lints clean, builds clean and is still not uploadable. Fixing the
+    address is a separate change and needs a deliverable one to exist first.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 19:22:41 +0200
+
 distroforge (0.3.5-8) resolute; urgency=medium
 
   * Give the nspawn maintainer shell a resolver, and stop it writing into the

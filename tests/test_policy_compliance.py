@@ -345,6 +345,38 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
     assert "ruff" not in build_depends
 
 
+def test_the_maintainer_stamped_into_generated_debs_tracks_debian_control() -> None:
+    """The address DistroForge writes into other people's packages, not just its own.
+
+    `_DEB_MAINTAINER` is printed straight into the `DEBIAN/control` of every desktop
+    component .deb the tool assembles (distroforge/core/desktop_source.py, the
+    `dpkg-deb --build` command), so it reaches end users rather than staying inside
+    this source tree. It carried a comment promising it was "kept in step with the
+    Maintainer field of debian/control" and nothing enforced that promise, which is
+    the shape that goes stale silently: correcting one of the two leaves the other
+    behind, and the divergence surfaces in a stranger's package.
+
+    Deliberately a coupling assertion and not a spelling one -- it states that the two
+    agree, not what they say, so it survives the address changing and fails only if
+    the change misses a site. Debian Policy 5.6.2 requires the maintainer address to
+    be a working one, and neither lintian check reaches this constant: `bogus-mail-host`
+    fires only when the host is not a domain, and `.invalid` is a domain as far as
+    Net::Domain::TLD is concerned (it is an RFC 2606 reserved TLD, present in that
+    list), while `mail-address-loops-or-bounces` knows exactly one address.
+    """
+    from distroforge.core.desktop_source import _DEB_MAINTAINER
+
+    control = (ROOT / "debian/control").read_text(encoding="utf-8")
+    declared = [
+        line.partition(":")[2].strip()
+        for line in control.splitlines()
+        if line.startswith("Maintainer:")
+    ]
+
+    assert len(declared) == 1, f"expected exactly one Maintainer field, found {len(declared)}"
+    assert _DEB_MAINTAINER == declared[0]
+
+
 def test_recommends_names_no_virtual_package_already_pulled_by_depends() -> None:
     """qemu-kvm has no candidate of its own; qemu-system-x86 provides it and is a Depends.
 
