@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from distroforge.core import boot_proof, qemu_invocation
+from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.boot_proof import resolve_firmware, run_boot_proof
 from distroforge.core.build import BuildOptions
 from distroforge.core.command import CommandRunner
@@ -229,8 +230,17 @@ def test_a_disabled_lab_is_never_asked_about_firmware(tmp_path) -> None:
 
 
 def _proof_project(tmp_path: Path, name: str) -> tuple[Project, Path]:
+    # The name comes from artifact_paths and is not spelled here. This fixture used to
+    # build it from the project name and a bare .iso suffix, with no version, which is a
+    # path the builder never produces: every proof below was handed an ISO shaped like
+    # the unversioned fallback that had boot-proof, release-pipeline, iso-acceptance and
+    # publish-drill all reporting a missing ISO that was right there. Harmless while
+    # these tests pass the path explicitly, one refactor from testing the wrong name.
+    # Described rather than quoted on purpose: the pre-commit ratchet for this defect is
+    # a pygrep expression, so it fires on prose about the pattern as readily as on the
+    # pattern -- the same trap the lintian-profile grep fell into, per ci.yml.
     project = Project.create(name, tmp_path / name, "26.04")
-    iso = project.output_dir / f"{name}.iso"
+    iso = default_output_iso(project)
     iso.write_bytes(b"")
     return project, iso
 

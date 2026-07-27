@@ -1,3 +1,31 @@
+distroforge (0.3.5-13) resolute; urgency=medium
+
+  * Run the pre-commit ratchets somewhere. The config file states that its hooks
+    run at commit time and nothing ever made that so: `pre-commit install` is a
+    per-clone action, a fresh checkout has no .git/hooks/pre-commit, and no CI
+    job called pre-commit at all. All eight hooks -- each one written against a
+    defect this tree really shipped -- were therefore decoration, including the
+    changelog gate whose own comment explains that the changelog is edited last,
+    after the rest of the gate has run. The packaging-static job now runs
+    pre-commit over the whole tree, not over a diff: a run limited to changed
+    files cannot see what is already wrong in the tree.
+  * Which is how the next one hid. no-unversioned-iso-fallback had been failing
+    on tests/test_qemu_lab.py since the firmware selector landed. The boot-proof
+    fixture built its ISO path from the project name and a bare .iso suffix,
+    with no version -- a path the builder never produces, and the shape of the
+    unversioned fallback that once had boot-proof, release-pipeline,
+    iso-acceptance and publish-drill all reporting a missing ISO that was right
+    there. Harmless while those tests pass the path explicitly, one refactor
+    from testing a name nothing produces. It now calls
+    artifact_paths.default_output_iso, so the fixture tracks the builder.
+  * Recorded because it cost a round: the ratchet is a pygrep expression, so it
+    fired on the comment written to explain it. That is the same trap the old
+    lintian-profile grep fell into, where the only thing it ever matched was the
+    comment about the rule. The comment now describes the pattern instead of
+    quoting it.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 17:51:46 +0200
+
 distroforge (0.3.5-12) resolute; urgency=medium
 
   * Stop dating entries in a future that had not happened yet. Comparing every

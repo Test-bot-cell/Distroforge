@@ -81,6 +81,21 @@ jobs:
         run: make maintainer-scripts
       - name: Install
         run: python -m pip install -e ".[dev]"
+      - name: Every pre-commit ratchet, over the whole tree
+        # .pre-commit-config.yaml says its hooks run "at commit time" and nothing ever
+        # made that true: `pre-commit install` is a per-clone action, .git/hooks holds no
+        # pre-commit in a fresh checkout, and no job here called pre-commit. So all seven
+        # ratchets -- each written against a defect this tree actually shipped -- guarded
+        # nothing, and one had been failing on tests/test_qemu_lab.py since the firmware
+        # selector landed without anything noticing.
+        #
+        # --all-files, not the diff: a run limited to changed files cannot report what is
+        # already in the tree, which is exactly how that failure stayed invisible. Every
+        # hook is repo: local with language: system, so no hook clones or pip-installs
+        # anything; shellcheck comes from apt above and ruff from the editable install.
+        run: |
+          python -m pip install pre-commit
+          pre-commit run --all-files
       - name: Packaging and policy guards
         # Named explicitly so they cannot be lost in the noise of a full run, and
         # so a collection error here is not mistaken for an unrelated failure.
