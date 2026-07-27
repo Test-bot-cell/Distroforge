@@ -78,6 +78,14 @@ QEMU online/offline install smoke matrix.
    `ca-certificates` sits in the very package list that update is fetching for. The
    bootstrap tool itself fetches from the host, with the host's CA store, so it can
    install the store the chroot needs one step later.
+   The repack excludes the *contents* of `proc/`, `sys/`, `run/` and `dev/` and refuses
+   to run at all while anything is still mounted under the rootfs. Both matter for the
+   same reason: `chroot.py` unmounts the runtime binds in a `finally` with
+   `check=False`, so a failed unmount says nothing, and on the first real from-scratch
+   build `/proc` alone survived while the other four detached. mksquashfs then walked
+   into `/proc/kcore` — apparent size 128 TiB — and turned a 2.0 GB rootfs into 5.7 GB
+   of squashfs in thirty minutes, still growing. The mount points themselves are kept:
+   a live system needs them to mount onto.
    Every in-chroot `apt-get update` goes through one `APT_UPDATE_ARGV` carrying
    `APT::Update::Error-Mode=any`, because **apt returns 0 when every index failed to
    download** — it demotes the failure to "Some index files failed to download. They

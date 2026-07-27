@@ -397,3 +397,52 @@ def test_no_apt_update_in_the_chroot_can_fail_silently(tmp_path) -> None:
         # rc 100 with it -- so a build that cannot reach its archive must stop here
         # rather than at a misleading "Unable to locate package" minutes later.
         assert "APT::Update::Error-Mode=any" in argv, argv
+
+
+def test_the_grub_trampoline_lands_on_the_signed_prefix(tmp_path) -> None:
+    project = _bootstrap_project(tmp_path, "Prefix")
+    runner = CommandRunner(dry_run=True)
+    options = BuildOptions(use_sudo=False, bootstrap=BootstrapOptions(arch="amd64"))
+
+    BuildOrchestrator(project, runner, options).run()
+
+    written = [spec.argv[1] for spec in runner.history if spec.argv[0] == "write-file"]
+    # A signed GRUB's prefix is compiled in and cannot be re-set; Ubuntu's is
+    # /EFI/ubuntu, and the binary carries no embedded config, only "%s/grub.cfg".
+    # Measured on a real OVMF boot: with the trampoline in EFI/boot alone, shim
+    # loaded and GRUB started, then sat at a rescue "grub>" prompt.
+    assert str(project.iso_root / "EFI/ubuntu/grub.cfg") in written
+    assert str(project.iso_root / "EFI/boot/grub.cfg") in written
+
+
+def test_the_esp_carries_the_trampoline_at_both_prefixes(tmp_path) -> None:
+    boot = tmp_path / "root" / "boot"
+    boot.mkdir(parents=True)
+    (boot / "vmlinuz-7.0.0-14-generic").write_bytes(b"\x00")
+    (boot / "initrd.img-7.0.0-14-generic").write_bytes(b"\x00")
+    shim = tmp_path / "root/usr/lib/shim"
+    shim.mkdir(parents=True)
+    (shim / "shimx64.efi.signed.latest").write_bytes(b"\x00")
+    grub = tmp_path / "root/usr/lib/grub/x86_64-efi-signed"
+    grub.mkdir(parents=True)
+    (grub / "grubx64.efi.signed").write_bytes(b"\x00")
+    runner = _RecordingExecuteRunner()
+    service = BootstrapService(
+        runner,
+        get_release("26.04"),
+        tmp_path / "root",
+        tmp_path / "iso",
+        BootstrapOptions(arch="amd64"),
+        use_sudo=False,
+    )
+
+    service.create_iso_tree()
+
+    trampolines = [
+        spec.argv[-1] for spec in runner.history if spec.argv[0] == "mcopy" and spec.argv[-2] == "-"
+    ]
+    assert trampolines == ["::/EFI/ubuntu/grub.cfg", "::/EFI/BOOT/grub.cfg"]
+    # The vendor directory has to be created, or every mcopy above fails.
+    assert any(
+        spec.argv[0] == "mmd" and "::/EFI/ubuntu" in spec.argv for spec in runner.history
+    )

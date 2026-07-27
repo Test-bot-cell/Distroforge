@@ -19,6 +19,23 @@ distroforge (0.3.5-4) resolute; urgency=medium
   * Refuse to build an ISO from a tree carrying no boot image for either
     firmware, and report missing mtools at validation rather than an hour
     into the build.
+  * Write the GRUB trampoline where a signed GRUB actually looks. Its prefix is
+    compiled in and cannot be re-set -- Ubuntu's is /EFI/ubuntu, and the binary
+    carries no embedded configuration, only the "%s/grub.cfg" lookup -- so the
+    copy in EFI/BOOT was never read. Measured on a real OVMF boot: shim loaded,
+    GRUB started, and the machine sat at a rescue "grub>" prompt. Both the ESP
+    and the ISO tree now carry it at EFI/<family>/grub.cfg as well.
+  * Stop debranding EFI/<vendor> directory names. That name is a firmware
+    contract, not branding: renaming EFI/ubuntu to the product name left the
+    signed bootloader looking for a directory that no longer existed, which is
+    what produced the rescue prompt above. Branded names inside the directory
+    are still renamed.
+  * Exclude the pseudo-filesystem contents from mksquashfs, and refuse to pack a
+    rootfs that still has anything mounted under it. A runtime bind mount that
+    survived its unmount made mksquashfs walk into /proc/kcore, whose apparent
+    size is the whole 128 TiB address space: a 2.0 GB rootfs produced 5.7 GB of
+    squashfs in thirty minutes and was still growing when it was stopped. The
+    mount points themselves are kept, since a live system mounts onto them.
   * Bootstrap ca-certificates into the rootfs, so a from-scratch build can
     reach its archive at all. A minbase chroot has no CA store and every
     archive URL here is https, so the first in-chroot apt-get update failed TLS

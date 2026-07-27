@@ -188,16 +188,35 @@ def _candidate_files(root: Path) -> list[Path]:
     return files
 
 
+def _is_efi_vendor_dir(root: Path, path: Path) -> bool:
+    """Whether ``path`` is an ``EFI/<vendor>`` directory, which must never be renamed.
+
+    That name is a firmware contract, not branding. A signed GRUB carries its prefix
+    compiled into the binary -- Ubuntu's is ``/EFI/ubuntu`` -- and it cannot be re-set,
+    because being unmodifiable is the entire point of signing it. Renaming the
+    directory leaves the bootloader looking for a path that no longer exists. Measured
+    on a real OVMF boot of a debranded from-scratch ISO: shim loaded, GRUB started, and
+    the machine sat at a rescue ``grub>`` prompt because ``EFI/ubuntu`` had become
+    ``EFI/<product>``. Every derivative that boots with Ubuntu's signed shim ships this
+    directory under the upstream name; it is not a trademark claim.
+    """
+    return path.is_dir() and path.parent == root / "EFI"
+
+
 def _candidate_path_renames(root: Path) -> list[Path]:
     paths: list[Path] = []
     for target in PATH_RENAME_TARGETS:
         path = root / target
         if not path.exists():
             continue
-        if MARK_RE.search(path.name):
+        if MARK_RE.search(path.name) and not _is_efi_vendor_dir(root, path):
             paths.append(path)
         if path.is_dir():
-            paths.extend(item for item in path.rglob("*") if MARK_RE.search(item.name))
+            paths.extend(
+                item
+                for item in path.rglob("*")
+                if MARK_RE.search(item.name) and not _is_efi_vendor_dir(root, item)
+            )
     return paths
 
 

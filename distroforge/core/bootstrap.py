@@ -309,6 +309,29 @@ class BootstrapService:
             payloads.append((mok, layout.mok_leaf))
         return payloads
 
+    def _grub_trampoline(self) -> str:
+        """The config the ESP hands GRUB: find the real medium, then chain to its menu."""
+        return (
+            f"search --set=root --file /{self.release.livefs}/vmlinuz\n"
+            "set prefix=($root)/boot/grub\n"
+            "configfile $prefix/grub.cfg\n"
+        )
+
+    def _esp_trampoline_targets(self) -> tuple[str, ...]:
+        """Where the trampoline has to be, in the order that matters.
+
+        A signed GRUB's prefix is compiled in and cannot be re-set -- that is the whole
+        point of signing -- and it reads exactly ``$prefix/grub.cfg`` and nothing else.
+        Measured on Ubuntu's own ``grubx64.efi.signed``: the prefix is ``/EFI/ubuntu``,
+        and the binary carries no embedded configuration, only the ``%s/grub.cfg``
+        format string. Writing the trampoline to ``EFI/BOOT`` alone therefore left a
+        real OVMF boot sitting at a rescue ``grub>`` prompt with everything else
+        working: shim loaded, GRUB started, no configuration found. ``EFI/BOOT`` is
+        kept as the second target because the unsigned monolithic fallback is built
+        with that prefix instead.
+        """
+        return (f"/EFI/{self.release.family}/grub.cfg", "/EFI/BOOT/grub.cfg")
+
     def _create_grub_efi_image(self) -> None:
         """Stage the UEFI amorce: a FAT image holding the target's own EFI binaries.
 
@@ -342,6 +365,16 @@ class BootstrapService:
         self.fs.mkdir(tree, "Create ISO EFI boot directory")
         for source, leaf in payloads:
             self.fs.copy_file(source, tree / leaf.lower(), f"Stage {leaf} for UEFI boot", prefer_sudo=self.use_sudo)
+        # The same trampoline in the plain tree, for the reader that is not the boot
+        # record: a netboot setup, or a user copying the tree onto a FAT stick. Both
+        # spellings, because the firmware loads EFI/boot/bootx64.efi while the signed
+        # GRUB inside it then looks for its own vendor directory.
+        for directory in (self.release.family, "boot"):
+            self.fs.write_text(
+                self.iso_root / "EFI" / directory / "grub.cfg",
+                self._grub_trampoline(),
+                f"Write the GRUB trampoline into EFI/{directory}",
+            )
         esp = self.iso_root / "boot" / "grub" / "efi.img"
         if self.runner.dry_run:
             self.runner.run(CommandSpec(argv=("write-file", str(esp)), description="Plan UEFI El Torito boot image"))
@@ -354,7 +387,12 @@ class BootstrapService:
                 description=f"Create {blocks * 512 // 1024} KiB FAT UEFI boot image",
             )
         )
-        self.runner.run(CommandSpec(argv=("mmd", "-i", str(esp), "::/EFI", "::/EFI/BOOT"), description="Create EFI/BOOT on the UEFI boot image"))
+        self.runner.run(
+            CommandSpec(
+                argv=("mmd", "-i", str(esp), "::/EFI", "::/EFI/BOOT", f"::/EFI/{self.release.family}"),
+                description="Create the EFI directories on the UEFI boot image",
+            )
+        )
         for source, leaf in payloads:
             self.runner.run(
                 CommandSpec(
@@ -362,17 +400,14 @@ class BootstrapService:
                     description=f"Copy {leaf} into the UEFI boot image",
                 )
             )
-        self.runner.run(
-            CommandSpec(
-                argv=("mcopy", "-i", str(esp), "-", "::/EFI/BOOT/grub.cfg"),
-                stdin=(
-                    f"search --set=root --file /{self.release.livefs}/vmlinuz\n"
-                    "set prefix=($root)/boot/grub\n"
-                    "configfile $prefix/grub.cfg\n"
-                ),
-                description="Write the GRUB trampoline into the UEFI boot image",
+        for target in self._esp_trampoline_targets():
+            self.runner.run(
+                CommandSpec(
+                    argv=("mcopy", "-i", str(esp), "-", f"::{target}"),
+                    stdin=self._grub_trampoline(),
+                    description=f"Write the GRUB trampoline to {target}",
+                )
             )
-        )
         # Verified through mtools rather than a stat, because this has to prove the
         # payloads are really inside the image: a stat would pass on an empty file, and
         # the run above is a pipeline of four separate commands. It matters because a

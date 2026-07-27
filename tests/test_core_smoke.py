@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 
 import pytest
 
+from distroforge.core import squashfs as squashfs_module
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
 from distroforge.core.apt_cache import AptCacheOptions, AptCacheService
 from distroforge.core.artifact_paths import default_output_iso
@@ -635,3 +637,40 @@ def test_pkexec_126_error_is_actionable() -> None:
 
     assert "Polkit authorization did not complete" in message
     assert "not authorized" in message
+
+
+def test_pack_excludes_the_pseudo_filesystem_contents(tmp_path) -> None:
+    runner = CommandRunner(dry_run=True)
+
+    SquashfsService(runner, use_sudo=False).pack(tmp_path / "rootfs", tmp_path / "fs.squashfs")
+
+    argv = runner.history[0].argv
+    # Their contents belong to the running kernel, never to an image. Without this,
+    # a runtime bind mount that survived its unmount makes mksquashfs walk into
+    # /proc/kcore, whose apparent size is the entire 128 TiB address space.
+    assert argv[-6:] == ("-wildcards", "-e", "proc/*", "sys/*", "run/*", "dev/*")
+    # The mount points themselves must stay: a live system needs them to mount onto.
+    assert "proc" not in argv and "dev" not in argv
+
+
+def test_pack_refuses_a_source_whose_chroot_is_still_mounted(tmp_path, monkeypatch) -> None:
+    runner = RecordingExecuteRunner()
+    monkeypatch.setattr(
+        squashfs_module, "mounts_under", lambda root: [f"{root}/proc", f"{root}/sys"]
+    )
+
+    with pytest.raises(ValueError, match="still mounted"):
+        SquashfsService(runner, use_sudo=False).pack(tmp_path / "rootfs", tmp_path / "fs.squashfs")
+
+    # It has to stop before mksquashfs, not merely warn: the observed run spent thirty
+    # minutes and 5.7 GB compressing kernel memory before anyone looked.
+    assert not any(spec.argv[0] == "mksquashfs" for spec in runner.history)
+
+
+def test_mounts_under_reads_the_kernel_mount_table(tmp_path) -> None:
+    # Parsed from /proc/self/mountinfo rather than by running findmnt, so this holds in
+    # a suite that must never launch an external tool.
+    everything = squashfs_module.mounts_under(pathlib.Path("/"))
+
+    assert "/proc" in everything
+    assert squashfs_module.mounts_under(tmp_path) == []

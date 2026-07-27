@@ -225,3 +225,29 @@ def test_profile_diff_supports_explicit_and_legacy_targets(tmp_path, capsys) -> 
     legacy = capsys.readouterr().out
     assert "Left: gaming" in legacy
     assert "Right: project" in legacy
+
+
+def test_debrand_keeps_the_efi_vendor_directory(tmp_path) -> None:
+    project = Project.create("Planetfall", tmp_path / "planetfall", "26.04")
+    vendor = project.iso_root / "EFI/ubuntu"
+    vendor.mkdir(parents=True)
+    (vendor / "grub.cfg").write_text("configfile $prefix/grub.cfg\n", encoding="utf-8")
+    # A branded name *inside* the vendor directory is still fair game, so this proves
+    # the exemption is the directory itself rather than the whole EFI subtree.
+    branded = project.iso_root / "EFI/boot/ubuntu-splash.png"
+    branded.parent.mkdir(parents=True)
+    branded.write_bytes(b"png")
+
+    report = DebrandService(CommandRunner(dry_run=False)).apply(
+        project,
+        BrandingOptions(name="Planetfall"),
+        strict=True,
+    )
+
+    assert report.status == "applied"
+    # EFI/<vendor> is the prefix compiled into a signed GRUB, which cannot be re-set.
+    # Renaming it left a real OVMF boot at a rescue "grub>" prompt: shim loaded, GRUB
+    # started, configuration nowhere to be found.
+    assert (vendor / "grub.cfg").exists()
+    assert not (project.iso_root / "EFI/planetfall").exists()
+    assert (project.iso_root / "EFI/boot/planetfall-splash.png").exists()
