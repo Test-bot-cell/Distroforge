@@ -37,7 +37,10 @@ def start_terminal_action(window) -> None:
             "Starting maintainer shell with systemd-nspawn isolation."
         )
     else:
-        window.terminal_view.appendPlainText("Mounting /dev, /dev/pts, /proc, /sys and /run for maintainer shell.")
+        window.terminal_view.appendPlainText(
+            "Mounting /dev, /dev/pts, /proc and /sys for maintainer shell. "
+            "/run is a private tmpfs, not this machine's."
+        )
     window.terminal_view.appendPlainText(f"Session log: {log_path}")
     try:
         window.terminal_session = LocalTerminalBackend().open(spec)

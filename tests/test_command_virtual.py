@@ -14,6 +14,7 @@ REPORT_MARKERS = (
     ("qemu-user-static-required", "arm64", "amd64"),
     ("bootstrap-bios-skip", "arm64"),
     ("bootstrap-efi-skip", "riscv64"),
+    ("resolver-seed-skip", "resolver-is-not-on-the-private-run", "/tmp/rootfs"),
 )
 
 

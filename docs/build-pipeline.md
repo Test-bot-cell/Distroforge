@@ -179,11 +179,36 @@ QEMU online/offline install smoke matrix.
    `systemctl try-restart` **directly**, outside `invoke-rc.d`. A minbase bootstrap runs few
    such scripts; a desktop seed runs hundreds. The risk was not hypothetical either — snaps
    installed from a chroot phase were found landing in the build host's own
-   `/var/lib/snapd`, which is why that phase is refused outright. The target now gets an
-   empty tmpfs on `<root>/run`, private and unmounted with the rest, which is what a
-   chroot's `/run` should be. APT is unaffected: `mmdebstrap` copies the host's
-   `/etc/resolv.conf` into the target and the resolver is reached over the shared network
-   namespace, not through `/run`.
+   `/var/lib/snapd`, which is why that phase is refused outright. The target now gets a
+   tmpfs of its own on `<root>/run`, private and unmounted with the rest, which is what a
+   chroot's `/run` should be. It is mounted `mode=0755,nosuid,nodev,noexec,size=10%` — the
+   options this machine's own `/run` carries — because a bare `mount -t tmpfs` comes up 1777
+   with suid, dev and exec permitted and no size cap, which would have widened exactly what
+   a private `/run` is for.
+
+   **A private `/run` is volatile, and two things in the target depended on it surviving.**
+   Both are repaired when the mount goes up, and only ever inside that mount:
+   - **The resolver.** `systemd-resolved`'s postinst — which every desktop seed installs —
+     moves `/etc/resolv.conf` aside and replaces it with a symlink to
+     `../run/systemd/resolve/stub-resolv.conf`, copying the working content there on the way.
+     That copy dies with the phase that made it, and the next phase mounts a fresh empty
+     tmpfs under a symlink that now dangles: `apt-get update` fails with
+     `Temporary failure resolving`. This was measured, not deduced — a from-scratch desktop
+     build died exactly there. So each phase reseeds the resolver, but only when
+     `/etc/resolv.conf` leads (through however many links, and reading absolute targets as
+     `<root>`-relative the way the chroot's own kernel does) into the private `/run`. A
+     resolver on the persistent rootfs is left alone: nothing here broke it, and writing to
+     `/etc` would ship this machine's DNS in the image. Only `nameserver` lines are copied,
+     never the build machine's search domain. When no seed is written the reason is recorded
+     as a `resolver-seed-skip` step, so a phase can never start without a resolver *and*
+     without a trace of why.
+   - **`/run/lock`.** `base-files.postinst` creates it during the bootstrap and Debian Policy
+     makes `/var/lock` a symlink to it, so mounting over `/run` left `/var/lock` dangling
+     from the second phase onward and any `flock()` under it failing with `ENOENT`. The mount
+     restores it, mode 1777.
+
+   The image itself carries neither: the tmpfs is discarded and `run/*` is excluded from the
+   squashfs, so nothing seeded for a build phase can reach whoever boots the ISO.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after

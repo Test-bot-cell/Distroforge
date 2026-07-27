@@ -97,9 +97,31 @@ distroforge (0.3.5-4) resolute; urgency=medium
     A minbase bootstrap runs few such scripts and a desktop seed runs hundreds,
     which is how this surfaced. Nor was it hypothetical: snaps installed from a
     chroot phase had already been found landing in the build host's
-    /var/lib/snapd, which is why that phase is refused. apt is unaffected --
-    mmdebstrap copies /etc/resolv.conf into the target and the resolver is
-    reached over the shared network namespace, not through /run.
+    /var/lib/snapd, which is why that phase is refused. What that empty tmpfs
+    then cost the target is the next three entries: it was not free, and the
+    claim first written here that "apt is unaffected" held only until
+    systemd-resolved was installed.
+  * Give the private /run back the two things the target had put there, after a
+    from-scratch desktop build died at apt-get update with "Temporary failure
+    resolving". systemd-resolved's postinst points /etc/resolv.conf at
+    ../run/systemd/resolve/stub-resolv.conf and copies the working content
+    there, so that copy died with the phase that made it and the next phase
+    mounted a fresh empty tmpfs under a dangling symlink. Every phase now
+    reseeds the resolver, and only ever inside that mount: a resolver on the
+    persistent rootfs is left alone, absolute link targets are read as
+    <root>-relative the way the chroot's own kernel reads them, a chain is
+    followed through linked directories, and only nameserver lines are copied,
+    never this machine's search domain. A phase that seeds nothing records why.
+    /run/lock comes back with it, mode 1777: base-files.postinst creates it
+    during the bootstrap and Debian Policy makes /var/lock a symlink to it, so
+    mounting over /run left /var/lock dangling from the second phase onward and
+    any flock() under it failing with ENOENT.
+  * Mount that tmpfs mode=0755,nosuid,nodev,noexec,size=10%, which is what this
+    machine's own /run carries. A bare mount -t tmpfs comes up 1777 with suid,
+    dev and exec permitted and no size cap, so the replacement was wider than
+    the bind it replaced: any uid on the build machine could write into the
+    target's /run for a whole phase, including over the resolver that every apt
+    call in that phase reads.
   * Run the changelog's own policy tests from pre-commit when it changes. The
     entry above went out one character over the lintian line limit, because
     the changelog is written after the gate has been run, and CI answered a

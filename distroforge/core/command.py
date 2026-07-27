@@ -47,6 +47,7 @@ VIRTUAL_COMMANDS = {
     "prebuild-vm-skip",
     "qemu-user-static-required",
     "qmp-command",
+    "resolver-seed-skip",
     "sanitize-skip",
     "secureboot-modules-sample",
     "secureboot-warning",
