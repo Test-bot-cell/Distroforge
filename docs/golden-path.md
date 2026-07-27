@@ -54,9 +54,15 @@ group would let an ordinary push kill an hour-long build, and a cancelled run re
 The first push of this file produced a run with no jobs, no log, and one sentence: *"This
 run likely failed because of a workflow file issue."* GitHub evaluates every workflow in
 the repository on every push, so an unloadable one fails there regardless of its triggers
-— the run was attributed to a `push` event this workflow does not declare, and `gh run
-view` listed it under its path rather than its `name:`, because nothing had been parsed
-far enough to read a name.
+— the run was attributed to a `push` event this workflow does not declare.
+
+`gh run list` also showed it under its path rather than its `name:`, which reads like part
+of the same failure and is not. Measured afterwards: the path stayed the display name
+through two green runs of a file Actions loaded without complaint, and turned into *Golden
+path* the moment `main` carried the file — with no push of the workflow itself. GitHub
+reads a workflow's display name from the copy on the default branch, so one living only on
+a topic branch is listed by its path whether it is valid or not. Two independent facts
+happened to appear together, and the tidier story was the wrong one.
 
 The cause was one expression: `${{ runner.temp }}` in the job's `env:` block. GitHub's
 context-availability table gives `jobs.<job_id>.env` exactly *"github, needs, strategy,

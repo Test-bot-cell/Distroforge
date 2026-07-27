@@ -240,9 +240,8 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
   * Made golden-path.yml a file GitHub will actually load. Its first push
     produced a run with no jobs, no log and "This run likely failed because
     of a workflow file issue" -- attributed to a push event the workflow
-    does not declare, since Actions evaluates every workflow on every push,
-    and listed under its path rather than its name because nothing had
-    parsed far enough to read one. The cause was ${{ runner.temp }} in the
+    does not declare, since Actions evaluates every workflow on every push.
+    The cause was ${{ runner.temp }} in the
     job's env: block. GitHub's context-availability table gives
     jobs.<job_id>.env exactly "github, needs, strategy, matrix, vars,
     secrets, inputs" and adds runner only at the step level, so naming it
@@ -278,6 +277,16 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     gets "sh -e {0}" and not bash, measured in ci.yml's log for the same
     image, so a bashism there would pass every local check and fail only
     inside the container.
+  * Withdrew a cause this entry invented two bullets ago. It said Actions
+    listed the rejected workflow under its path rather than its name
+    "because nothing had parsed far enough to read one", which was tidy and
+    wrong. The display name stayed the path through two green runs of a file
+    Actions loaded without complaint, and became "Golden path" the instant
+    main carried the file, with no push of the workflow itself: GitHub reads
+    the name from the default-branch copy, so a workflow living only on a
+    topic branch is listed by path whether it is valid or not. Two facts
+    arrived together and one explanation was handed both. docs/golden-path.md
+    now records the measurement in place of the inference.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 
