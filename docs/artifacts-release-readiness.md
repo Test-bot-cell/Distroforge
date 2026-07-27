@@ -44,7 +44,16 @@ distroforge release-pipeline /path/to/project --bundle-dir /path/to/project/dist
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend auto
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend qemu --dry-run
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend iso-scan
+distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend qemu --firmware uefi
+distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend qemu --firmware uefi --secure-boot
 ```
+
+`--firmware` picks the machine the proof runs on, and the report names it. On a BIOS host
+that is the whole value of the run: without it a `ready` cannot be told apart from a green
+report about the half that already worked. Omitting the flag keeps the project's own choice.
+`--secure-boot` needs `--firmware uefi` and the `.secboot` firmware paired with the `.ms`
+store of enrolled keys; both are refused before QEMU starts rather than reported afterwards.
+See `docs/build-pipeline.md` for how the firmware pair is detected.
 
 The report summarizes the release surface:
 

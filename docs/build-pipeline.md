@@ -232,10 +232,30 @@ resolves that pair, and validation refuses an explicitly named pair that cannot 
 Secure Boot rather than substituting one silently — a VM reporting Secure Boot while
 running with it off is worse than not offering the option.
 
-A known gap: `distroforge boot-proof` has no firmware selector, so its QEMU backend always
-runs the BIOS profile. UEFI is reachable today through
-`build --prebuild-vm --prebuild-vm-firmware uefi`. On a BIOS host that distinction is the
-difference between a real proof and a green report about the half that already worked.
+`distroforge boot-proof` chooses its own firmware: `--firmware bios|uefi` and
+`--secure-boot`. Omitting `--firmware` keeps whatever the project or its definition already
+says, so the flag is only needed to change that answer — the same precedence as
+`--squashfs-compression`. Both land on the project's prebuild-VM options, which is why the
+same validation applies: Secure Boot on BIOS, an OVMF image that is not installed, and a
+firmware pair that cannot enforce Secure Boot are all **refused before QEMU starts**, and
+they report under the `prebuild-vm-*` codes because that is the option group holding the
+setting. The report names the firmware that ran (`Firmware: uefi with Secure Boot`, and the
+same two fields in `boot-proof.json`) because on a BIOS host a `ready` without that word is
+unreadable: it cannot be told apart from a green report about the half that already worked.
+`--firmware` with `--backend iso-scan` boots nothing, so the report says the choice did not
+apply instead of wearing a firmware it never used.
+
+The **GUI has no second firmware control for boot proof**, deliberately. The Virtualization
+Lab combo and Secure Boot checkbox are the one place that answers "which firmware", for the
+prebuild VM and for the boot proof alike; the Artifacts button says so in its tooltip and
+the run names the firmware in the log line. Two widgets writing one field is how
+`OVMF_CODE.fd` came to be hardcoded in nine places.
+
+**Still a gap:** the in-build `--bootcheck` smoke test has no firmware selector of its own —
+`BootCheckService` builds its `QemuInvocation` without a firmware, so it is always BIOS.
+The same sentence applies to it as applied to `boot-proof` before this: on a BIOS host, a
+green bootcheck only confirms the half that already worked. Use `boot-proof --firmware uefi`
+or `build --prebuild-vm --prebuild-vm-firmware uefi` for a UEFI runtime proof.
 
 The interactive preview is the drivable, human-facing counterpart to the headless lab.
 `distroforge preview PROJECT` plans the session as a dry-run and prints the exact QEMU

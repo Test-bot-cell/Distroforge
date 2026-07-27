@@ -176,6 +176,7 @@ reproducing private vendor build pipelines.
 
 ```bash
 distroforge boot-proof "$PROJECT" --iso /path/to/image.iso --backend auto
+distroforge boot-proof "$PROJECT" --iso /path/to/image.iso --firmware uefi --secure-boot
 distroforge release-readiness \
   --iso /path/to/image.iso \
   --output-dir "$PROJECT/out"

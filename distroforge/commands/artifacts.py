@@ -54,7 +54,7 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
     if args.command == "release-pipeline":
         return render_release_pipeline(args.root, args.definition, args.iso, args.output_dir, args.bundle_dir, args.gpg_key, args.execute_signing, args.run_boot_proof, args.boot_proof_dry_run, args.boot_backend, args.json), False
     if args.command == "boot-proof":
-        return render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.dry_run, args.json), False
+        return render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.firmware, args.secure_boot, args.dry_run, args.json), False
     if args.command == "preview":
         return render_preview(args.root, args.definition, args.iso, args.display, args.execute, args.json), False
     if args.command == "qemu-interaction":
@@ -173,6 +173,25 @@ def register_boot_proof_parser(subparsers) -> None:
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--backend", default="auto", choices=["auto", "qemu", "iso-scan"])
     parser.add_argument("--timeout", type=int)
+    parser.add_argument(
+        "--firmware",
+        default="",
+        # The empty default is deliberately not one of the choices, so a bad value
+        # reports "choose from bios, uefi" without a leading empty item. Omitting the
+        # flag keeps whatever the project or its definition already says.
+        choices=["bios", "uefi"],
+        metavar="FIRMWARE",
+        help="firmware for the QEMU backend (bios, uefi); omit to keep the project's own choice",
+    )
+    parser.add_argument(
+        "--secure-boot",
+        action="store_true",
+        help=(
+            "run the UEFI firmware with Secure Boot enforcing, using the .secboot code "
+            "and the .ms store of enrolled keys; requires --firmware uefi. Unrelated to "
+            "build --secure-boot, which signs the image rather than constraining the VM"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
 
@@ -271,13 +290,32 @@ def render_release_pipeline(root: Path, definition: Path | None, iso: Path | Non
     return report.render_json() if json_output else report.render_text()
 
 
-def render_boot_proof(root: Path, definition: Path | None, iso: Path | None, backend: str, timeout: int | None, dry_run: bool = False, json_output: bool = False) -> str:
+def render_boot_proof(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    backend: str,
+    timeout: int | None,
+    firmware: str = "",
+    secure_boot: bool = False,
+    dry_run: bool = False,
+    json_output: bool = False,
+) -> str:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    report = run_boot_proof(project, options, iso=iso, backend=backend, timeout=timeout, execute=not dry_run)
+    report = run_boot_proof(
+        project,
+        options,
+        iso=iso,
+        backend=backend,
+        timeout=timeout,
+        firmware=firmware,
+        secure_boot=secure_boot,
+        execute=not dry_run,
+    )
     return report.render_json() if json_output else report.render_text()
 
 

@@ -75,6 +75,9 @@ class _Report:
     """Stands in for whichever report the stubbed service would have returned."""
 
     status = "ready"
+    # The boot proof report names the firmware it ran, and the Artifacts controller
+    # repeats that word in its log line, so the stub has to carry it too.
+    firmware_summary = "bios"
 
     def render_text(self, verbose: bool = False) -> str:
         return "stub report"
@@ -163,6 +166,36 @@ def test_long_running_artifact_actions_leave_the_qt_thread(qt_app, tmp_path, mon
 
     assert seen, f"{action} never reached the service"
     assert threading.get_ident() not in seen
+
+
+def test_the_gui_boot_proof_runs_the_firmware_the_lab_selected(qt_app, tmp_path, monkeypatch) -> None:
+    """The Artifacts button has no firmware control of its own, on purpose.
+
+    The Virtualization Lab combo is the one place that answers "which firmware", for
+    the prebuild VM and for this proof alike -- two widgets writing one field is how
+    OVMF_CODE.fd came to be hardcoded in nine places. That only holds if the choice
+    really travels, so this asserts the travelling rather than the wiring.
+    """
+    from distroforge.core import boot_proof as core_boot_proof
+    from distroforge.ui import artifacts_page
+
+    window, _project, _iso = _window(tmp_path)
+    combo = window.prebuild_vm_firmware_combo
+    combo.setCurrentIndex(combo.findData("uefi"))
+    window.prebuild_vm_secure_boot_check.setChecked(True)
+    asked: list[object] = []
+
+    def _capture(_project, options=None, **_kwargs):
+        asked.append(options)
+        return _Report()
+
+    monkeypatch.setattr(core_boot_proof, "run_boot_proof", _capture)
+    artifacts_page.boot_proof_from_artifacts(window)
+    _drain_workers(window)
+
+    assert asked, "the Artifacts boot proof never reached the service"
+    assert asked[0].prebuild_vm.firmware == "uefi"
+    assert asked[0].prebuild_vm.secure_boot is True
 
 
 def test_refresh_reads_the_finished_iso_at_most_once(qt_app, tmp_path) -> None:

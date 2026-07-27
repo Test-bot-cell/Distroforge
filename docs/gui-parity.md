@@ -183,6 +183,13 @@ writes notes, verifies the bundle and records `RELEASE-PIPELINE.json`.
 tries QEMU runtime proof first, falls back to structural `iso-scan` when QEMU is unavailable
 or blocked, and writes a normalized `boot-proof.json`. The release gate only accepts that
 proof when its status is `ready`, not merely `planned` or `review`.
+Its `--firmware bios|uefi` and `--secure-boot` map to the **VM firmware** combo and the
+**Secure Boot** checkbox on Virtualization Lab, not to controls of their own on Artifacts:
+both CLI flags and both widgets set the same prebuild-VM fields, and the Artifacts button
+names that in its tooltip while the run names the firmware in the log line and in the
+report. This is a single source of truth, not a parity gap — a second firmware combo on
+Artifacts would be a second widget writing one field, which is how `OVMF_CODE.fd` came to be
+hardcoded in nine places.
 
 The build option contract lives in `commands/build_contracts.py`. It classifies every
 `distroforge build` option by UX level, GUI surface, GUI token, default and exception

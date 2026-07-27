@@ -75,6 +75,17 @@ distroforge (0.3.5-4) resolute; urgency=medium
     100%" costs 34% more wall clock for 2.2% of the image and "-Xbcj x86"
     another 161% for 0.5%, because a live rootfs is mostly payload that already
     ships compressed. The full table is in docs/build-pipeline.md.
+  * Let boot-proof choose the firmware it proves, through --firmware bios|uefi
+    and --secure-boot. Its QEMU backend never set one, so it always ran BIOS and
+    UEFI was reachable only through a build: on a BIOS host a green report
+    confirmed the half that already worked. The report now names the firmware it
+    ran, in the text and in boot-proof.json, and Secure Boot on BIOS, an OVMF
+    image that is not installed and a firmware pair that cannot enforce Secure
+    Boot are refused before QEMU starts rather than after it has booted the
+    wrong machine. Asking for a firmware with --backend iso-scan says the choice
+    did not apply instead of wearing a firmware nothing used. The GUI keeps one
+    firmware control -- the Virtualization Lab combo already feeds this proof --
+    and the Artifacts button says so.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 08:03:10 +0200
 

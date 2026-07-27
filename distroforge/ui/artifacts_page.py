@@ -114,13 +114,24 @@ def build_artifacts_page(window) -> QWidget:
         _button("Packaging Policy", window._run_packaging_policy, "audit"),
         _button("Autopkgtest Doctor", window._run_autopkgtest_doctor, "audit"),
     )
+    boot_proof_button = _button("Boot Proof", lambda: boot_proof_from_artifacts(window), "audit")
+    # Where the firmware comes from, said at the button rather than duplicated into a
+    # second combo here: the Virtualization Lab controls are the one place that answers
+    # "which firmware", for the prebuild VM and for this proof alike. Two widgets writing
+    # one field is how OVMF_CODE.fd came to be hardcoded in nine places.
+    boot_proof_button.setToolTip(
+        "Boot the ISO and record the evidence. The firmware — BIOS, UEFI, and whether "
+        "Secure Boot enforces — is the one chosen in Virtualization Lab, and the report "
+        "names the firmware that actually ran. On a BIOS host a BIOS proof only confirms "
+        "the half that already worked, so pick UEFI to prove the UEFI path."
+    )
     proof = _button_group(
         "Boot and build proof",
         _button("Hermetic Build", window._run_hermetic_build_plan, "plan"),
         _button("Hermetic Bundle", window._create_hermetic_release_bundle, "save"),
         _button("Verify Evidence", window._verify_evidence_contract, "audit"),
         _button("QEMU Smoke Plan", window._run_qemu_smoke_plan, "plan"),
-        _button("Boot Proof", lambda: boot_proof_from_artifacts(window), "audit"),
+        boot_proof_button,
     )
     sign = _button_group(
         "Sign, notes and verify",
@@ -268,6 +279,9 @@ def boot_proof_from_artifacts(window) -> None:
     iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
     backend = str(window.boot_proof_backend_combo.currentData() or "auto")
     project, options = window.project, window._build_options()
+    # Named in the busy line and the log because a boot proof is only as good as the
+    # firmware it ran: on a BIOS host, "ready" without this word is unreadable.
+    firmware = str(options.prebuild_vm.firmware or "bios")
 
     # A real QEMU boot, bounded only by the prebuild-vm timeout (300 s by default).
     def _work():
@@ -275,7 +289,7 @@ def boot_proof_from_artifacts(window) -> None:
 
     def _done(report):
         window.artifacts_view.setPlainText(report.render_text())
-        window._log(f"Ran {backend} boot proof with status {report.status}.")
+        window._log(f"Ran {backend} boot proof on {report.firmware_summary or firmware} with status {report.status}.")
         window._open_surface("artifacts")
 
-    window._run_in_worker(_work, _done, f"Running the {backend} boot proof…")
+    window._run_in_worker(_work, _done, f"Running the {backend} boot proof on {firmware}…")

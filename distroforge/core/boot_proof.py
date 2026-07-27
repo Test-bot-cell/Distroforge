@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +13,11 @@ from .command import CommandError, CommandRunner
 from .hashing import sha256_file
 from .prebuild_vm import QemuLabService
 from .project import Project
+from .validate import validate_prebuild_vm_options
+
+# The backends that start a machine. Only these can honour a firmware choice, and
+# only these have a firmware worth validating before anything runs.
+_QEMU_BACKENDS = frozenset({"auto", "qemu"})
 
 
 @dataclass(frozen=True)
@@ -28,10 +33,26 @@ class BootProofReport:
     attempted_backends: tuple[str, ...] = ()
     selected_backend: str = ""
     proof_level: str = "none"
+    firmware: str = ""
+    secure_boot: bool = False
 
     @property
     def blocked(self) -> bool:
         return self.status == "blocked"
+
+    @property
+    def firmware_summary(self) -> str:
+        """Which firmware the evidence is about, in the words a reader needs.
+
+        A BIOS boot and a UEFI boot are not the same proof, and on a BIOS host the
+        difference is the whole value of the report: without this line a reader has no
+        way to tell a real UEFI proof from a green report about the half that already
+        worked. Empty for backends that boot nothing, so the line stays absent rather
+        than claiming a firmware that never ran.
+        """
+        if not self.firmware:
+            return ""
+        return f"{self.firmware} with Secure Boot" if self.secure_boot else self.firmware
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -47,6 +68,8 @@ class BootProofReport:
             "attempted_backends": list(self.attempted_backends or (self.backend,)),
             "selected_backend": self.selected_backend or self.backend,
             "proof_level": self.proof_level,
+            "firmware": self.firmware,
+            "secure_boot": self.secure_boot,
         }
 
     def render_json(self) -> str:
@@ -59,6 +82,7 @@ class BootProofReport:
             f"ISO: {self.iso}",
             f"Backend: {self.backend}",
             f"Selected backend: {self.selected_backend or self.backend}",
+            *([f"Firmware: {self.firmware_summary}"] if self.firmware else []),
             f"Proof level: {self.proof_level}",
             f"Status: {self.status.upper()}",
             f"Proof: {self.proof}",
@@ -74,6 +98,17 @@ class BootProofReport:
         return "\n".join(lines)
 
 
+def resolve_firmware(override: str, inherited: str) -> str:
+    """The firmware a proof will really run -- asked once, answered here.
+
+    An empty override means "whatever this project's own options say", so a definition
+    that already describes a UEFI lab keeps describing one and the flag is only needed
+    to change that answer. Deliberately the same precedence as the squashfs compressor:
+    one shape for "flag beats definition beats default" is easier to trust than three.
+    """
+    return override or inherited
+
+
 def run_boot_proof(
     project: Project,
     options: BuildOptions | None = None,
@@ -81,6 +116,8 @@ def run_boot_proof(
     iso: Path | None = None,
     backend: str = "auto",
     timeout: int | None = None,
+    firmware: str = "",
+    secure_boot: bool = False,
     execute: bool = False,
 ) -> BootProofReport:
     options = options or BuildOptions()
@@ -90,7 +127,37 @@ def run_boot_proof(
     attempted = (backend,)
     selected = backend
     proof_level = "none"
-    if backend == "auto":
+    prelude: list[str] = []
+    run_firmware = ""
+    run_secure_boot = False
+    blockers: list[str] = []
+    if backend in _QEMU_BACKENDS:
+        # Decided here rather than inside the QEMU backend so the report carries the
+        # firmware even when the run never starts, and so a refusal happens before a
+        # machine is launched instead of after it has booted the wrong one.
+        run_firmware = resolve_firmware(firmware, options.prebuild_vm.firmware)
+        run_secure_boot = secure_boot or options.prebuild_vm.secure_boot
+        options.prebuild_vm.firmware = run_firmware
+        options.prebuild_vm.secure_boot = run_secure_boot
+        # Validated on a copy with the lab enabled, because those checks are gated on
+        # `enabled` and the QEMU backend only sets it once it has decided to run. This
+        # is what refuses Secure Boot on BIOS, an absent OVMF image, and a firmware
+        # pair that cannot enforce Secure Boot while the report would claim it does.
+        blockers = [
+            f"{issue.code}: {issue.message}"
+            for issue in validate_prebuild_vm_options(replace(options.prebuild_vm, enabled=True))
+            if issue.level == "error"
+        ]
+    elif firmware or secure_boot:
+        # Ignoring it silently would hand a green structural scan to someone who asked
+        # to watch a machine boot under a named firmware.
+        prelude.append(f"Firmware selection does not apply to the {backend} backend; nothing was booted.")
+    if blockers:
+        status = "blocked"
+        notes = blockers
+        evidence = {"status": "blocked", "firmware": run_firmware, "secure_boot": run_secure_boot}
+        selected = "none"
+    elif backend == "auto":
         status, notes, evidence, attempted, selected, proof_level = _run_auto_proof(
             project, options, iso=iso, qemu_report=qemu_report, timeout=timeout, execute=execute
         )
@@ -105,7 +172,7 @@ def run_boot_proof(
         notes = [f"Unsupported boot proof backend: {backend}."]
         evidence = None
         selected = "none"
-    report = BootProofReport(project.root, iso, backend, status, proof, qemu_report, tuple(notes), evidence, attempted, selected, proof_level)
+    report = BootProofReport(project.root, iso, backend, status, proof, qemu_report, tuple([*prelude, *notes]), evidence, attempted, selected, proof_level, run_firmware, run_secure_boot)
     proof.write_text(report.render_json() + "\n", encoding="utf-8")
     return report
 
@@ -152,7 +219,14 @@ def _run_qemu_proof(
     execute: bool,
 ) -> tuple[str, list[str], dict[str, object]]:
     notes: list[str] = []
-    evidence: dict[str, object] = {"proof_level": "runtime", "qemu_report": str(qemu_report)}
+    evidence: dict[str, object] = {
+        "proof_level": "runtime",
+        "qemu_report": str(qemu_report),
+        # Read back off the options the lab is about to consume, not off the request, so
+        # the evidence names the firmware that ran rather than the one that was asked for.
+        "firmware": options.prebuild_vm.firmware,
+        "secure_boot": options.prebuild_vm.secure_boot,
+    }
     status = "blocked"
     if not iso.exists():
         notes.append("ISO is missing; build or select an ISO before boot proof.")
