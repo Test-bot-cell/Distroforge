@@ -14,8 +14,26 @@ BIND_MOUNTS = (
     ("/dev/pts", "dev/pts"),
     ("/proc", "proc"),
     ("/sys", "sys"),
-    ("/run", "run"),
 )
+
+# /run is deliberately not in the list above. It used to be, and the host's /run holds
+# the control sockets of the host's own daemons -- /run/snapd.socket,
+# /run/systemd/private, /run/dbus/system_bus_socket, /run/udev/control -- so binding it
+# gave every maintainer script in the target root a way to command the build machine as
+# root. policy-rc.d closes the well-behaved route (invoke-rc.d, deb-systemd-invoke) and
+# nothing else: measured on an Ubuntu 26.04 desktop, the postinst or postrm of udev,
+# dbus, snapd, polkitd, accountsservice and networkd-dispatcher each call
+# `systemctl --system daemon-reload` or `systemctl try-restart` directly. A minbase
+# bootstrap runs few such scripts and a desktop seed runs hundreds. This is not a
+# hypothesis about the risk either: snaps installed from a chroot phase had already
+# been found landing in the build machine's own /var/lib/snapd (see core/snaps.py).
+#
+# The target gets an empty tmpfs instead, which is what a chroot's /run should be:
+# writable, private, and gone when the phase ends. apt keeps working because the
+# resolver is reached over the shared network namespace, not through /run --
+# mmdebstrap copies the host's /etc/resolv.conf into the target during its essential
+# step, and a stub listener on loopback is as reachable from the chroot as from here.
+PRIVATE_TMPFS = ("run",)
 
 POLICY_RC_D = "usr/sbin/policy-rc.d"
 _POLICY_RC_D_BODY = "#!/bin/sh\nexit 101\n"
@@ -103,31 +121,49 @@ class ChrootService:
                     description=f"Bind mount {source}",
                 )
             )
-            # Detach propagation so an unmount or new mount inside the chroot can
-            # never leak into the host namespace (systemd shares / by default).
+            self._isolate_propagation(destination, target)
+        for target in PRIVATE_TMPFS:
+            destination = self.root / target
+            FileSystemOps(self.runner, self.use_sudo).mkdir(destination, f"Create private mount target {target}")
             self.runner.run(
                 CommandSpec(
-                    argv=sudo(("mount", "--make-rslave", str(destination)), self.use_sudo),
+                    argv=sudo(("mount", "-t", "tmpfs", "tmpfs", str(destination)), self.use_sudo),
                     needs_root=self.use_sudo,
-                    description=f"Isolate mount propagation for {target}",
+                    description=f"Mount a private {target} for the target root",
                 )
             )
+            self._isolate_propagation(destination, target)
         self._block_service_starts()
+
+    def _isolate_propagation(self, destination: Path, target: str) -> None:
+        # Detach propagation so an unmount or new mount inside the chroot can
+        # never leak into the host namespace (systemd shares / by default).
+        self.runner.run(
+            CommandSpec(
+                argv=sudo(("mount", "--make-rslave", str(destination)), self.use_sudo),
+                needs_root=self.use_sudo,
+                description=f"Isolate mount propagation for {target}",
+            )
+        )
 
     def unmount_runtime(self) -> None:
         self._unblock_service_starts()
         if self.resolved_backend() == "nspawn":
             return
+        for target in reversed(PRIVATE_TMPFS):
+            self._unmount(target)
         for _, target in reversed(BIND_MOUNTS):
-            destination = self.root / target
-            self.runner.run(
-                CommandSpec(
-                    argv=sudo(("umount", "-lf", str(destination)), self.use_sudo),
-                    needs_root=self.use_sudo,
-                    description=f"Unmount {target}",
-                ),
-                check=False,
-            )
+            self._unmount(target)
+
+    def _unmount(self, target: str) -> None:
+        self.runner.run(
+            CommandSpec(
+                argv=sudo(("umount", "-lf", str(self.root / target)), self.use_sudo),
+                needs_root=self.use_sudo,
+                description=f"Unmount {target}",
+            ),
+            check=False,
+        )
 
     def _block_service_starts(self) -> None:
         # Package postinst scripts call invoke-rc.d to start daemons; inside a

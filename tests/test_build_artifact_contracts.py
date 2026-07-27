@@ -160,9 +160,10 @@ def test_evidence_source_tree_prefers_the_canonical_name_for_a_real_project(
     assert _source_tree_iso(tmp_path / "not-a-project", tmp_path).name == "not-a-project.iso"
 
 
-# snap install inside the chroot talks to the host snapd, because chroot.py
-# bind-mounts the host /run for the whole phase. The snaps landed on the build
-# machine as root and the ISO shipped without them, silently.
+# snap install inside the chroot used to talk to the host snapd, because chroot.py
+# bind-mounted the host /run for the whole phase. The snaps landed on the build
+# machine as root and the ISO shipped without them, silently. The chroot now gets a
+# private /run, and the phase stays refused: see the comment in core/snaps.py.
 def test_snap_install_plans_but_refuses_to_mutate_the_build_host(tmp_path: Path) -> None:
     from distroforge.core.snaps import SnapOptions, SnapService, SnapSpec
 

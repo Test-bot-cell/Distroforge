@@ -163,12 +163,27 @@ QEMU online/offline install smoke matrix.
    no longer resurrect to fail the next build. On bootstrap reuse the rootfs additionally sheds
    every DistroForge apt overlay before the live-base install runs apt.
    The chroot runtime that hosts these phases is hardened on entry: each `/dev`, `/dev/pts`,
-   `/proc`, `/sys` and `/run` bind mount is detached with `mount --make-rslave` so a later
+   `/proc` and `/sys` bind mount is detached with `mount --make-rslave` so a later
    unmount cannot leak into the host mount namespace, and a `policy-rc.d` that exits 101
    stops package postinst from starting daemons against a chroot with no real init. APT runs
    with `DEBIAN_FRONTEND=noninteractive` so debconf never blocks on a prompt. The block is
    removed and the binds are lazily unmounted on exit, so `policy-rc.d` never ships in the
    image.
+   **`/run` is not among those binds, and that is the point.** It used to be, and the host's
+   `/run` holds the control sockets of the host's own daemons — `/run/snapd.socket`,
+   `/run/systemd/private`, `/run/dbus/system_bus_socket`, `/run/udev/control` — so binding it
+   handed every maintainer script in the target root a way to command the *build machine* as
+   root. `policy-rc.d` closes only the well-behaved route: measured on an Ubuntu 26.04
+   desktop, the postinst or postrm of `udev`, `dbus`, `snapd`, `polkitd`, `accountsservice`
+   and `networkd-dispatcher` each call `systemctl --system daemon-reload` or
+   `systemctl try-restart` **directly**, outside `invoke-rc.d`. A minbase bootstrap runs few
+   such scripts; a desktop seed runs hundreds. The risk was not hypothetical either — snaps
+   installed from a chroot phase were found landing in the build host's own
+   `/var/lib/snapd`, which is why that phase is refused outright. The target now gets an
+   empty tmpfs on `<root>/run`, private and unmounted with the rest, which is what a
+   chroot's `/run` should be. APT is unaffected: `mmdebstrap` copies the host's
+   `/etc/resolv.conf` into the target and the resolver is reached over the shared network
+   namespace, not through `/run`.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after

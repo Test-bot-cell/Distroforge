@@ -4,7 +4,13 @@ import stat
 
 from distroforge.core.apt import AptService, PackagePlan
 from distroforge.core.build import BuildOptions, BuildOrchestrator
-from distroforge.core.chroot import BIND_MOUNTS, POLICY_RC_D, ChrootService, resolve_chroot_backend
+from distroforge.core.chroot import (
+    BIND_MOUNTS,
+    POLICY_RC_D,
+    PRIVATE_TMPFS,
+    ChrootService,
+    resolve_chroot_backend,
+)
 from distroforge.core.command import CommandRunner
 from distroforge.core.project import Project
 
@@ -18,8 +24,44 @@ def test_mount_runtime_isolates_propagation_for_every_bind(tmp_path) -> None:
     argvs = [spec.argv for spec in runner.history]
     for _, target in BIND_MOUNTS:
         assert ("mount", "--make-rslave", str(root / target)) in argvs
-    assert sum(1 for argv in argvs if argv[:2] == ("mount", "--make-rslave")) == len(BIND_MOUNTS)
+    for target in PRIVATE_TMPFS:
+        assert ("mount", "--make-rslave", str(root / target)) in argvs
+    expected = len(BIND_MOUNTS) + len(PRIVATE_TMPFS)
+    assert sum(1 for argv in argvs if argv[:2] == ("mount", "--make-rslave")) == expected
     assert not root.exists()
+
+
+def test_the_host_run_is_never_bound_into_the_target(tmp_path) -> None:
+    """The target gets a /run of its own, not the build machine's.
+
+    The host's /run holds the control sockets of the host's own daemons, so binding it
+    let any maintainer script in the target command this machine as root. policy-rc.d
+    does not close that: udev, dbus, snapd, polkitd, accountsservice and
+    networkd-dispatcher all call `systemctl --system daemon-reload` or `try-restart`
+    directly, outside invoke-rc.d. A desktop seed runs hundreds of such scripts.
+    """
+    runner = CommandRunner(dry_run=True)
+    root = tmp_path / "rootfs"
+
+    ChrootService(runner, root, use_sudo=False).mount_runtime()
+
+    argvs = [spec.argv for spec in runner.history]
+    assert "/run" not in [source for source, _ in BIND_MOUNTS]
+    assert not any(argv[:3] == ("mount", "--bind", "/run") for argv in argvs)
+    assert ("mount", "-t", "tmpfs", "tmpfs", str(root / "run")) in argvs
+
+
+def test_the_private_run_is_unmounted_when_the_phase_ends(tmp_path) -> None:
+    # Left mounted, it would be one more thing under the rootfs at pack time -- which
+    # SquashfsService now refuses outright, after a surviving /proc bind mount once
+    # made mksquashfs walk into /proc/kcore.
+    runner = CommandRunner(dry_run=True)
+    root = tmp_path / "rootfs"
+
+    ChrootService(runner, root, use_sudo=False).unmount_runtime()
+
+    argvs = [spec.argv for spec in runner.history]
+    assert ("umount", "-lf", str(root / "run")) in argvs
 
 
 def test_mount_blocks_service_starts_and_unmount_removes_it(tmp_path) -> None:
@@ -113,6 +155,9 @@ def test_full_dry_run_build_hardens_the_chroot(tmp_path) -> None:
     policy = str(project.squashfs_root / POLICY_RC_D)
     argvs = [spec.argv for spec in runner.history]
     assert any("--make-rslave" in argv for argv in argvs)
+    # No phase of a whole build may hand the target the host's /run, not just the one
+    # this file constructs by hand.
+    assert not any(argv[:3] == ("mount", "--bind", "/run") for argv in argvs)
     assert ("write-file", policy) in argvs
     assert ("rm", "-f", policy) in argvs
     assert any("DEBIAN_FRONTEND=noninteractive" in argv and "apt-get" in argv for argv in argvs)

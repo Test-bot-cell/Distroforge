@@ -86,6 +86,19 @@ distroforge (0.3.5-4) resolute; urgency=medium
     did not apply instead of wearing a firmware nothing used. The GUI keeps one
     firmware control -- the Virtualization Lab combo already feeds this proof --
     and the Artifacts button says so.
+  * Stop bind-mounting the host's /run into the build chroot, and give the target
+    an empty tmpfs instead. The host /run holds the control sockets of the host's
+    own daemons -- snapd, systemd, D-Bus, udev -- so every maintainer script in
+    the target root could command the build machine as root. policy-rc.d closes
+    only the invoke-rc.d route: measured on Ubuntu 26.04, the postinst or postrm
+    of udev, dbus, snapd, polkitd, accountsservice and networkd-dispatcher each
+    call "systemctl --system daemon-reload" or "systemctl try-restart" directly.
+    A minbase bootstrap runs few such scripts and a desktop seed runs hundreds,
+    which is how this surfaced. Nor was it hypothetical: snaps installed from a
+    chroot phase had already been found landing in the build host's
+    /var/lib/snapd, which is why that phase is refused. apt is unaffected --
+    mmdebstrap copies /etc/resolv.conf into the target and the resolver is
+    reached over the shared network namespace, not through /run.
 
  -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 08:03:10 +0200
 
