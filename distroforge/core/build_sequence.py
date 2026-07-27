@@ -138,7 +138,7 @@ def build_phase_sequence(*, source_mode: str, run_preview: bool) -> tuple[Planne
         _step(BuildPhase.SNAPSHOT, "Create rollback snapshot", "Optional rollback snapshot after customization (after-customize)"),
         _step(BuildPhase.KERNEL_MODULE, "Build kernel payload", "Optionally fetch kernel sources, compile module and refresh boot assets"),
         _step(BuildPhase.SECURE_BOOT, "Secure Boot workflow", "Optionally prepare module signing and MOK checks"),
-        _step(BuildPhase.REPRODUCIBLE, "Apply reproducible build hints", "Optionally write SOURCE_DATE_EPOCH and apt snapshot metadata"),
+        _step(BuildPhase.REPRODUCIBLE, "Pin reproducible build inputs", "Optionally refuse a reproducible build whose epoch or archive snapshot is not pinned"),
         _step(BuildPhase.RUN_HOOKS, "Run customization hooks", "Run pre-build, chroot and post-build hook scripts when present"),
         _step(BuildPhase.SANITIZE_TARGET, "Sanitize target", "Clean caches, logs, histories, temporary files and machine identity"),
         _step(BuildPhase.SNAPSHOT, "Create rollback snapshot", "Optional rollback snapshot after sanitize (after-sanitize)"),

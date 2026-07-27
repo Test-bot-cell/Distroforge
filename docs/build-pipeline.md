@@ -551,6 +551,97 @@ is surfaced as a `DB-UNAVAILABLE` warning, never a silent pass to clean.
 The standard SBOM is written next to the native provenance document, so a published bundle
 can carry a vendor-neutral component inventory.
 
+### Reproducible builds
+
+`--reproducible` used to consist of one file. The `REPRODUCIBLE` phase wrote
+`etc/distroforge-reproducible.env` into the target and stopped there, and no reader for
+that file has ever existed — not in this project, not in apt, not in any build tool. It
+also shipped inside the image. The option was visible in the CLI, in the GUI, in the
+phase list and in the build log, and changed nothing about the bytes produced.
+
+The pinning now happens where the bytes are made, on the two tools' own documented
+terms rather than on any behaviour invented here:
+
+- `mksquashfs` 4.7.5 documents `SOURCE_DATE_EPOCH` as "used as the filesystem creation
+  timestamp", and adds that "any file timestamps which are after SOURCE_DATE_EPOCH will
+  be clamped to SOURCE_DATE_EPOCH";
+- `xorrisofs` 1.5.6 documents it as supplying the default of `--modification-date=`, of
+  `--gpt_disk_guid`, of `--set_all_file_dates`, and of the "now" time for ISO nodes with
+  no disk source.
+
+So `--source-date-epoch` needs no flag of its own. It travels as an `env VAR=value`
+prefix in the argv, not in `CommandSpec.env`, for two reasons. The privilege wrapper
+discards environments it is handed: `sudoers(5)` for the sudo-rs on this platform states
+that `env_reset` "cannot be disabled. This causes commands to be executed with a new,
+minimal environment", and `pkexec(1)` sets "a minimal known and safe environment" — a
+variable passed beside the argv would never reach a privileged `mksquashfs`. And the
+printed plan is meant to be re-run: `CommandSpec.display()` and the JSONL build log both
+render argv and nothing else, so a pin carried elsewhere would be missing from the very
+record that says what the build did. In the `mksquashfs` argv the prefix is at the head,
+because everything after `-e` is read as an exclude pattern.
+
+`--apt-snapshot` takes an **identifier**, `YYYYMMDDTHHMMSSZ`, never a URL. It is written
+as apt's `snapshot=` source option on the ordinary archive URI (`Snapshot:` in the
+deb822 mirror layer), and apt resolves it to whichever snapshot service the repository
+belongs to. That indirection is the point: measured, apt routes an Ubuntu source to
+`snapshot.ubuntu.com/ubuntu/<id>` and a Debian one to
+`snapshot.debian.org/archive/debian/<id>`. Building the URL here would mean hardcoding
+two layouts and getting one of them wrong.
+
+Which sources get the pin was settled by listing every place this project writes an apt
+source, not by assuming there were two. There are three that can carry it — the one-line
+path in `core/apt.py`, the deb822 path in `core/mirrors.py`, and the archive sources
+`core/release_track.py` writes for `--release-track` — and all three do. The first two
+are *alternatives*, so pinning only one would leave the build unpinned whenever
+`--mirrors` happened to be on, which is a flag with nothing to do with reproducibility;
+the third is easy to forget precisely because it is a separate file. A source the
+operator already pinned by hand keeps its own identifier.
+
+The identifier is validated here because almost nothing downstream validates it.
+`sources.list(5)` says outright that APT does not check the form. Measured against the
+live service with `APT::Update::Error-Mode=any`:
+
+| identifier | apt | what happens |
+| --- | --- | --- |
+| malformed (`pouet`) | exits 100 | 404, loud — but an hour into the build |
+| before 1 March 2023 | 404 | earlier than the service covers, by its own statement |
+| in the future | **exits 0** | HTTP 200 serving the **live archive's** indices |
+
+The third row is why the check exists: a future identifier pins nothing at all while the
+build still reports that it is pinned. There is a fourth trap that is deliberately *not*
+guarded — an identifier older than the target suite also exits 0, on an archive that is
+merely empty, and this project's release table carries no release date to compare
+against. Guessing one from the version number would be a convention dressed as a fact,
+so it is written down here instead.
+
+Two gaps remain, and both are announced rather than hidden.
+
+`debootstrap` and `mmdebstrap` are given a mirror **URL**, which carries no apt source
+option, so a snapshot pins every package installed during the build but not the base
+rootfs underneath them. When a snapshot is set and `--bootstrap-mirror` is not, the
+dry-run report says so (`reproducible-base-unpinned`) and names the flag that closes it.
+Pointing `--bootstrap-mirror` at the snapshot archive also changes the recorded bootstrap
+identity, so an existing rootfs from the unpinned mirror is refused rather than reused —
+see *Reusing a bootstrap rootfs* below.
+
+A PPA cannot be pinned at all, and the fourth source writer — `core/ppa.py` — therefore
+does **not** get the option. Measured: apt derives a snapshot host by prefixing
+`snapshot.` to the repository's own host, so a Launchpad source resolves to
+`snapshot.ppa.launchpadcontent.net`, which does not exist; every fetch comes back `Ign`,
+`apt-get update` exits 0, and the live PPA indices are used. Writing `snapshot=` onto a
+PPA source would be a second placebo of exactly the kind this section describes removing.
+When a snapshot is set and PPAs are configured, the dry-run report names them
+(`reproducible-ppa-unpinned`) instead.
+
+The phase itself now writes nothing and runs no command: it refuses. Enabling
+reproducible builds without an epoch, with an epoch outside the unsigned 32-bit range
+`mksquashfs` documents, or with an unusable snapshot identifier raises before the first
+expensive phase, and the dry-run report carries the same verdicts as
+`reproducible-epoch-missing`, `reproducible-epoch-invalid` and
+`reproducible-snapshot-invalid`. Because it mutates no rootfs, it is also no longer
+declared privileged in `core/phase_contracts.py`, which the privilege gate measures
+against the real command history rather than taking on trust.
+
 ### Reusing a bootstrap rootfs
 
 A bootstrap target that already exists is reused instead of re-bootstrapped, which is

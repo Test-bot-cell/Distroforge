@@ -100,7 +100,7 @@ PIPELINE_PHASES: tuple[BuildPhaseSpec, ...] = (
     BuildPhaseSpec(BuildPhase.OEM, "Configure OEM mode"),
     BuildPhaseSpec(BuildPhase.KERNEL_MODULE, "Build kernel module"),
     BuildPhaseSpec(BuildPhase.SECURE_BOOT, "Secure Boot workflow"),
-    BuildPhaseSpec(BuildPhase.REPRODUCIBLE, "Apply reproducible build hints"),
+    BuildPhaseSpec(BuildPhase.REPRODUCIBLE, "Pin reproducible build inputs"),
     BuildPhaseSpec(BuildPhase.SNAPSHOT, "Create rollback snapshots"),
     BuildPhaseSpec(BuildPhase.RUN_HOOKS, "Run customization hooks"),
     BuildPhaseSpec(BuildPhase.SANITIZE_TARGET, "Sanitize target"),

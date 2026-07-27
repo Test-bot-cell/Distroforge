@@ -127,8 +127,39 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     imported into an empty GNUPGHOME, returns 0 with a good signature and
     returns 1 with nothing imported. The failing control is what makes the 0
     evidence about the published key rather than about an ambient keyring.
+  * Made --reproducible do something. The phase wrote
+    etc/distroforge-reproducible.env into the target and stopped: nothing in
+    this project, in apt, or in any build tool has ever read that file, and it
+    shipped inside the image, so the option was visible in the CLI, the GUI,
+    the phase list and the build log while changing nothing about the bytes
+    produced. SOURCE_DATE_EPOCH now reaches mksquashfs and xorriso, which both
+    document honouring it, as an env prefix in the argv: sudoers(5) for
+    sudo-rs says env_reset "cannot be disabled" and pkexec(1) imposes a
+    minimal environment, so a variable passed beside the argv would never
+    arrive, and display() and the JSONL log render argv alone, so a pin
+    carried elsewhere would be missing from the record that says what the
+    build did. The phase itself now writes nothing, refuses an epoch that is
+    absent or outside the range mksquashfs documents, and is no longer
+    declared privileged -- which the privilege gate measures rather than
+    trusts.
+  * Made --apt-snapshot a real archive pin, as apt's snapshot= source option
+    on the ordinary URI rather than a rewritten URL: apt routes an Ubuntu
+    source to snapshot.ubuntu.com/ubuntu/<id> and a Debian one to
+    snapshot.debian.org/archive/debian/<id>, so building the URL here would
+    have hardcoded two layouts and got one wrong. Which sources carry it was
+    settled by listing every apt-source writer rather than assuming two: the
+    one-line path, the deb822 mirror layer and the release track all do, the
+    first two because they are alternatives and pinning one would leave the
+    build unpinned whenever --mirrors was on. The identifier is validated here
+    because sources.list(5) says apt does not: measured, a malformed one exits
+    100, one older than the service 404s, and one in the future answers HTTP
+    200 with the live archive's own indices while apt exits 0 -- the case
+    nothing else catches. Two gaps are named instead of hidden: the base
+    rootfs, which comes from a mirror URL no source option reaches, and PPAs,
+    where apt derives snapshot.ppa.launchpadcontent.net, gets Ign on every
+    fetch and exits 0, so pinning them would be a second placebo.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:49:10 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 22:26:56 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

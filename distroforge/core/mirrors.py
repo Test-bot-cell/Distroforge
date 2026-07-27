@@ -29,6 +29,11 @@ class AptSourceEntry:
     suites: tuple[str, ...]
     components: tuple[str, ...]
     signed_by: str | None = None
+    # The deb822 spelling of the same apt option the one-line sources carry. The mirror
+    # layer is an alternative to core/apt.py's sources, not an addition to them, so a
+    # snapshot pinned in only one of the two would leave whichever the build chose
+    # unpinned, depending on a flag that has nothing to do with reproducibility.
+    snapshot: str | None = None
 
     def render_deb822(self) -> str:
         lines = [
@@ -39,6 +44,8 @@ class AptSourceEntry:
         ]
         if self.signed_by:
             lines.append(f"Signed-By: {self.signed_by}")
+        if self.snapshot:
+            lines.append(f"Snapshot: {self.snapshot}")
         return "\n".join(lines) + "\n"
 
 
@@ -110,11 +117,13 @@ class MirrorService:
         project: Project,
         options: MirrorOptions | None = None,
         use_sudo: bool = True,
+        snapshot: str | None = None,
     ) -> None:
         self.runner = runner
         self.project = project
         self.options = options or MirrorOptions()
         self.use_sudo = use_sudo
+        self.snapshot = snapshot
         self.fs = FileSystemOps(runner, use_sudo)
 
     def doctor(self) -> MirrorDoctorReport:
@@ -234,6 +243,7 @@ class MirrorService:
                 suites=archive_suites,
                 components=self.project.release.components,
                 signed_by=signed_by,
+                snapshot=self.snapshot,
             )
         ]
         if security_suites:
@@ -244,6 +254,7 @@ class MirrorService:
                     suites=security_suites,
                     components=self.project.release.components,
                     signed_by=signed_by,
+                    snapshot=self.snapshot,
                 )
             )
         return tuple(entries)

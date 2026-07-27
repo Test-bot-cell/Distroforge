@@ -122,6 +122,7 @@ def _configure_rich_settings(window) -> None:
     window.qa_edit.setText("live-bios, live-uefi")
     window.reproducible_check.setChecked(True)
     window.source_date_epoch_edit.setText("1700000000")
+    window.apt_snapshot_edit.setText("20250601T030400Z")
     window.keep_logs_check.setChecked(True)
     window.import_scripts_edit.setPlainText("/tmp/distroforge-import.sh")
     window.size_report_check.setChecked(True)

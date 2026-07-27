@@ -104,7 +104,7 @@ _CONTRACT_DATA: tuple[
     (BuildPhase.SECURE_BOOT, "customize_target",
      ("secure boot options",), ("module signing", "MOK enrollment plan"), True, None),
     (BuildPhase.REPRODUCIBLE, "customize_target",
-     ("reproducible options",), ("SOURCE_DATE_EPOCH", "apt snapshot metadata"), True, None),
+     ("reproducible options",), ("verified epoch and snapshot pins",), False, None),
     (BuildPhase.SNAPSHOT, "customize_target",
      ("snapshot options", "target rootfs"), ("rollback archives",), True,
      "after-apt, after-customize, after-sanitize"),

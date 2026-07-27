@@ -12,6 +12,7 @@ from .diff_preview import DiffPreviewService
 from .doctor import REQUIRED_TOOLS, run_doctor
 from .policy import PolicyService
 from .preflight import validate_build_options
+from .reproducible import epoch_problem, snapshot_problem
 from .transaction import BuildTransaction, plan_transaction
 from .trust import TrustReport, TrustService
 from .validate import validate_bootstrap_host, validate_for_build
@@ -194,12 +195,91 @@ def _collect_findings(
             "Select an existing ISO or switch to a skeleton source starter.",
         )
 
+    _add_reproducible_findings(options, add)
     _add_artifact_findings(project, options, add)
     _add_trust_findings(trust, add)
     _add_vuln_findings(options, packages, add)
     _add_policy_findings(policy, add)
     _add_privilege_finding(options, add)
     return findings
+
+
+def _add_reproducible_findings(options: BuildOptions, add) -> None:
+    """Say up front what a reproducible build will and will not pin.
+
+    Every refusal here comes from the same functions the build itself refuses on, so the
+    preview cannot promise a build the build will decline, nor stay silent about one it
+    will decline.
+
+    The two warnings are the parts the build does *not* refuse, because they are not
+    errors -- they are the edges of what a snapshot can reach, and both were found by
+    listing every place this project writes an apt source rather than by assuming two.
+    The base rootfs comes from a mirror URL handed to debootstrap or mmdebstrap, which
+    carries no apt source option. A PPA has no snapshot service behind it at all. Naming
+    them is what keeps "reproducible" from meaning less than it says.
+    """
+    repro = options.reproducible
+    if not repro.enabled:
+        return
+    epoch = repro.source_date_epoch
+    if epoch is None:
+        add(
+            "error",
+            "reproducible-epoch-missing",
+            "Reproducible builds are enabled but no SOURCE_DATE_EPOCH is pinned, so "
+            "timestamps would come from the clock",
+            "Pass --source-date-epoch, or turn --reproducible off.",
+        )
+    else:
+        problem = epoch_problem(epoch)
+        if problem:
+            add(
+                "error",
+                "reproducible-epoch-invalid",
+                f"SOURCE_DATE_EPOCH cannot be used: {problem}",
+                "Pass a Unix timestamp inside the range the repack tool accepts.",
+            )
+    snapshot = repro.apt_snapshot
+    if not snapshot:
+        return
+    problem = snapshot_problem(snapshot)
+    if problem:
+        # An identifier the build will refuse has no reach worth describing, so the two
+        # coverage warnings below would only be noise on top of the refusal.
+        add(
+            "error",
+            "reproducible-snapshot-invalid",
+            f"Apt snapshot cannot be used: {problem}",
+            "Pass an identifier of the form YYYYMMDDTHHMMSSZ in the past.",
+        )
+        return
+    if options.bootstrap.mirror is None:
+        add(
+            "warning",
+            "reproducible-base-unpinned",
+            f"Apt snapshot {snapshot} pins every package installed during the build, "
+            "but not the base rootfs, which the bootstrap tool fetches from a mirror "
+            "URL that carries no snapshot option",
+            "Pass --bootstrap-mirror pointing at the snapshot archive for that date "
+            "to pin the base as well.",
+        )
+    if options.ppa.ppas:
+        # Measured: apt derives a snapshot host by prefixing "snapshot." to the
+        # repository's own, so a PPA source resolves to
+        # snapshot.ppa.launchpadcontent.net, which does not exist. Every fetch is
+        # ignored, apt exits 0, and the live PPA indices are used instead. Writing the
+        # option onto a PPA source would therefore be a second placebo, so it is not
+        # written -- and the gap is reported instead.
+        names = ", ".join(f"ppa:{ppa.owner}/{ppa.name}" for ppa in options.ppa.ppas)
+        add(
+            "warning",
+            "reproducible-ppa-unpinned",
+            f"Apt snapshot {snapshot} cannot pin PPA sources ({names}); Launchpad runs "
+            "no snapshot service, so packages from them come from whatever the PPA holds "
+            "at build time",
+            "Remove the PPA, or accept that its packages are not reproducible and record "
+            "which versions the build resolved.",
+        )
 
 
 def _add_bootstrap_findings(project: Project, options: BuildOptions, add) -> None:

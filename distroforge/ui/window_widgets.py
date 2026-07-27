@@ -435,9 +435,17 @@ def build_window_widgets(window) -> None:
     window.sbom_format_combo.addItem("Native (DistroForge JSON)", "native")
     window.sbom_format_combo.addItem("SPDX 2.3", "spdx")
     window.sbom_format_combo.addItem("CycloneDX 1.5", "cyclonedx")
-    window.reproducible_check = QCheckBox("Reproducible hints")
+    # "Hints" was the honest word while the phase only wrote a file nothing read. It now
+    # pins SOURCE_DATE_EPOCH on the two commands that write the image and the apt
+    # snapshot on every source, and refuses if either pin is unusable.
+    window.reproducible_check = QCheckBox("Reproducible build")
     window.source_date_epoch_edit = QLineEdit()
+    window.source_date_epoch_edit.setPlaceholderText("Unix timestamp, e.g. 1700000000")
     window.apt_snapshot_edit = QLineEdit()
+    # The format is spelled out because nothing downstream will spell it out: apt does
+    # not validate a snapshot identifier, and the service answers a future one with the
+    # current archive rather than an error.
+    window.apt_snapshot_edit.setPlaceholderText("YYYYMMDDTHHMMSSZ, e.g. 20250601T030400Z")
     window.plugin_dir_edit = QLineEdit()
     window.import_scripts_edit = QPlainTextEdit()
     window.release_artifacts_check = QCheckBox("Write release artifacts")

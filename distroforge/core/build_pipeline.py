@@ -188,14 +188,21 @@ def run_preflight(orch: BuildOrchestrator) -> None:
 
 
 def build_services(orch: BuildOrchestrator) -> BuildServices:
-    iso = IsoService(orch.runner, use_sudo=orch.options.use_sudo)
-    squashfs = SquashfsService(orch.runner, use_sudo=orch.options.use_sudo)
+    # The epoch reaches the two services that write shipped bytes, because that is
+    # where a timestamp becomes part of an artifact. Reading it from the options at
+    # construction keeps the switch (--reproducible) and the value in one decision.
+    epoch = orch.options.reproducible.effective_source_date_epoch
+    iso = IsoService(orch.runner, use_sudo=orch.options.use_sudo, source_date_epoch=epoch)
+    squashfs = SquashfsService(
+        orch.runner, use_sudo=orch.options.use_sudo, source_date_epoch=epoch
+    )
     apt = AptService(
         orch.runner,
         orch.project.squashfs_root,
         orch.project.release,
         use_sudo=orch.options.use_sudo,
         arch=orch.options.bootstrap.arch,
+        snapshot=orch.options.reproducible.effective_apt_snapshot,
     )
     chroot = ChrootService(
         orch.runner, orch.project.squashfs_root, use_sudo=orch.options.use_sudo
@@ -227,6 +234,7 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
         orch.project.release,
         orch.options.release_track,
         use_sudo=orch.options.use_sudo,
+        snapshot=orch.options.reproducible.effective_apt_snapshot,
     )
 
     return BuildServices(
@@ -302,6 +310,7 @@ def configure_repositories(orch: BuildOrchestrator, services: BuildServices) -> 
             orch.project,
             orch.options.mirrors,
             use_sudo=orch.options.use_sudo,
+            snapshot=orch.options.reproducible.effective_apt_snapshot,
         ).apply(strict=orch.options.policy.strict)
     else:
         apt.write_sources(repositories or None)
@@ -561,15 +570,10 @@ def customize_target(orch: BuildOrchestrator, services: BuildServices) -> None:
 
         orch._step(
             BuildPhase.REPRODUCIBLE,
-            "Apply reproducible build hints",
-            "enabled" if orch.options.reproducible.enabled else "disabled",
+            "Pin reproducible build inputs",
+            orch.options.reproducible.pin_summary(),
         )
-        ReproducibleService(
-            orch.runner,
-            orch.project.squashfs_root,
-            orch.options.reproducible,
-            use_sudo=orch.options.use_sudo,
-        ).apply()
+        ReproducibleService(orch.options.reproducible).apply()
 
         plugins.run_phase("pre-host")
         orch._step(BuildPhase.RUN_HOOKS, "Run customization hooks", "hooks")

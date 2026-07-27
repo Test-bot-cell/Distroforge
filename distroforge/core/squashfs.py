@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec, sudo
 from .progress_parsers import squashfs_progress
+from .reproducible import source_date_epoch_argv
 
 # The compressors an image may use: what mksquashfs can write intersected with what the
 # kernel can read. Not the same set as the tool's own list -- mksquashfs also offers
@@ -95,6 +96,9 @@ def _refuse_mounted_source(source: Path) -> None:
 class SquashfsService:
     runner: CommandRunner
     use_sudo: bool = True
+    # Pinned only for pack(): unpack() reads an image someone else made and writes a
+    # working tree, so clamping its timestamps would change nothing that ships.
+    source_date_epoch: int | None = None
 
     def unpack(
         self,
@@ -135,6 +139,7 @@ class SquashfsService:
         spec = CommandSpec(
             argv=sudo(
                 (
+                    *source_date_epoch_argv(self.source_date_epoch),
                     "mksquashfs",
                     str(source),
                     str(squashfs_image),

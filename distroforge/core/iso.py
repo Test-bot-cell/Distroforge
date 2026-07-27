@@ -8,6 +8,7 @@ from pathlib import Path
 from .command import CommandRunner, CommandSpec, sudo
 from .progress_parsers import xorriso_progress
 from .project import Project
+from .reproducible import source_date_epoch_argv
 
 # Options the rebuild command line sets itself; drop them (and the value of the
 # value-taking ones) from a replayed report so nothing is specified twice.
@@ -67,6 +68,8 @@ def boot_args_from_report(report_text: str) -> list[str] | None:
 class IsoService:
     runner: CommandRunner
     use_sudo: bool = True
+    # Pinned only for rebuild(): extract() writes a working tree, not the media.
+    source_date_epoch: int | None = None
 
     def extract(
         self,
@@ -108,6 +111,7 @@ class IsoService:
         iso_root = project.iso_root
         boot_args, boot_label = self._boot_args(project, iso_root)
         argv = [
+            *source_date_epoch_argv(self.source_date_epoch),
             "xorriso",
             "-as",
             "mkisofs",

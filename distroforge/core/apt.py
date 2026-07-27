@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .chroot import ChrootService
@@ -35,10 +35,33 @@ class Repository:
     components: tuple[str, ...]
     uri: str
     signed_by: str | None = None
+    # An apt snapshot identifier. It stays an option on the ordinary archive URI
+    # instead of being folded into ``uri``, because apt resolves the option to
+    # whichever snapshot service the repository belongs to and the layouts differ
+    # per vendor -- measured, snapshot.ubuntu.com/ubuntu/<id> for an Ubuntu source
+    # and snapshot.debian.org/archive/debian/<id> for a Debian one.
+    snapshot: str | None = None
 
     def source_line(self) -> str:
-        options = f" [signed-by={self.signed_by}]" if self.signed_by else ""
+        parts = []
+        if self.signed_by:
+            parts.append(f"signed-by={self.signed_by}")
+        if self.snapshot:
+            parts.append(f"snapshot={self.snapshot}")
+        options = f" [{' '.join(parts)}]" if parts else ""
         return f"deb{options} {self.uri} {self.suite} {' '.join(self.components)}"
+
+
+def pin_snapshot(repositories: list[Repository], snapshot: str | None) -> list[Repository]:
+    """Stamp every repository that has no snapshot of its own with ``snapshot``.
+
+    A repository the operator already pinned by hand keeps its own identifier: they
+    were more specific than the build-wide option, and silently overruling them would
+    make the sources say something neither of us chose.
+    """
+    if not snapshot:
+        return list(repositories)
+    return [repo if repo.snapshot else replace(repo, snapshot=snapshot) for repo in repositories]
 
 
 def parse_repository_line(line: str) -> Repository:
@@ -48,6 +71,7 @@ def parse_repository_line(line: str) -> Repository:
     if len(parts) < 4:
         raise ValueError(f"Incomplete repository line: {line!r}")
     signed_by: str | None = None
+    snapshot: str | None = None
     offset = 1
     if parts[offset].startswith("["):
         option_parts: list[str] = []
@@ -61,6 +85,11 @@ def parse_repository_line(line: str) -> Repository:
         for option in options.split():
             if option.startswith("signed-by="):
                 signed_by = option.removeprefix("signed-by=")
+            # Read back what source_line() writes, so a parse of a rendered line
+            # returns the repository it was rendered from. Dropping it here would
+            # quietly unpin any source that made a round trip through this parser.
+            elif option.startswith("snapshot="):
+                snapshot = option.removeprefix("snapshot=")
     if len(parts) - offset < 3:
         raise ValueError(f"Incomplete repository line: {line!r}")
     return Repository(
@@ -68,6 +97,7 @@ def parse_repository_line(line: str) -> Repository:
         suite=parts[offset + 1],
         components=tuple(parts[offset + 2 :]),
         signed_by=signed_by,
+        snapshot=snapshot,
     )
 
 
@@ -102,6 +132,9 @@ class AptService:
     release: UbuntuRelease
     use_sudo: bool = True
     arch: str = "amd64"
+    # Applied to every source this service writes, default or operator-supplied, so a
+    # pinned build has no unpinned source left to fetch a newer package from.
+    snapshot: str | None = None
 
     def default_repositories(self) -> list[Repository]:
         repos: list[Repository] = []
@@ -117,7 +150,7 @@ class AptService:
         return repos
 
     def render_sources(self, repositories: list[Repository] | None = None) -> str:
-        repos = repositories or self.default_repositories()
+        repos = pin_snapshot(repositories or self.default_repositories(), self.snapshot)
         return "\n".join(repo.source_line() for repo in repos) + "\n"
 
     def sources_path(self) -> Path:

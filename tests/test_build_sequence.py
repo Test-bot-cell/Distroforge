@@ -27,6 +27,10 @@ def _rich_options(preview: bool) -> BuildOptions:
     for name in ("snapshots", "reproducible", "size_analysis", "vuln_scan",
                  "bootcheck", "qemu_screenshot", "prebuild_vm"):
         getattr(options, name).enabled = True
+    # Switching reproducible builds on without an epoch is now refused: the option
+    # promises a determinism the clock cannot give. A fixture that means "every
+    # feature active" has to pin one, exactly as an operator would.
+    options.reproducible.source_date_epoch = 1700000000
     options.kernel_module.enabled = True
     options.kernel_module.module_subdir = "drivers/probe"
     options.drivers.auto = True
@@ -169,7 +173,7 @@ _ISO_NO_PREVIEW_GOLDEN = (
     (30, 549, "snapshot", "Create rollback snapshot"),
     (31, 568, "kernel_module", "Build kernel payload"),
     (32, 599, "secure_boot", "Secure Boot workflow"),
-    (33, 611, "reproducible", "Apply reproducible build hints"),
+    (33, 611, "reproducible", "Pin reproducible build inputs"),
     (34, 617, "run_hooks", "Run customization hooks"),
     (35, 630, "sanitize_target", "Sanitize target"),
     (36, 648, "snapshot", "Create rollback snapshot"),

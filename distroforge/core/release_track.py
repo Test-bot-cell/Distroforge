@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .apt import Repository
 from .chroot import ChrootService
 from .command import CommandRunner
 from .fsops import FileSystemOps
@@ -52,12 +53,17 @@ class ReleaseTrackService:
         release: UbuntuRelease,
         options: ReleaseTrackOptions,
         use_sudo: bool = True,
+        snapshot: str | None = None,
     ) -> None:
         self.runner = runner
         self.root = root
         self.release = release
         self.options = options
         self.use_sudo = use_sudo
+        # The track writes archive sources of its own, so a build pinned to an apt
+        # snapshot has to pin these too or the track becomes the one source still
+        # serving whatever is current.
+        self.snapshot = snapshot
         self.fs = FileSystemOps(runner, use_sudo)
 
     # Every file this service may write, so a reconfigure is a pure function of the
@@ -120,7 +126,17 @@ class ReleaseTrackService:
         lines = []
         for item in suites:
             uri = self.release.security_url if item.endswith("-security") else self.release.archive_url
-            lines.append(f"deb {uri} {item} {' '.join(self.release.components)}")
+            # Rendered by core.apt so the option spelling lives in exactly one place;
+            # with no signing key and no snapshot this produces the same line it always
+            # did.
+            lines.append(
+                Repository(
+                    suite=item,
+                    components=self.release.components,
+                    uri=uri,
+                    snapshot=self.snapshot,
+                ).source_line()
+            )
         return "\n".join(lines) + "\n"
 
     def _proposed_pin(self) -> str:

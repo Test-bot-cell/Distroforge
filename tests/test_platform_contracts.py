@@ -345,6 +345,11 @@ def test_platform_docs_use_product_framing() -> None:
 
 
 def test_rootfs_iso_mutators_depend_on_filesystem_boundary() -> None:
+    # core/reproducible.py is deliberately absent: it used to write a hints file into
+    # the target that nothing read, and now pins SOURCE_DATE_EPOCH and the apt snapshot
+    # on the commands that produce the image instead. A module that mutates no rootfs
+    # has no filesystem boundary to depend on, and listing it here would require it to
+    # keep an import it does not use.
     modules = (
         "distroforge/core/apt.py",
         "distroforge/core/apt_cache.py",
@@ -361,7 +366,6 @@ def test_rootfs_iso_mutators_depend_on_filesystem_boundary() -> None:
         "distroforge/core/oem.py",
         "distroforge/core/ppa.py",
         "distroforge/core/release_track.py",
-        "distroforge/core/reproducible.py",
         "distroforge/core/seeds.py",
         "distroforge/core/system_sync.py",
     )

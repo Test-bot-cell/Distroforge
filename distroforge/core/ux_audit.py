@@ -217,8 +217,8 @@ def _audit_developer_path(report: UxAuditReport, project: Project, options: Buil
                 "info",
                 "developer",
                 "reproducibility",
-                "Build extensions are active without reproducible build hints.",
-                "Enable reproducible builds (SOURCE_DATE_EPOCH/APT snapshot) for distro evolution.",
+                "Build extensions are active without a reproducible build.",
+                "Enable reproducible builds (SOURCE_DATE_EPOCH/apt snapshot) for distro evolution.",
             )
         )
 
