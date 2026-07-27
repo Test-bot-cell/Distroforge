@@ -91,7 +91,15 @@ class ProvenanceService:
             "dataLicense": "CC0-1.0",
             "SPDXID": "SPDXRef-DOCUMENT",
             "name": doc_name,
-            "documentNamespace": f"https://distroforge.invalid/spdx/{doc_name}-{created}",
+            # SPDX 2.3 wants a unique absolute URI here, under a namespace the creator
+            # controls, so that two documents can never collide. It need not resolve,
+            # which is why .invalid survived here for so long -- but an SBOM published
+            # with an archive should not point at a domain guaranteed never to exist.
+            # The repository is the one namespace this project actually controls; the
+            # alias domain would not be, it belongs to the forwarding provider.
+            "documentNamespace": (
+                f"https://github.com/Test-bot-cell/Distroforge/spdx/{doc_name}-{created}"
+            ),
             "creationInfo": {
                 "created": created,
                 "creators": ["Tool: DistroForge"],

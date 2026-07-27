@@ -15,7 +15,7 @@ from .integrity import IntegrityOptions, IntegrityService
 # each component build directory (see _deb_dir for the absolute location).
 _DEB_OUTPUT_DIR = "../distroforge-desktop-debs"
 # Kept in step with the Maintainer field of debian/control.
-_DEB_MAINTAINER = "DistroForge maintainers <maintainers@distroforge.invalid>"
+_DEB_MAINTAINER = "DistroForge maintainers <github@distroforge.anonaddy.com>"
 # DESTDIR the build systems install into before the .deb is assembled.
 _DEB_INSTALL_ROOT = "debroot"
 

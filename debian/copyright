@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: DistroForge
-Upstream-Contact: DistroForge maintainers <maintainers@distroforge.invalid>
+Upstream-Contact: DistroForge maintainers <github@distroforge.anonaddy.com>
 Source: https://github.com/Test-bot-cell/Distroforge
 
 Files: *

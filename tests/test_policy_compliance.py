@@ -345,6 +345,43 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
     assert "ruff" not in build_depends
 
 
+def test_the_maintainer_address_is_one_that_can_receive_mail() -> None:
+    """Policy 5.6.2: the Maintainer field is a mailbox, not a signature.
+
+    The BTS forwards every bug report to it and ftp-master sends upload results to it,
+    so an address that cannot receive makes the package unuploadable no matter how
+    clean it builds. This tree carried maintainers@distroforge.invalid for its whole
+    history, and the obvious next mistake is a GitHub noreply -- correct as a commit
+    author identity, which is what the repository already uses, and inbound-blocked by
+    design.
+
+    Nothing upstream of this test catches either. lintian's bogus-mail-host fires only
+    `unless is_domain($host)`, and Net::Domain::TLD counts invalid, test, example and
+    localhost as existing TLDs because RFC 2606 reserves them, so is_domain() returns
+    true for all four; mail-address-loops-or-bounces holds exactly one address, and it
+    is ubuntu-devel-discuss. Measured 2026-07-27: the package linted clean, built
+    clean, and was not uploadable.
+
+    A negative check on purpose. Proving an address really delivers needs mail sent to
+    it, which no offline suite can do -- see debian/README.source for the manual step.
+    This rules out the classes that provably cannot.
+    """
+    control = (ROOT / "debian/control").read_text(encoding="utf-8")
+    field = next(line for line in control.splitlines() if line.startswith("Maintainer:"))
+    _, _, address = field.partition("<")
+    address = address.rstrip(">").strip()
+    host = address.rpartition("@")[2].lower()
+
+    assert host, f"no host in Maintainer address: {field}"
+    # RFC 2606 reserves these so they can never resolve. Right for test fixtures --
+    # tests/test_gpg_signer_pinning.py and tests/test_packaging_reports.py keep using
+    # them, deliberately -- and disqualifying here.
+    assert host.rpartition(".")[2] not in {"invalid", "test", "example", "localhost"}
+    assert not host.endswith("noreply.github.com"), (
+        "GitHub noreply addresses reject all inbound mail by design"
+    )
+
+
 def test_the_maintainer_stamped_into_generated_debs_tracks_debian_control() -> None:
     """The address DistroForge writes into other people's packages, not just its own.
 

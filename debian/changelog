@@ -1,3 +1,33 @@
+distroforge (0.3.5-10) resolute; urgency=medium
+
+  * Give the package a maintainer address that can receive mail. Every entry so
+    far named maintainers@distroforge.invalid, an RFC 2606 reserved domain that
+    is guaranteed never to resolve, which makes the package unuploadable under
+    Debian Policy 5.6.2 whatever else is clean about it. The address is now a
+    forwarding alias, so it is public and deliverable without exposing a
+    personal mailbox, and the role phrase is unchanged.
+  * Substituted at the three sites that reach anyone: debian/control,
+    debian/copyright (Upstream-Contact) and _DEB_MAINTAINER in
+    core/desktop_source.py, which stamps it into the DEBIAN/control of every
+    desktop component .deb the tool builds for a user. Test fixtures in
+    test_gpg_signer_pinning.py and test_packaging_reports.py deliberately keep
+    a .invalid address -- that is what RFC 2606 reserves it for -- and the
+    changelog entries above are history and are not rewritten.
+  * Stop pointing the SPDX documentNamespace at a domain that cannot exist.
+    SPDX 2.3 needs a unique absolute URI and does not require it to resolve,
+    which is how .invalid survived there, but an SBOM shipped beside a package
+    should name a namespace the project actually controls. It now uses the
+    repository URL rather than the alias domain, which belongs to the
+    forwarding provider and not to this project.
+  * Guard the class, not the spelling: the new check rejects any maintainer
+    address in an RFC 2606 reserved TLD and any GitHub noreply, the two
+    plausible wrong answers. Verified to fail on both. It cannot prove an
+    address really delivers -- that needs mail actually sent to it, which an
+    offline suite cannot do -- so it rules out what is provably undeliverable
+    and leaves the live check to the manual step.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 19:41:07 +0200
+
 distroforge (0.3.5-9) resolute; urgency=medium
 
   * Enforce the promise that the maintainer address stamped into generated .deb
