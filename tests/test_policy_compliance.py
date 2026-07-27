@@ -5,6 +5,7 @@ import datetime
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -20,7 +21,10 @@ from distroforge.core.schema import validate_definition_data
 from distroforge.core.vulnscan import VulnScanOptions, VulnScanService
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_DIRS = {".venv", ".git", ".pytest_cache", ".ruff_cache", "__pycache__"}
+# .mypy_cache was the omission of the set: `make typecheck` creates it on every dev
+# machine, its JSON holds dotted symbol names that read as addresses, and no test had
+# looked inside it before the mailbox check below did.
+SKIP_DIRS = {".venv", ".git", ".pytest_cache", ".ruff_cache", "__pycache__", ".mypy_cache"}
 GENERATED_PACKAGE_PATHS = (
     ".pybuild",
     "build",
@@ -388,6 +392,86 @@ def test_the_maintainer_address_is_one_that_can_receive_mail() -> None:
     assert not host.endswith("noreply.github.com"), (
         "GitHub noreply addresses reject all inbound mail by design"
     )
+
+
+PUBLISHED_MAILBOXES = frozenset(
+    {
+        # debian/control, debian/copyright and every changelog trailer from 0.3.5-10 on.
+        "github@distroforge.anonaddy.com",
+        # The changelog entries up to 0.3.5-9, README.source quoting them, and the two
+        # fixtures that deliberately want an address RFC 2606 guarantees cannot receive.
+        "maintainers@distroforge.invalid",
+        "probe@distroforge.invalid",
+    }
+)
+_MAILBOX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def test_no_file_in_the_tree_names_a_mailbox_that_is_not_a_published_identity() -> None:
+    """An allowlist, deliberately, and not a list of addresses to keep out.
+
+    What is being protected is a personal mailbox, and this repository is public: a
+    denylist would have to spell that address out here in order to check for it, which
+    publishes the very thing it is meant to withhold. So the check inverts. Three
+    addresses may appear anywhere in the tree; a fourth fails, whoever it belongs to.
+
+    Measured 2026-07-27 over every tracked file: exactly those three, 56 occurrences, and
+    nothing else. The maintainer's signing key does carry a personal user id, which no
+    code path in this tool exports -- signing produces detached signatures, which carry a
+    key id and no user ids, and the only keyring written into an image is a third party's,
+    fetched from a keyserver by fingerprint. The address has never appeared in this tree
+    nor anywhere in its history, and every commit is authored by the GitHub noreply. This
+    check is what keeps that true the day someone commits a keyring, a signature, a
+    changelog trailer or a copyright stanza. docs/packaging-release.md carries the rest:
+    the filtered export for the one moment a public key does get published.
+    """
+    offenders: list[str] = []
+    for path in sorted(ROOT.rglob("*")):
+        if not path.is_file() or SKIP_DIRS & set(path.parts):
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        # Build output belongs to whatever dh last ran here, not to this tree.
+        if any(relative.startswith(generated) for generated in GENERATED_PACKAGE_PATHS):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for mailbox in _MAILBOX.findall(text):
+            if mailbox.lower() not in PUBLISHED_MAILBOXES:
+                offenders.append(f"{relative}: {mailbox}")
+
+    assert offenders == []
+
+
+def test_a_documented_key_export_cannot_publish_an_unfiltered_key() -> None:
+    """The export lives in a procedure, so the procedure is what gets guarded.
+
+    Nothing in this tool exports a public key, so there is no function to check. The only
+    place the maintainer's key is ever exported is the command written down in
+    docs/packaging-release.md, for the day an apt repository needs a `signed-by=` keyring
+    that anyone can verify against. `gpg --export` without `--export-filter` writes every
+    user id on the key into that keyring, which for this key means a personal mailbox
+    handed to everyone who installs from the archive.
+
+    Verified 2026-07-27 that the documented form does what it claims: the whole key
+    exports as 2927 bytes with two user ids, the filtered form as 2278 with one, and the
+    filtered export imported into an empty GNUPGHOME verifies a real signature made by
+    that key. Also asserts the procedure still exists -- deleting it would leave nothing
+    for this test to check and no filter for the next person to copy.
+    """
+    documented = 0
+    for path in sorted((ROOT / "docs").glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"gpg --export\b", text):
+            documented += 1
+            # The command wraps, so the flag sits on a later line of the same invocation.
+            window = text[match.start() : match.start() + 200]
+            assert "--export-filter" in window, (
+                f"{path.name}: an unfiltered key export publishes every user id"
+            )
+
+    assert documented, "the filtered export procedure is no longer documented anywhere"
 
 
 def test_the_maintainer_stamped_into_generated_debs_tracks_debian_control() -> None:

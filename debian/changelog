@@ -1,3 +1,34 @@
+distroforge (0.3.5-14) resolute; urgency=medium
+
+  * Keep a personal mailbox out of anything this project publishes. The signing
+    key carries two user ids, one of them a personal address, and a full
+    `gpg --export` writes both into whatever keyring it produces. Audited every
+    site that could carry a key: nothing in this tool exports a public key at
+    all. Signing produces detached signatures, which carry a key id and no user
+    ids; the only keyring written into an image belongs to a third party,
+    fetched from a keyserver by fingerprint in core/ppa.py. No code to fix,
+    and the exposure lives entirely in the procedure for publishing an apt
+    repository, which was not written down anywhere.
+  * docs/packaging-release.md now carries it, with the filter measured rather
+    than assumed: the whole key exports as 2927 bytes with both user ids, the
+    filtered form as 2278 with one, and the filtered export imported into an
+    empty GNUPGHOME verifies a real signature made by that key -- verification
+    uses the key material, not the labels on it. Also recorded there: the filter
+    governs one export and not a key already uploaded somewhere, and
+    keys.openpgp.org and keyserver.ubuntu.com both answer 404 for this
+    fingerprint, so nothing personal is published yet.
+  * Two guards, since the export is a procedure and not a function. One rejects
+    any mailbox in the tree that is not a published identity -- an allowlist on
+    purpose, because a denylist would have to spell out the address it protects,
+    in a public repository. The other rejects a documented `gpg --export` that
+    carries no `--export-filter`, and fails if the procedure is deleted. Both
+    verified to fail on an injected violation.
+  * .mypy_cache joins SKIP_DIRS. `make typecheck` creates it on every developer
+    machine and its JSON holds dotted symbol names that read as mail addresses;
+    no test had ever looked inside it before this one did.
+
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 18:02:12 +0200
+
 distroforge (0.3.5-13) resolute; urgency=medium
 
   * Run the pre-commit ratchets somewhere. The config file states that its hooks

@@ -210,3 +210,51 @@ PPA, Ubuntu repository, Debian repository, or a private archive, confirm that th
 distribution names the real target channel (`noble`, `resolute`, `trixie`, `experimental`,
 `unstable`, or the private archive suite) rather than the one that happened to fit the last
 local build.
+
+## Publishing the Signing Key
+
+Nothing in this tool exports a public key, and that is worth stating because the exposure
+it would create is not visible from the code. `sign_release_bundle` produces detached
+signatures only (`gpg --armor --detach-sign`), and a detached signature carries the key id,
+never the key's user ids. The one keyring DistroForge writes into an image belongs to a
+third party: `core/ppa.py` fetches a PPA key from a keyserver by fingerprint into
+`/usr/share/keyrings/distroforge-<slug>.gpg` and points a `signed-by=` at it. The
+maintainer's own key is never exported by any code path.
+
+It becomes a question the day this project publishes an apt repository, because a
+`signed-by=` keyring has to be published for anyone to verify it, and a full export
+carries every user id on the key. The signing key here,
+`93D942241BECDD422606C36C4C0D75219B5506CF`, carries two: the GitHub noreply used as the
+commit author identity, and a personal mailbox. Exporting it whole would publish the
+personal one to everyone who ever installs from the repository.
+
+Export the published identities only:
+
+```
+gpg --export \
+    --export-filter 'keep-uid=uid =~ noreply.github.com || uid =~ distroforge.anonaddy.com' \
+    93D942241BECDD422606C36C4C0D75219B5506CF > distroforge-archive-keyring.gpg
+```
+
+Measured 2026-07-27: the whole key exports as 2927 bytes carrying both user ids, the
+filtered form as 2278 bytes carrying one. Imported into an empty `GNUPGHOME`, the filtered
+export verifies a real signature made by that key -- `gpg --verify` returns 0 and reports a
+good signature -- so dropping the user id costs nothing an archive needs. Verification uses
+the key material, not the labels on it.
+
+Two things the filter cannot do. It governs one export and not a key already uploaded
+somewhere: a keyserver that has the key with its personal user id will not forget it, and
+neither will anyone who fetched it. Checked 2026-07-27 -- `keys.openpgp.org` and
+`keyserver.ubuntu.com` both answer 404 for that fingerprint, so nothing personal is
+published yet and this stays a precaution rather than a repair. And it cannot add what is
+missing: the `Maintainer` field names `github@distroforge.anonaddy.com` while the key has no
+user id for that address, so a keyring exported today authenticates the archive without
+naming the maintainer it belongs to. Adding that user id to the key is a change to the
+maintainer's own keyring and needs their passphrase; the filter above already accepts it, so
+it needs no change here once added.
+
+Two tests hold the parts of this a machine can check. One rejects any mailbox appearing in
+the tree that is not a published identity -- an allowlist, deliberately, because a denylist
+would have to spell out the address it is protecting, in a public repository. The other
+rejects a documented `gpg --export` without `--export-filter`, since this document is the
+only place the export exists.
