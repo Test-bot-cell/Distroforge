@@ -49,6 +49,31 @@ scheduled run happens on `refs/heads/main` — the same ref a push to `main` use
 group would let an ordinary push kill an hour-long build, and a cancelled run reports as
 *cancelled* rather than *failed*, so the week would read as quiet instead of broken.
 
+## Valid YAML is not a valid workflow
+
+The first push of this file produced a run with no jobs, no log, and one sentence: *"This
+run likely failed because of a workflow file issue."* GitHub evaluates every workflow in
+the repository on every push, so an unloadable one fails there regardless of its triggers
+— the run was attributed to a `push` event this workflow does not declare, and `gh run
+view` listed it under its path rather than its `name:`, because nothing had been parsed
+far enough to read a name.
+
+The cause was one expression: `${{ runner.temp }}` in the job's `env:` block. GitHub's
+context-availability table gives `jobs.<job_id>.env` exactly *"github, needs, strategy,
+matrix, vars, secrets, inputs"*, and lists `runner` only from
+`jobs.<job_id>.steps.<step_id>.env` onwards. Naming it above a step is not a value that
+comes out empty at run time; it is an unrecognized named-value, and Actions refuses the
+file whole. The path is now set by a step writing `$RUNNER_TEMP` into `$GITHUB_ENV`, which
+is the same directory reached the way the rest of the file already reached it.
+
+Fifteen sabotages of this workflow were each caught by a named test, and all fifteen
+stepped straight over a file GitHub would not load, because every one of them asked
+`yaml.safe_load` what the file said — a strictly weaker question than whether Actions will
+run it. `tests/test_golden_path.py` now also checks that no job-level key outside `steps`
+names a context that only exists once a step is running, with a negative control on the
+extractor so the check cannot pass by finding nothing. It is scoped to the two table rows
+that were read rather than to a transcription of the whole table.
+
 ## The reference derivative
 
 `.github/golden-path/reference-derivative.yaml` is the definition the weekly run builds.

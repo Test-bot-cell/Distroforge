@@ -62,16 +62,29 @@ jobs:
     # boot proof's own deadline, set below.
     timeout-minutes: 90
     env:
-      # The project root, deliberately outside the checkout. core/project.py:27 hard-codes
-      # the work directory as <root>/work and core/project.py:51 the outputs as
-      # <root>/dist, with no flag, definition field or environment variable to move
-      # either -- so the only way to keep several gigabytes of rootfs out of the source
-      # tree is to put the project somewhere else. tests/test_policy_compliance.py:109
-      # fails on a checkout carrying build leftovers, and this is how that stays true.
-      DERIVATIVE_ROOT: ${{ runner.temp }}/reference-derivative
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+
+      - name: Choose where the derivative is built
+        # The project root, deliberately outside the checkout. core/project.py:27 hard-codes
+        # the work directory as <root>/work and core/project.py:51 the outputs as
+        # <root>/dist, with no flag, definition field or environment variable to move
+        # either -- so the only way to keep several gigabytes of rootfs out of the source
+        # tree is to put the project somewhere else. tests/test_policy_compliance.py:109
+        # fails on a checkout carrying build leftovers, and this is how that stays true.
+        #
+        # Set in a step rather than in the job's env: block, which is where it started and
+        # where it made the entire file invalid. GitHub's context-availability table gives
+        # jobs.<job_id>.env exactly "github, needs, strategy, matrix, vars, secrets,
+        # inputs", and lists runner only from jobs.<job_id>.steps.<step_id>.env onwards, so
+        # ${{ runner.temp }} at job level is an unrecognized named-value and Actions refuses
+        # the workflow whole. Measured on the first push of this file: a run with no jobs,
+        # no log and "This run likely failed because of a workflow file issue" -- while
+        # yaml.safe_load had parsed it happily, which is how fifteen sabotage tests all
+        # stepped over it. $RUNNER_TEMP is the same directory as an ordinary environment
+        # variable, which is what the evidence step below was already using.
+        run: echo "DERIVATIVE_ROOT=$RUNNER_TEMP/reference-derivative" >> "$GITHUB_ENV"
 
       - name: Record what this runner actually is
         # Measured, not assumed, because three of the decisions here depend on figures

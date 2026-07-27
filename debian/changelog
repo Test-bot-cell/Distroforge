@@ -237,6 +237,24 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     CI policy at 3.13. The standing rules were kept rather than repealed:
     "never build to verify a change" and the authorization requirement stay
     as written, with the weekly workflow named as their single exception.
+  * Made golden-path.yml a file GitHub will actually load. Its first push
+    produced a run with no jobs, no log and "This run likely failed because
+    of a workflow file issue" -- attributed to a push event the workflow
+    does not declare, since Actions evaluates every workflow on every push,
+    and listed under its path rather than its name because nothing had
+    parsed far enough to read one. The cause was ${{ runner.temp }} in the
+    job's env: block. GitHub's context-availability table gives
+    jobs.<job_id>.env exactly "github, needs, strategy, matrix, vars,
+    secrets, inputs" and adds runner only at the step level, so naming it
+    there is not a value that comes out empty at run time -- the file is
+    refused whole. The path is now written by a step, from $RUNNER_TEMP into
+    $GITHUB_ENV, the way the evidence step already read it. The fifteen
+    sabotage tests all stepped over it because each asked yaml.safe_load
+    what the file said, which is strictly weaker than asking whether
+    Actions will run it; the suite now also refuses a job-level key naming a
+    context that exists only inside a running step, with a negative control
+    on the extractor so it cannot pass by finding nothing, and a check that
+    GITHUB_ENV is written above the steps that read it.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

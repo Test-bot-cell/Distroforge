@@ -18,10 +18,19 @@ askpass helper, which is every automated host there is, and the message said sud
 "cannot authenticate" -- false wherever a NOPASSWD rule authenticates it without
 asking. Nothing covered that branch in either direction: the suite was 1043 tests green
 both before and after the fix.
+
+And the gap those two left. Every check here parses the workflow with ``yaml.safe_load``
+and asks what it says, which is a strictly weaker question than whether GitHub will run
+it: the first push of ``golden-path.yml`` produced a run with no jobs, no log and "This
+run likely failed because of a workflow file issue", because a job-level ``env:`` named
+the ``runner`` context. Fifteen sabotages of that same file were each caught by a test,
+and all fifteen stepped over a file Actions would not load at all. Valid YAML is not a
+valid workflow, so the shape of what may name a context is now checked too.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -36,6 +45,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github/workflows/golden-path.yml"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 DEFINITION = REPO_ROOT / ".github/golden-path/reference-derivative.yaml"
+
+# Quoted from GitHub's context-availability table, the row for jobs.<job_id>.env:
+# "github, needs, strategy, matrix, vars, secrets, inputs". The row one level down,
+# jobs.<job_id>.steps.<step_id>.env, adds "job, runner, env, steps" -- the four that
+# describe a step already running. Naming one of those above a step does not degrade to
+# an empty string at run time; Actions refuses the file, and refuses it whole.
+JOB_LEVEL_CONTEXTS = frozenset({"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"})
 
 
 def _load(path: Path) -> dict:
@@ -88,6 +104,59 @@ def test_golden_path_cannot_be_cancelled_by_an_ordinary_push() -> None:
     assert golden["permissions"] == {"contents": "read"}
     for name, job in golden["jobs"].items():
         assert job.get("timeout-minutes"), f"{name} may not run unbounded"
+
+
+def _contexts_named(node: object) -> set[str]:
+    """Every context a ``${{ ... }}`` expression anywhere under ``node`` refers to."""
+    if isinstance(node, dict):
+        return set().union(*(_contexts_named(value) for value in node.values()), set())
+    if isinstance(node, list):
+        return set().union(*(_contexts_named(item) for item in node), set())
+    if not isinstance(node, str):
+        return set()
+    named: set[str] = set()
+    for expression in re.findall(r"\$\{\{(.*?)\}\}", node, flags=re.DOTALL):
+        # Quoted literals hold dots of their own: hashFiles('setup.cfg') would otherwise
+        # read as a context named "setup", and a check that fails on ci.yml instead of on
+        # the mistake it exists for is worse than no check.
+        named.update(re.findall(r"([A-Za-z_][A-Za-z0-9_-]*)\s*\.", re.sub(r"'[^']*'", "", expression)))
+    return named
+
+
+def test_the_context_extractor_sees_the_expression_that_broke_the_first_push() -> None:
+    # Without this, the guard below could pass by finding nothing at all.
+    assert _contexts_named({"env": {"DERIVATIVE_ROOT": "${{ runner.temp }}/x"}}) == {"runner"}
+    assert _contexts_named("${{ github.workflow }}-${{ github.ref }}") == {"github"}
+    assert _contexts_named("${{ matrix.python-version }}") == {"matrix"}
+    assert _contexts_named("${{ hashFiles('setup.cfg') }}") == set()
+    assert _contexts_named({"runs-on": "ubuntu-latest", "timeout-minutes": 90}) == set()
+
+
+def test_no_job_level_key_names_a_context_that_only_exists_inside_a_step() -> None:
+    """Ask of every workflow the question yaml.safe_load cannot ask.
+
+    Scope is deliberately the job mapping minus its steps: those are the rows quoted
+    above, measured against a real refusal, rather than a transcription of the whole
+    table. A step may name anything the table allows it.
+    """
+    for workflow in sorted((REPO_ROOT / ".github/workflows").glob("*.yml")):
+        for name, job in _load(workflow)["jobs"].items():
+            named = _contexts_named({key: value for key, value in job.items() if key != "steps"})
+            assert named <= JOB_LEVEL_CONTEXTS, (
+                f"{workflow.name}: job {name} names {sorted(named - JOB_LEVEL_CONTEXTS)} "
+                "outside its steps, which makes the whole file unloadable"
+            )
+
+
+def test_the_derivative_root_is_defined_before_it_is_used() -> None:
+    scripts = [step.get("run", "") for step in _load(WORKFLOW)["jobs"]["reference-derivative"]["steps"]]
+    defines = [i for i, s in enumerate(scripts) if "DERIVATIVE_ROOT=" in s and "GITHUB_ENV" in s]
+    uses = [i for i, s in enumerate(scripts) if "$DERIVATIVE_ROOT" in s]
+    assert defines, "no step writes DERIVATIVE_ROOT to GITHUB_ENV; a job-level env: cannot"
+    assert uses, "the build no longer reads it"
+    # GITHUB_ENV reaches the steps after the one that writes it, never the one writing it
+    # nor any above. Reordered the other way, the build would run against an empty path.
+    assert defines[0] < uses[0]
 
 
 def test_golden_path_executes_rather_than_plans() -> None:
