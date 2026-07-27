@@ -4,6 +4,7 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .apt import APT_UPDATE_ARGV
 from .chroot import ChrootService
 from .command import CommandRunner, CommandSpec
 from .fsops import FileSystemOps
@@ -67,7 +68,7 @@ class SystemSyncService:
             )
             return
         chroot = ChrootService(self.runner, self.root, self.use_sudo)
-        chroot.run("apt-get", "update")
+        chroot.run(*APT_UPDATE_ARGV)
         chroot.run("/bin/bash", "-lc", self._sync_command())
 
     def _sync_command(self) -> str:

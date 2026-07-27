@@ -72,6 +72,19 @@ QEMU online/offline install smoke matrix.
    Cross-architecture bootstrap is supported through `--bootstrap-arch`. When the target
    arch differs from the host, the build requires `qemu-user-static` so foreign binaries
    run during debootstrap; non-BIOS arches such as arm64 skip the El Torito BIOS image.
+   The bootstrap tool is passed `--include=ca-certificates`, because a `minbase` rootfs
+   has no CA store and every archive URL here is `https`: without it the first
+   *in-chroot* `apt-get update` fails TLS verification against every index — while
+   `ca-certificates` sits in the very package list that update is fetching for. The
+   bootstrap tool itself fetches from the host, with the host's CA store, so it can
+   install the store the chroot needs one step later.
+   Every in-chroot `apt-get update` goes through one `APT_UPDATE_ARGV` carrying
+   `APT::Update::Error-Mode=any`, because **apt returns 0 when every index failed to
+   download** — it demotes the failure to "Some index files failed to download. They
+   have been ignored". Measured against apt 3.2.0: rc 0 without the option, rc 100 with
+   it. Without it the TLS failure above was invisible, and the build died three phases
+   later on "Unable to locate package sudo", naming the packages instead of the fetch
+   that never happened.
    GUI builds use `sudo` by default. When no terminal is attached, DistroForge uses
    graphical `sudo -A` if an askpass helper such as `ssh-askpass-gnome` is available;
    otherwise preflight stops before the first privileged command with setup guidance.

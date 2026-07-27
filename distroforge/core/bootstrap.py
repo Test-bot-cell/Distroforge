@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .apt import PackagePlan
+from .apt import APT_UPDATE_ARGV, PackagePlan
 from .chroot import ChrootService
 from .command import CommandRunner, CommandSpec, sudo
 from .fsops import FileSystemOps
@@ -146,11 +146,19 @@ class BootstrapService:
             )
         mirror = self.options.mirror or self.release.archive_url
         tool = "mmdebstrap" if self.runner.has_binary("mmdebstrap") else "debootstrap"
+        # A minbase rootfs carries no CA store, and every archive URL here is https, so
+        # the first apt-get update *inside* the chroot failed TLS verification against
+        # every index -- while ca-certificates sat in the very package list that update
+        # was fetching for. Bootstrapping it closes the loop: the bootstrap tool itself
+        # fetches from the host, with the host's CA store, so it can install the store
+        # the chroot will need one step later.
+        include = "--include=ca-certificates"
         if tool == "mmdebstrap":
             argv = (
                 "mmdebstrap",
                 f"--variant={self.options.variant}",
                 f"--architectures={self.options.arch}",
+                include,
                 self.release.codename,
                 str(self.root),
                 mirror,
@@ -159,6 +167,7 @@ class BootstrapService:
             argv = (
                 "debootstrap",
                 f"--variant={self.options.variant}",
+                include,
                 "--arch",
                 self.options.arch,
                 self.release.codename,
@@ -178,7 +187,7 @@ class BootstrapService:
         chroot = ChrootService(self.runner, self.root, self.use_sudo)
         chroot.mount_runtime()
         try:
-            chroot.run("env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "update")
+            chroot.run(*APT_UPDATE_ARGV)
             chroot.run("env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y", "install", *plan.install)
             chroot.run("update-initramfs", "-c", "-k", "all")
         finally:

@@ -8,7 +8,7 @@ import distroforge.core.bootstrap as bootstrap_module
 from distroforge.core.apt import PackagePlan
 from distroforge.core.bootstrap import BootstrapOptions, BootstrapService, host_dpkg_arch
 from distroforge.core.build import BuildOptions, BuildOrchestrator, BuildPhase
-from distroforge.core.command import CommandRunner
+from distroforge.core.command import CommandResult, CommandRunner, CommandSpec
 from distroforge.core.project import Project
 from distroforge.core.provenance import (
     CYCLONEDX_FILENAME,
@@ -18,6 +18,23 @@ from distroforge.core.provenance import (
 )
 from distroforge.core.releases import get_release
 from distroforge.core.vulnscan import VulnScanOptions, VulnScanService
+
+
+class _RecordingExecuteRunner(CommandRunner):
+    """Not dry-run, but launches nothing -- the same shape as in test_core_smoke.
+
+    Needed because the suite is L0/L1 by contract: it must never invoke an external
+    tool. A plain CommandRunner(dry_run=False) does, and the difference is invisible on
+    a developer machine that happens to have the tool installed -- which is how a test
+    added here passed locally and failed on CI for want of grub-mkimage.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(dry_run=False)
+
+    def run(self, spec: CommandSpec, check: bool = True) -> CommandResult:
+        self.history.append(spec)
+        return CommandResult(spec=spec, returncode=0, stdout="", stderr="")
 
 
 def _bootstrap_project(tmp_path, name: str) -> Project:
@@ -303,7 +320,7 @@ def test_bootstrap_refuses_a_rootfs_with_no_uefi_grub(tmp_path) -> None:
     (boot / "vmlinuz-6.17.0-1-generic").write_bytes(b"\x00")
     (boot / "initrd.img-6.17.0-1-generic").write_bytes(b"\x00")
     service = BootstrapService(
-        CommandRunner(dry_run=False),
+        _RecordingExecuteRunner(),
         get_release("26.04"),
         project.squashfs_root,
         project.iso_root,
@@ -332,3 +349,51 @@ def test_native_amd64_build_does_not_require_qemu(tmp_path, monkeypatch) -> None
     assert any(
         argv[0] == "write-file" and argv[1].endswith("i386-pc/eltorito.img") for argv in commands
     )
+
+
+# The two defects below were found by actually running the chain, not by reading it.
+# A real from-scratch build reached apt inside the chroot and could not fetch a single
+# index, then reported "Unable to locate package sudo" three phases later.
+
+
+def test_bootstrap_installs_a_ca_store_so_the_chroot_can_speak_https(tmp_path) -> None:
+    project = _bootstrap_project(tmp_path, "CaStore")
+    runner = CommandRunner(dry_run=True)
+    options = BuildOptions(use_sudo=False, bootstrap=BootstrapOptions(arch="amd64"))
+
+    BuildOrchestrator(project, runner, options).run()
+
+    bootstrap = next(
+        spec.argv for spec in runner.history if spec.argv and spec.argv[0] in {"mmdebstrap", "debootstrap"}
+    )
+    # Measured failure without it: every index Err'd with "SSL routines::certificate
+    # verify failed", because a minbase rootfs has no CA store and every archive URL
+    # here is https -- while ca-certificates sat in the package list that update was
+    # fetching for.
+    assert "--include=ca-certificates" in bootstrap
+    assert bootstrap[-1].startswith("https://")
+
+
+def test_no_apt_update_in_the_chroot_can_fail_silently(tmp_path) -> None:
+    project = _bootstrap_project(tmp_path, "LoudUpdate")
+    runner = CommandRunner(dry_run=True)
+    options = BuildOptions(
+        use_sudo=False,
+        bootstrap=BootstrapOptions(arch="amd64"),
+        package_plan=PackagePlan(install=["cowsay"]),
+    )
+
+    BuildOrchestrator(project, runner, options).run()
+
+    updates = [
+        spec.argv
+        for spec in runner.history
+        if "apt-get" in spec.argv and spec.argv[-1] == "update"
+    ]
+    assert updates, "the plan runs no apt-get update at all, so this guard proves nothing"
+    for argv in updates:
+        # apt-get update returns 0 having downloaded nothing: it demotes every failed
+        # index to a warning. Verified against apt 3.2.0 -- rc 0 without this option,
+        # rc 100 with it -- so a build that cannot reach its archive must stop here
+        # rather than at a misleading "Unable to locate package" minutes later.
+        assert "APT::Update::Error-Mode=any" in argv, argv

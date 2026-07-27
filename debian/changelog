@@ -19,6 +19,17 @@ distroforge (0.3.5-4) resolute; urgency=medium
   * Refuse to build an ISO from a tree carrying no boot image for either
     firmware, and report missing mtools at validation rather than an hour
     into the build.
+  * Bootstrap ca-certificates into the rootfs, so a from-scratch build can
+    reach its archive at all. A minbase chroot has no CA store and every
+    archive URL here is https, so the first in-chroot apt-get update failed TLS
+    verification against every index -- while ca-certificates sat in the very
+    package list that update was fetching for. Found by running the chain: the
+    build died on "Unable to locate package sudo".
+  * Make a failed apt-get update fatal in the chroot, through one shared
+    APT_UPDATE_ARGV carrying APT::Update::Error-Mode=any. apt returns 0 when
+    every index failed to download -- verified against apt 3.2.0, rc 0 without
+    the option and rc 100 with it -- so the TLS failure above was swallowed and
+    surfaced three phases later as a misleading package error.
   * Detect the OVMF firmware images rather than naming them. The default was
     /usr/share/OVMF/OVMF_CODE.fd in nine places, a file no ovmf package has
     shipped since the firmware moved to a 4 MB flash size, so every UEFI QEMU

@@ -10,6 +10,24 @@ from .fsops import FileSystemOps
 from .progress_parsers import apt_progress
 from .releases import UbuntuRelease
 
+# apt-get update exits 0 when every single index failed to download: it prints "Some
+# index files failed to download. They have been ignored, or old ones used instead" as
+# a warning and returns success. A build then continues on empty package lists and dies
+# minutes later with "Unable to locate package", naming the packages instead of the
+# fetch that never happened -- which is exactly how the from-scratch path failed, with
+# a TLS error swallowed three phases upstream. Error-Mode=any makes it fatal, verified
+# against apt 3.2.0: rc 0 without it, rc 100 with it, on a source that cannot connect.
+# Defined once and used by every in-chroot update so a new call site cannot reintroduce
+# the silence.
+APT_UPDATE_ARGV: tuple[str, ...] = (
+    "env",
+    "DEBIAN_FRONTEND=noninteractive",
+    "apt-get",
+    "-o",
+    "APT::Update::Error-Mode=any",
+    "update",
+)
+
 
 @dataclass(frozen=True)
 class Repository:
@@ -114,7 +132,7 @@ class AptService:
         )
 
     def update(self) -> None:
-        ChrootService(self.runner, self.root, self.use_sudo).run("env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "update")
+        ChrootService(self.runner, self.root, self.use_sudo).run(*APT_UPDATE_ARGV)
 
     def apply_plan(
         self,
