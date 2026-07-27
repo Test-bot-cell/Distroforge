@@ -85,6 +85,42 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     the reason it exists. Proved in four controls: it passes under runner
     environment, fails without it, fails on a second lightweight tag the
     variable does not name, and fails when GITHUB_REF names a branch.
+  * Keyed the bootstrap rootfs reuse to the base the tree was built from. The
+    reuse test was that var/lib/dpkg/status and an os-release both existed.
+    Two paths that exist say the tree is a Debian-family rootfs; they do not
+    say it is this build's rootfs, and nothing else checked: the target is a
+    fixed work/filesystem with no suite in the path, nothing cleans it
+    between runs, and no code compared the tree's release to the project's.
+    Retarget a project at another release, rebuild, and the previous suite's
+    tree was reused and shipped inside the image with no diagnostic at all.
+    A successful bootstrap now records the codename, family, architecture,
+    variant and mirror in work/filesystem.bootstrap.json -- after the tool
+    returns, so a half-finished bootstrap leaves no record vouching for it,
+    and beside the tree rather than inside it, so it neither ships into the
+    image nor outlives what it describes. When no record exists, which covers
+    both trees bootstrapped before it existed and trees DistroForge never
+    created, the tree is still asked what suite it is: os-release(5) has it
+    declare its own codename, and that is the difference that actually bit. A
+    mismatch is refused, not repaired -- deleting an hour of someone's work
+    to recover from a question they can answer in one command is not the
+    build's decision. A tree with neither a record nor a codename is reused
+    and the dry-run report warns that its base is unverified, because
+    refusing there would break every hand-assembled tree while a silent pass
+    would claim a check that did not happen. The package set is deliberately
+    not part of the key and the cost is written down rather than hidden: the
+    live-base phase applies it with apt afterwards, so shrinking the list
+    leaves what it used to name installed in a reused tree.
+  * Made the dry-run report ask the build what the build will do. It carried
+    its own copy of the same two-path reuse test, so the report and the build
+    were free to disagree about the decision the report exists to preview.
+    Both now call one verdict function, and the report gained the mismatch
+    and unverified findings. Two divergent copies of the os-release reader
+    were also collapsed into one, on the reader that looks in both locations
+    os-release(5) defines: the other looked only in /etc, so a tree shipping
+    only the vendor copy read as having no identity at all -- the exact answer
+    that lets a wrong-suite tree pass for the right one. Fourteen tests, none
+    of which existed before, and seven of them fail against the old
+    behaviour: that was measured by reinstating it, not assumed.
   * Verified the published tag the one way the earlier checks could not.
     git verify-tag and GitHub's endpoint both run where the key already is; a
     clone taken from origin alone, with the documented filtered export
@@ -92,7 +128,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     returns 1 with nothing imported. The failing control is what makes the 0
     evidence about the published key rather than about an ambient keyring.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:16:49 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:49:10 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

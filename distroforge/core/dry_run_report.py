@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .artifact_paths import default_output_iso
+from .bootstrap import rootfs_verdict
 from .command import CommandRunner, privilege_backend, sudo_askpass_program
 from .diff_preview import DiffPreviewService
 from .doctor import REQUIRED_TOOLS, run_doctor
@@ -202,27 +203,44 @@ def _collect_findings(
 
 
 def _add_bootstrap_findings(project: Project, options: BuildOptions, add) -> None:
+    """Report the decision the build will take, by asking the build's own function.
+
+    This used to re-implement the reuse test rather than call it, and a dry run that
+    re-derives the answer is a dry run that can disagree with the build about what the
+    build is going to do. There is one verdict function now, in ``core.bootstrap``, and
+    this maps its states onto findings without adding a rule of its own.
+    """
     root = project.squashfs_root
-    if not root.exists():
+    verdict = rootfs_verdict(root, project.release, options.bootstrap)
+    if verdict.state == "absent":
         add("info", "bootstrap-rootfs-new", f"Bootstrap rootfs will be created at {root}")
-        return
-    try:
-        entries = list(root.iterdir())
-    except PermissionError:
+    elif verdict.state == "unreadable":
         add(
             "error",
             "bootstrap-rootfs-unreadable",
             f"Bootstrap rootfs cannot be inspected: {root}",
             "Fix ownership/permissions or choose a fresh work directory.",
         )
-        return
-    ready = (root / "var/lib/dpkg/status").exists() and (
-        (root / "etc/os-release").exists() or (root / "usr/lib/os-release").exists()
-    )
-    if not entries:
+    elif verdict.state == "empty":
         add("info", "bootstrap-rootfs-empty", f"Bootstrap rootfs directory is empty: {root}")
-    elif ready:
+    elif verdict.state == "mismatch":
+        add(
+            "error",
+            "bootstrap-rootfs-mismatch",
+            f"Bootstrap rootfs was built from a different base: {verdict.reason}",
+            "Clean work/filesystem or choose a new work directory before retrying.",
+        )
+    elif verdict.state == "reusable":
         add("info", "bootstrap-rootfs-reuse", f"Existing valid rootfs will be reused: {root}")
+        if verdict.reason:
+            # A reuse the verdict could only partly justify. Saying so is the whole
+            # point: the alternative is an "info" line that reads like a full check.
+            add(
+                "warning",
+                "bootstrap-rootfs-unverified",
+                f"Rootfs base could not be fully verified: {verdict.reason}",
+                "Rebuild from a clean work/filesystem for a tree whose base is recorded.",
+            )
         _add_locked_boot_artifacts(project, options, add)
     else:
         add(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import platform
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from .apt import APT_UPDATE_ARGV, PackagePlan
 from .chroot import ChrootService
 from .command import CommandRunner, CommandSpec, sudo
 from .fsops import FileSystemOps
-from .releases import UbuntuRelease
+from .releases import UbuntuRelease, read_os_release
 
 # Architectures that boot via legacy BIOS (and therefore need a GRUB El Torito
 # image). Everything else (arm64, riscv64, …) is EFI-only on optical/USB media.
@@ -100,6 +101,155 @@ class BootstrapOptions:
     base_packages: list[str] | None = None
 
 
+# Bumped when the recorded fields change meaning. A record from another version is
+# treated as no record at all rather than compared field by field, because a
+# comparison against a schema this code does not know is not a comparison.
+_BOOTSTRAP_STAMP_VERSION = 1
+# The inputs that decide what a bootstrapped tree *is*, in the order they are worth
+# reporting a difference in.
+_IDENTITY_FIELDS = ("codename", "family", "arch", "variant", "mirror")
+
+
+@dataclass(frozen=True)
+class RootfsVerdict:
+    """What to do with whatever is already sitting at a bootstrap target.
+
+    ``reason`` is filled for everything except a fully verified reuse -- including a
+    reuse that could only be *partly* verified, so a caller can say "reused, and here
+    is what could not be checked" without re-deriving anything.
+    """
+
+    state: str
+    reason: str = ""
+
+
+def bootstrap_stamp_path(root: Path) -> Path:
+    """Where the identity of ``root`` is recorded: beside the tree, never inside it.
+
+    Inside the tree would ship build bookkeeping into the image, which this project
+    has already had to undo once for customization hooks. Beside it, the record shares
+    the fate of the thing it describes: whatever removes the rootfs removes the claim
+    about the rootfs, so a stale record cannot outlive its subject.
+    """
+    return root.with_name(f"{root.name}.bootstrap.json")
+
+
+def bootstrap_identity(release: UbuntuRelease, options: BootstrapOptions) -> dict[str, object]:
+    """The arguments that produced a tree, and therefore the key to reusing one.
+
+    Exactly what the bootstrap tool is given, and nothing else. The package set is
+    deliberately not part of it: the tool is passed only ``--include=ca-certificates``
+    here, and ``install_live_base`` applies the set afterwards with apt against
+    whatever tree exists, so keying on it would force a full re-bootstrap for an edit
+    the next phase already handles. That choice has a cost and it is named rather than
+    hidden -- see ``docs/build-pipeline.md``: shrinking the list leaves what it used to
+    name installed in a reused tree, because apt is only ever asked to install.
+    """
+    return {
+        "stamp_version": _BOOTSTRAP_STAMP_VERSION,
+        "codename": release.codename,
+        "family": release.family,
+        "arch": options.arch,
+        "variant": options.variant,
+        "mirror": options.mirror or release.archive_url,
+    }
+
+
+def rootfs_verdict(root: Path, release: UbuntuRelease, options: BootstrapOptions) -> RootfsVerdict:
+    """Decide once, here, what an existing bootstrap target is good for.
+
+    This is the only place that answers the question. It used to be answered twice --
+    by ``BootstrapService`` and again by the dry-run report -- from the same three-path
+    test: a dpkg status file and an os-release. Three paths that exist say the tree is
+    a Debian-family rootfs. They do not say it is *this* build's rootfs, and nothing
+    checked that: the target path is fixed at ``work/filesystem`` with no suite in it,
+    nothing cleans it between runs, and no code compared the tree's release to the
+    project's. Point a project at another release and rebuild, and the previous
+    suite's tree was silently reused and shipped.
+
+    States: ``absent``, ``empty``, ``unreadable``, ``incomplete``, ``mismatch``,
+    ``reusable``. Only ``reusable`` may be reused, and a ``mismatch`` is refused rather
+    than repaired -- deleting a tree the user may have spent an hour on, to recover
+    from a question they can answer in one command, is not this code's decision.
+    """
+    if not root.exists():
+        return RootfsVerdict("absent")
+    try:
+        entries = list(root.iterdir())
+    except OSError as exc:
+        return RootfsVerdict("unreadable", str(exc))
+    if not entries:
+        return RootfsVerdict("empty")
+    complete = (root / "var/lib/dpkg/status").exists() and (
+        (root / "etc/os-release").exists() or (root / "usr/lib/os-release").exists()
+    )
+    if not complete:
+        return RootfsVerdict("incomplete")
+    return _identity_verdict(root, release, options)
+
+
+def _identity_verdict(
+    root: Path, release: UbuntuRelease, options: BootstrapOptions
+) -> RootfsVerdict:
+    """Compare a complete tree against the base this build wants, best evidence first.
+
+    The record beside the tree is authoritative when there is one, because it carries
+    the arch, the variant and the mirror -- differences a tree cannot be asked about
+    afterwards. When there is none, the tree is still not unknowable: os-release(5)
+    has it declare its own suite, which is the difference that actually bit. That leg
+    matters for two populations at once, trees bootstrapped before this record existed
+    and trees DistroForge never created at all.
+
+    The last branch is the only one that lets an unverified tree through, and it says
+    so in ``reason`` instead of returning a bare pass. Refusing there would break every
+    hand-assembled tree that carries no codename, to guard against a case no evidence
+    points at; passing silently would claim a check that did not happen.
+    """
+    wanted = bootstrap_identity(release, options)
+    recorded = _read_stamp(bootstrap_stamp_path(root))
+    if recorded is not None:
+        for field_name in _IDENTITY_FIELDS:
+            if recorded.get(field_name) != wanted[field_name]:
+                return RootfsVerdict(
+                    "mismatch",
+                    f"it was bootstrapped with {field_name}={recorded.get(field_name)!r} "
+                    f"and this build wants {wanted[field_name]!r}",
+                )
+        return RootfsVerdict("reusable")
+    declared = read_os_release(root)
+    codename = declared.get("VERSION_CODENAME") or declared.get("UBUNTU_CODENAME")
+    if codename and codename != release.codename:
+        return RootfsVerdict(
+            "mismatch",
+            f"it declares itself to be {codename!r} and this build wants {release.codename!r}",
+        )
+    if codename:
+        return RootfsVerdict(
+            "reusable",
+            f"no bootstrap record beside it, so only the {codename!r} it declares was matched",
+        )
+    return RootfsVerdict(
+        "reusable",
+        "no bootstrap record beside it and it declares no codename, so its base is unverified",
+    )
+
+
+def _read_stamp(stamp: Path) -> dict[str, object] | None:
+    """The recorded identity, or None for anything this code cannot read as one.
+
+    Absent, unreadable, not JSON, not an object, or written by another stamp version:
+    all the same answer, because each of them means the record cannot be compared. It
+    degrades to the os-release leg rather than to a pass or a refusal.
+    """
+    try:
+        loaded = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(loaded, dict) or loaded.get("stamp_version") != _BOOTSTRAP_STAMP_VERSION:
+        return None
+    return loaded
+
+
 class BootstrapService:
     def __init__(
         self,
@@ -119,7 +269,8 @@ class BootstrapService:
         self.fs = FileSystemOps(runner, use_sudo)
 
     def create_rootfs(self) -> None:
-        if self._rootfs_ready():
+        verdict = rootfs_verdict(self.root, self.release, self.options)
+        if verdict.state == "reusable":
             self.runner.run(
                 CommandSpec(
                     argv=("bootstrap-rootfs-reuse", str(self.root)),
@@ -128,7 +279,18 @@ class BootstrapService:
             )
             self._reset_apt_overlays()
             return
-        if self.root.exists() and any(self.root.iterdir()):
+        if verdict.state == "mismatch":
+            raise ValueError(
+                f"Bootstrap target {self.root} was built from a different base: {verdict.reason}. "
+                "Clean the work/filesystem directory or choose a new work directory "
+                "before retrying."
+            )
+        if verdict.state == "unreadable":
+            raise ValueError(
+                f"Bootstrap target {self.root} cannot be inspected ({verdict.reason}). "
+                "Fix ownership/permissions or choose a fresh work directory before retrying."
+            )
+        if verdict.state == "incomplete":
             raise ValueError(
                 f"Bootstrap target {self.root} is non-empty but incomplete. "
                 "Clean the work/filesystem directory or choose a new work directory before retrying."
@@ -180,6 +342,16 @@ class BootstrapService:
                 needs_root=self.use_sudo,
                 description=f"Bootstrap minimal {self.release.label} rootfs with {tool}",
             )
+        )
+        # Written only after the tool ran, so a failed bootstrap leaves no record
+        # claiming a base for a tree that does not have one. It goes through the same
+        # runner as everything else, which is what makes a dry run describe the write
+        # instead of performing it.
+        self.fs.write_text(
+            bootstrap_stamp_path(self.root),
+            json.dumps(bootstrap_identity(self.release, self.options), indent=2, sort_keys=True)
+            + "\n",
+            "Record the base this rootfs was bootstrapped from",
         )
 
     def install_live_base(self) -> None:
@@ -419,13 +591,6 @@ class BootstrapService:
                 argv=("mdir", "-/", "-i", str(esp), "::/EFI/BOOT"),
                 description="Verify the UEFI boot image contents",
             )
-        )
-
-    def _rootfs_ready(self) -> bool:
-        return (
-            self.root.exists()
-            and (self.root / "var/lib/dpkg/status").exists()
-            and ((self.root / "etc/os-release").exists() or (self.root / "usr/lib/os-release").exists())
         )
 
     def _reset_apt_overlays(self) -> None:

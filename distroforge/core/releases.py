@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -68,3 +69,30 @@ def get_release(version: str) -> UbuntuRelease:
     except KeyError as exc:
         known = ", ".join(sorted(releases))
         raise ValueError(f"Unknown DistroForge release {version!r}. Known: {known}") from exc
+
+
+def read_os_release(root: Path) -> dict[str, str]:
+    """What a tree says it is, read from wherever it says it.
+
+    os-release(5) defines two locations: ``/etc/os-release`` is the configuration
+    copy and ``/usr/lib/os-release`` the vendor one, the first shadowing the second,
+    and a tree that ships only the vendor copy is perfectly valid. A reader that
+    looks at ``/etc`` alone therefore reports such a tree as having no identity at
+    all -- which is exactly the answer that lets a rootfs of the wrong suite pass
+    for the right one.
+
+    This lives here, next to the release facts it answers questions about, because
+    two divergent copies of it already existed: one that read both locations and one
+    that read only ``/etc``. Whether a tree's identity can be established must not
+    depend on which caller is asking.
+    """
+    data: dict[str, str] = {}
+    for path in (root / "etc/os-release", root / "usr/lib/os-release"):
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" in line and not line.startswith("#"):
+                key, value = line.split("=", 1)
+                data[key] = value.strip().strip('"')
+        break
+    return data

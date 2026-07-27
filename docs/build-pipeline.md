@@ -66,9 +66,11 @@ QEMU online/offline install smoke matrix.
 5. Prepare workspace and source rootfs by skeleton bootstrap or ISO extraction.
    Locked rootfs boot artifacts are copied into `casper/` through the configured
    privilege helper so root-owned or `0600` kernel files do not break execution.
-   Existing valid bootstrap rootfs directories are reused on retry; non-empty incomplete
-   rootfs directories stop with a cleanup message instead of rerunning debootstrap into
-   stale files.
+   Existing bootstrap rootfs directories are reused on retry **only when they were built
+   from the base this build wants**; non-empty incomplete rootfs directories stop with a
+   cleanup message instead of rerunning debootstrap into stale files. See
+   [Reusing a bootstrap rootfs](#reusing-a-bootstrap-rootfs) for what "the same base"
+   means and what it deliberately does not cover.
    Cross-architecture bootstrap is supported through `--bootstrap-arch`. When the target
    arch differs from the host, the build requires `qemu-user-static` so foreign binaries
    run during debootstrap; non-BIOS arches such as arm64 skip the El Torito BIOS image.
@@ -548,6 +550,50 @@ is surfaced as a `DB-UNAVAILABLE` warning, never a silent pass to clean.
 
 The standard SBOM is written next to the native provenance document, so a published bundle
 can carry a vendor-neutral component inventory.
+
+### Reusing a bootstrap rootfs
+
+A bootstrap target that already exists is reused instead of re-bootstrapped, which is
+what makes a retry after a failed later phase cheap. What "already exists" was allowed
+to mean was the problem: the check was that `var/lib/dpkg/status` and an `os-release`
+both existed. Two paths that exist say the tree is a Debian-family rootfs. They do not
+say it is *this* build's rootfs — the target is a fixed `work/filesystem` with no suite
+in the path, nothing cleans it between runs, and nothing compared the tree's release to
+the project's. Retarget a project at another release, rebuild, and the previous suite's
+tree was reused and shipped inside the image, silently.
+
+Reuse is now keyed on the base a tree was built from, and a difference is refused rather
+than repaired — deleting a tree the maintainer may have spent an hour on, to recover from
+a question they can answer in one command, is not the build's decision:
+
+- A successful bootstrap writes `work/filesystem.bootstrap.json` recording the codename,
+  the family, the architecture, the variant and the mirror. It is written **after** the
+  bootstrap tool returns, so a bootstrap that died halfway leaves no record claiming a
+  base for a tree that does not have one; and it lands **beside** the tree rather than
+  inside it, so it neither ships into the image nor outlives what it describes.
+- When that record is present it decides, because it carries the architecture, the
+  variant and the mirror — differences a finished tree cannot be asked about afterwards.
+- When it is absent, which covers both trees bootstrapped before the record existed and
+  trees DistroForge never created, the tree is still asked what suite it is: os-release(5)
+  has it declare its own codename. That is the difference that actually bit.
+- A tree with no record and no codename is reused, and the dry-run report says in a
+  warning that its base could not be verified. Refusing there would break every
+  hand-assembled tree to guard against a case no evidence points at; passing quietly
+  would claim a check that did not happen.
+
+The package set is deliberately **not** part of the key. The bootstrap tool is passed only
+`--include=ca-certificates`; the set is applied afterwards by the live-base phase with apt,
+against whatever tree exists, so keying on it would force a full re-bootstrap for an edit
+the next phase already handles. The honest cost of that choice, named rather than hidden:
+**shrinking the package list leaves what it used to name installed in a reused tree**,
+because apt is only ever asked to install. A build that must not carry those packages
+needs either a clean `work/filesystem` or an explicit removal.
+
+`distroforge build --dry-run` reports the decision by calling the same function the build
+calls, so the report and the build cannot disagree about what the build is going to do;
+it used to carry its own copy of the reuse test. The finding codes are
+`bootstrap-rootfs-new`, `-empty`, `-reuse`, `-unverified`, `-mismatch`, `-incomplete` and
+`-unreadable`.
 
 ### True cross-architecture bootstrap
 

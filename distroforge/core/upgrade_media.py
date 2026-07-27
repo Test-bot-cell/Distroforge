@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .releases import read_os_release
+
 
 @dataclass(frozen=True)
 class UpgradeCheck:
@@ -49,7 +51,7 @@ class UpgradePreflightReport:
 class UpgradeMediaPreflight:
     def check(self, target: Path, from_release: str | None, to_release: str | None) -> UpgradePreflightReport:
         report = UpgradePreflightReport(target)
-        os_release = _read_os_release(target)
+        os_release = read_os_release(target)
         current = os_release.get("VERSION_ID", "unknown")
         family = os_release.get("ID", "unknown")
         report.checks.append(UpgradeCheck("os-release", "captured", f"{family} {current}"))
@@ -79,15 +81,3 @@ class UpgradeMediaPreflight:
             )
         )
         return report
-
-
-def _read_os_release(root: Path) -> dict[str, str]:
-    path = root / "etc/os-release"
-    if not path.exists():
-        return {}
-    data: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "=" in line and not line.startswith("#"):
-            key, value = line.split("=", 1)
-            data[key] = value.strip().strip('"')
-    return data

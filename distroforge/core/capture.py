@@ -10,6 +10,7 @@ from .capture_report import CaptureReport
 from .capture_sanitize import ConfigCapturePolicy, classify_config_with_policy
 from .capture_schema import CapturedSystemProfile
 from .capture_sources import capture_apt_sources
+from .releases import read_os_release
 
 
 class InstalledSystemCaptureService:
@@ -24,7 +25,7 @@ class InstalledSystemCaptureService:
         report = CaptureReport()
         include_values = [str(path) for path in include_configs or []]
         include_globs = include_config_globs or []
-        os_release = _read_os_release(root)
+        os_release = read_os_release(root)
         release = os_release.get("VERSION_ID", "26.04").strip('"')
         codename = os_release.get("VERSION_CODENAME") or os_release.get("UBUNTU_CODENAME")
         family = _family(os_release)
@@ -73,19 +74,6 @@ class InstalledSystemCaptureService:
             "capture_config_files": config_files,
         }
         return CapturedSystemProfile(definition, report, root, sanitize, include_values, include_globs)
-
-
-def _read_os_release(root: Path) -> dict[str, str]:
-    data: dict[str, str] = {}
-    for path in (root / "etc/os-release", root / "usr/lib/os-release"):
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if "=" in line and not line.startswith("#"):
-                key, value = line.split("=", 1)
-                data[key] = value.strip().strip('"')
-        break
-    return data
 
 
 def _family(os_release: dict[str, str]) -> str:

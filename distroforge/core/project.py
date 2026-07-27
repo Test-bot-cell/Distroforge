@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .bootstrap import bootstrap_stamp_path
 from .customize import IsoCustomization, desktop_conflicting_packages
 from .releases import UbuntuRelease, get_release
 
@@ -34,6 +35,18 @@ class Project:
     @property
     def squashfs_root(self) -> Path:
         return self.workdir / "filesystem"
+
+    @property
+    def bootstrap_stamp(self) -> Path:
+        """Where the base of ``squashfs_root`` is recorded.
+
+        Derived, not spelled out a second time: ``BootstrapService`` is handed a bare
+        path and has no project, so both sides ask the same function where the record
+        goes. Two literals here and in bootstrap.py would be free to drift, and the
+        failure they would produce is the one this whole record exists to prevent --
+        a reuse decision taken against a record nobody wrote.
+        """
+        return bootstrap_stamp_path(self.squashfs_root)
 
     @property
     def output_dir(self) -> Path:
