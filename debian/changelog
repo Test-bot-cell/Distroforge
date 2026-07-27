@@ -1,3 +1,27 @@
+distroforge (0.3.5-5) resolute; urgency=medium
+
+  * Stop the test suite leaving temporary directories behind on every run. Six
+    test modules redirected the config home at import time with
+    os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp()), and
+    setdefault evaluates its second argument before it decides whether to keep
+    it: all six called mkdtemp, five of the six directories were created,
+    never used and never removed, and nothing removed the sixth either.
+    Measured 2026-07-27: 1425 had accumulated under /tmp, 241 of them holding
+    a ui.json, and a full run added exactly six more. The redirection now
+    happens once, in a session-scoped fixture in tests/conftest.py built on
+    pytest's tmp_path_factory, whose base directory pytest rotates.
+  * Make that redirection unconditional. setdefault skipped it entirely for
+    anyone who exports XDG_CONFIG_HOME -- a legitimate thing to do -- and
+    pointed the suite straight at the developer's real
+    ~/.config/distroforge/ui.json, the one file the isolation exists to keep
+    the tests away from. The fixture sets the variable instead of defaulting
+    it, so the isolation no longer depends on the environment it runs in.
+  * Guard the shape rather than the instance: no test module may create a
+    temporary path at import time, where no fixture and no rotation can ever
+    reclaim it. Verified to fail on the code it replaces.
+
+ -- DistroForge maintainers <maintainers@distroforge.invalid>  Mon, 27 Jul 2026 16:12:18 +0200
+
 distroforge (0.3.5-4) resolute; urgency=medium
 
   * Stage the UEFI amorce for --from-scratch ISOs, which had none at all.

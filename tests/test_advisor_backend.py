@@ -4,12 +4,10 @@ import argparse
 import json
 import os
 import subprocess
-import tempfile
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())
 
 from distroforge.ai.backend import (  # noqa: E402
     AdvisorContext,

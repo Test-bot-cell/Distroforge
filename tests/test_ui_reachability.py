@@ -11,12 +11,10 @@ hangs under the offscreen platform), built on a fresh, isolated config home.
 from __future__ import annotations
 
 import os
-import tempfile
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())
 
 from distroforge.core.command_registry import CLI_GUI_COMMANDS  # noqa: E402
 from distroforge.ui.qt import QApplication  # noqa: E402

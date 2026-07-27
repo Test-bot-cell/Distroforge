@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -19,7 +18,6 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())
 
 from distroforge.core.artifact_paths import default_artifact_paths  # noqa: E402
 from distroforge.core.project import Project  # noqa: E402

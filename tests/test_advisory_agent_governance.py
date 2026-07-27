@@ -18,11 +18,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import tempfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())
 
 from distroforge.ai.backend import AdvisorContext, OfflineBackend, select_backend  # noqa: E402
 from distroforge.ai.proposals import PREVIEW_ONLY_STATUS  # noqa: E402

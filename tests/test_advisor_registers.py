@@ -3,12 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import tempfile
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())
 
 from distroforge.ai.backend import OfflineBackend  # noqa: E402
 from distroforge.ai.forgeadvisor import (  # noqa: E402

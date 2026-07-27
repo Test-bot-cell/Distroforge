@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import os
@@ -271,6 +272,41 @@ def test_autopkgtest_uses_private_scratch_paths_not_fixed_tmp_names() -> None:
 
         assert "AUTOPKGTEST_TMP" in code, path.name
         assert "/tmp/" not in code, path.name
+
+
+def test_no_test_module_makes_a_temporary_directory_at_import_time() -> None:
+    """Nothing removes a directory created while a module is being imported.
+
+    Six modules used to redirect the config home for themselves, at import, with
+    `os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp())`. `setdefault`
+    evaluates its second argument before it decides whether to keep it, so all six
+    created a directory and five were discarded unused -- and nothing removed the
+    sixth either. Measured 2026-07-27, before the fix: 1425 had accumulated under
+    /tmp, 241 of them holding a `ui.json`, and a full run added six more.
+
+    The redirection now lives once in tests/conftest.py, on `tmp_path_factory`,
+    whose base directory pytest rotates. This guard is about import time only:
+    inside a test or a fixture, `tmp_path` and `tmp_path_factory` are available and
+    `mkdtemp` is a choice rather than the only reachable option.
+    """
+    offenders: list[str] = []
+    for path in sorted((ROOT / "tests").glob("*.py")):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for statement in module.body:
+            # A def or a class body runs when it is called, not when it is imported.
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            for node in ast.walk(statement):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else None
+                if name in {"mkdtemp", "mkstemp"}:
+                    offenders.append(f"{path.name}:{node.lineno}: {name}()")
+
+    assert offenders == [], (
+        "temporary paths created at import time are never cleaned up; "
+        f"use a fixture on tmp_path/tmp_path_factory instead: {offenders}"
+    )
 
 
 def test_autopkgtest_installed_path_assertion_can_fail() -> None:
