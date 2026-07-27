@@ -69,6 +69,13 @@ distroforge (0.3.5-4) resolute; urgency=medium
     every --prebuild-vm-secure-boot run since the option shipped was that
     hang. Only the Secure Boot path moves; BIOS and plain UEFI keep the
     default machine their green boot proofs were measured on.
+  * Record the QEMU lab's serial-log assertion once the marker is really
+    there, not on the way in. Emitted first, it wrote
+    "prebuild-vm-assert-log ... rc=0" into the build journal before the wait
+    had read one byte, so a run that sat in the firmware until its timeout
+    left a log whose last word was a green assertion -- in the one file a
+    maintainer opens to find out which step failed. A dry run still plans the
+    line, where it is the step rather than its result.
   * Correct docs/platform-refactor-audit.md, which still recorded that mypy,
     pre-commit and shellcheck were "not wired anywhere" long after make check
     and CI had begun running all three.

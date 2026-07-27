@@ -248,7 +248,11 @@ The QEMU lab is the virtualization gate for build confidence. It runs QEMU under
 control, writes a serial log, optional screenshot, pid file, QMP socket path, artifact
 checksums, and a `qemu-lab-report.json` summary. UEFI uses a writable OVMF variables
 copy, TPM mode starts `swtpm`, and success markers are checked from the serial log before
-release artifacts are trusted.
+release artifacts are trusted. That check is recorded **once the marker is really there**,
+not on the way in: emitted first, it wrote `prebuild-vm-assert-log … rc=0` into the build
+journal before the wait had read a byte, so a run that never booted left a log whose last
+word was a green assertion — in the one file a maintainer opens to find out which step
+failed. A dry run still plans the line, where it is the step rather than its result.
 
 Every QEMU command line — the lab, the boot screenshot, the interactive preview, the
 install smoke matrix, the boot-check and the QA matrix — is built from one canonical

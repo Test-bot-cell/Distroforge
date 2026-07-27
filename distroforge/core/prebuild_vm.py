@@ -229,13 +229,19 @@ class QemuLabService:
         serial = self.output_dir / self.options.serial_log
         patterns = self.options.success_patterns
         pattern_text = "|".join(patterns) if patterns else "<any>"
-        self.runner.run(
-            CommandSpec(
-                argv=("prebuild-vm-assert-log", str(serial), pattern_text),
-                description="Validate QEMU lab serial log success markers",
-            )
+        # Recorded once the markers are really there, not on the way in. Emitted first,
+        # this event put `prebuild-vm-assert-log ... rc=0` in the build journal before
+        # the wait below had read a single byte, so a run that then sat in the firmware
+        # for its whole timeout left a log whose last word was a green assertion. That
+        # is the log a maintainer opens to find out what went wrong, and it lied about
+        # the one step that failed. A dry run still records it here, where it is a plan
+        # line rather than a result, so the planned command list is unchanged.
+        found = CommandSpec(
+            argv=("prebuild-vm-assert-log", str(serial), pattern_text),
+            description="Validate QEMU lab serial log success markers",
         )
         if self.runner.dry_run or not patterns:
+            self.runner.run(found)
             return
         deadline = time.monotonic() + self.options.timeout_seconds
         while not serial.exists() and time.monotonic() <= deadline:
@@ -245,6 +251,7 @@ class QemuLabService:
         while time.monotonic() <= deadline:
             text = serial.read_text(encoding="utf-8", errors="replace")
             if any(pattern in text for pattern in patterns):
+                self.runner.run(found)
                 return
             time.sleep(0.5)
         raise ValueError(f"QEMU lab did not emit expected serial marker(s): {', '.join(patterns)}")

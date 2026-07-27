@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from distroforge.core import boot_proof
 from distroforge.core.boot_proof import resolve_firmware, run_boot_proof
 from distroforge.core.build import BuildOptions
@@ -34,6 +36,57 @@ def test_qemu_lab_dry_run_uses_qmp_and_writes_report(tmp_path) -> None:
     assert any(argv[:1] == ("qmp-command",) and "screendump" in argv[-1] for argv in commands)
     assert any(argv[:1] == ("qmp-command",) and "quit" in argv[-1] for argv in commands)
     assert any(argv == ("write-file", str(tmp_path / "dist" / "qemu-lab-report.json")) for argv in commands)
+
+
+# The serial-log assertion, and when the journal is allowed to say it passed. Emitted
+# on the way in, it wrote `prebuild-vm-assert-log ... rc=0` into the build journal
+# before the wait had read one byte, so a run that sat in the firmware until its
+# timeout left a log whose last word was a green assertion -- in the very file a
+# maintainer opens to find out which step failed.
+
+
+def _validating_lab(tmp_path, serial_text: str | None, *, dry_run: bool = False):
+    runner = CommandRunner(dry_run=dry_run)
+    options = PrebuildVmOptions(enabled=True, success_patterns=["login:"], timeout_seconds=1)
+    dist = tmp_path / "dist"
+    dist.mkdir(exist_ok=True)
+    if serial_text is not None:
+        (dist / options.serial_log).write_text(serial_text, encoding="utf-8")
+    lab = QemuLabService(runner, tmp_path / "image.iso", tmp_path / "work", dist, options)
+    return runner, lab
+
+
+def _asserted(runner: CommandRunner) -> list[tuple[str, ...]]:
+    return [spec.argv for spec in runner.history if spec.argv[:1] == ("prebuild-vm-assert-log",)]
+
+
+def test_the_journal_records_the_serial_assertion_once_the_marker_is_really_there(tmp_path) -> None:
+    runner, lab = _validating_lab(tmp_path, "[  OK  ] Reached target getty.target\nhost login: ")
+
+    lab._validate_serial_log()
+
+    assert len(_asserted(runner)) == 1
+
+
+def test_a_serial_log_that_never_carries_the_marker_records_no_passing_assertion(tmp_path) -> None:
+    # What a Secure Boot run on the wrong machine produced: a serial log that exists and
+    # stays empty, because the firmware never handed off to anything that could write it.
+    runner, lab = _validating_lab(tmp_path, "")
+
+    with pytest.raises(ValueError, match="did not emit expected serial marker"):
+        lab._validate_serial_log()
+
+    assert _asserted(runner) == []
+
+
+def test_a_dry_run_still_plans_the_assertion_it_will_not_perform(tmp_path) -> None:
+    # Unchanged on purpose: in a plan the line is the step, not its result, and the
+    # printed command list is a documented output.
+    runner, lab = _validating_lab(tmp_path, None, dry_run=True)
+
+    lab._validate_serial_log()
+
+    assert len(_asserted(runner)) == 1
 
 
 def test_qemu_lab_uefi_tpm_artifacts_are_explicit(tmp_path) -> None:
