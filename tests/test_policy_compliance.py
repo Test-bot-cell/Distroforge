@@ -955,3 +955,60 @@ def test_no_finalized_changelog_revision_is_left_without_a_release_tag() -> None
         )
     pytest.skip("no entry in this changelog is tagged, so there is no anchor to measure from")
 
+
+
+_COMMIT_TYPES = (
+    "build",
+    "chore",
+    "ci",
+    "docs",
+    "feat",
+    "fix",
+    "perf",
+    "refactor",
+    "revert",
+    "style",
+    "test",
+)
+_SUBJECT = re.compile(rf"^({'|'.join(_COMMIT_TYPES)})(\([a-z0-9][a-z0-9./_-]*\))?!?: \S")
+
+
+def test_every_commit_subject_carries_a_type_the_log_can_be_filtered_by() -> None:
+    """A convention followed by 58 commits out of 58 and written down nowhere.
+
+    Measured 2026-07-27: every subject in this repository's history carries a Conventional
+    Commits type prefix -- 38 `fix:`, 6 `docs:`, 5 `feat:`, 3 `ci:`, 2 `test:`, and one
+    each of refactor, perf, chore and build -- and no file in the tree documented it, no
+    hook checked it and no test asserted it. That is the shape of thing this project
+    treats as a defect on its own: a rule everyone follows and nothing protects.
+
+    The optional scope field is deliberately not required. Requiring it would split the
+    history into two regimes, because the 58 existing commits are signed and cannot be
+    rewritten to add one. The argument for scopes is that `git log --oneline | grep <zone>`
+    should find a zone's commits, and that argument does not survive measurement: grepping
+    subjects for a zone word recovers 10-36% of the commits that actually touched that
+    zone, while `git log -- <path>` recovers all of them. The pathspec is the zone filter.
+    The type prefix is what a subject cannot supply any other way, so that is what is
+    gated.
+
+    The negative cases run first and are not decoration. The failure mode of a
+    pattern-matching gate is a pattern that accepts everything, which passes silently
+    forever; these four shapes are the ones a `grep`-flavoured rewrite would start letting
+    through.
+    """
+    for rejected in ("Fix the vendor lookup", "wip", "fix the vendor lookup", "fix:no space"):
+        assert not _SUBJECT.match(rejected), f"the subject gate accepts {rejected!r}"
+
+    if not _git_history_available():
+        pytest.skip("no git binary or no .git here, so there is no history to check")
+    log = _git("log", "--format=%s")
+    assert log.returncode == 0, log.stderr
+    subjects = [line for line in log.stdout.splitlines() if line.strip()]
+    if not subjects:
+        pytest.skip("no commits reachable from here")
+
+    offenders = [subject for subject in subjects if not _SUBJECT.match(subject)]
+    assert offenders == [], (
+        "these subjects carry no Conventional Commits type, so `git log` cannot be "
+        f"filtered by kind of change: {offenders}"
+    )

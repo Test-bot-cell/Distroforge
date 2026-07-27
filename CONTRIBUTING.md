@@ -129,3 +129,26 @@ coverage and are not:
 
 All three were found in this suite. Prefer a counting or handshake assertion over
 a wall-clock one: timing assertions are flaky across hardware and prove less.
+
+## Commit subjects, and the changelog entry that goes with them
+
+A subject starts with a Conventional Commits type and a colon: `fix:`, `feat:`, `docs:`,
+`ci:`, `test:`, `refactor:`, `perf:`, `chore:`, `build:`, `style:`, `revert:`. All 58
+commits in this repository's history already did this before anything checked it;
+`test_every_commit_subject_carries_a_type_the_log_can_be_filtered_by` is what makes it
+survive.
+
+The scope field — `fix(ci):` — is optional and unused, on purpose. The case for it is that
+`git log --oneline | grep <zone>` should find a zone's commits, and measurement does not
+support it: grepping subjects for a zone word recovers 10–36% of the commits that touched
+that zone, while `git log -- <path>` recovers every one. The pathspec is the zone filter.
+Say what changed in the subject and spend the space on that; the body is where the
+reasoning goes, and it is expected to be longer than the subject.
+
+The changelog is a separate question with a stricter answer. **Do not open a new revision
+for a change that is not being released.** One `UNRELEASED` entry collects bullets for a
+whole cycle; `dch -r` finalizes it and `make tag` anchors it, one revision to one tag to
+one artifact. The reasoning, the measurement that prompted it, and what Debian Policy
+does and does not actually require are in `docs/packaging-release.md` under *Changelog
+Cadence*. Editing the changelog runs its own policy tests at commit time through the
+`changelog-policy` hook, so a bad entry fails before it reaches CI rather than after.

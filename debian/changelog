@@ -56,6 +56,16 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     for them now would claim a fact that does not exist. This cadence was
     impossible here until the vendor fix above, since an entry left UNRELEASED
     for a cycle mis-graded the package for that whole cycle.
+  * Wrote down the commit subject convention and gated it. All 58 subjects in
+    this repository already carried a Conventional Commits type prefix and
+    nothing documented, hooked or asserted it. The optional scope field stays
+    unused on measurement rather than taste: grepping subjects for a zone word
+    finds 10-36% of the commits that touched that zone, while git log on the
+    path finds all of them, so the pathspec is the zone filter and the subject
+    is where the type belongs. The gate checks the prefix only -- a length or
+    scope requirement would be retroactively false over signed commits that
+    cannot be rewritten -- and it checks four non-conforming shapes first, so
+    a pattern that quietly accepts everything fails instead of passing.
   * Verified the published tag the one way the earlier checks could not.
     git verify-tag and GitHub's endpoint both run where the key already is; a
     clone taken from origin alone, with the documented filtered export
@@ -63,7 +73,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     returns 1 with nothing imported. The failing control is what makes the 0
     evidence about the published key rather than about an ambient keyring.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 20:59:50 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 21:08:13 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 
