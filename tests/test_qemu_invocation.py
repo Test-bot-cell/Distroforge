@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from distroforge.core import qemu_invocation
 from distroforge.core.qemu_invocation import (
+    QEMU_SYSTEM,
+    SECURE_BOOT_MACHINE,
     QemuInvocation,
     default_ovmf_code,
     default_ovmf_vars,
@@ -11,6 +16,7 @@ from distroforge.core.qemu_invocation import (
 )
 
 ISO = Path("/img/image.iso")
+FIRMWARE_DESCRIPTORS = Path("/usr/share/qemu/firmware")
 
 
 def test_minimal_invocation_is_a_cdrom_boot() -> None:
@@ -114,6 +120,7 @@ def test_lab_shape_carries_qmp_daemonize_uefi_tpm_and_user_net() -> None:
     assert "driver=cfi.pflash01,property=secure,value=on" in argv
     assert any("tpm-tis" in part for part in argv)
     assert "user,model=virtio-net-pci" in argv
+    assert argv[:3] == (QEMU_SYSTEM, "-M", SECURE_BOOT_MACHINE)
 
 
 def test_screenshot_shape_is_headless_qmp_without_monitor_or_smp() -> None:
@@ -152,6 +159,70 @@ def test_bios_firmware_emits_no_firmware_flags() -> None:
 
     assert "-bios" not in argv
     assert not any("pflash" in part for part in argv)
+
+
+# The machine type. A Secure Boot run on the machine QEMU picks by default does not
+# fail, it hangs: measured against one desktop ISO, the run that reaches a graphical
+# target under `-M q35,smm=on` produced an empty serial log on the default i440fx,
+# so the lab burned its whole timeout and then blamed the ISO for a missing marker.
+
+
+def test_secure_boot_selects_the_machine_its_firmware_requires() -> None:
+    argv = QemuInvocation(iso=ISO, firmware="uefi", secure_boot=True).argv()
+
+    # First, because -M configures the machine every later flag plugs into.
+    assert argv[:3] == (QEMU_SYSTEM, "-M", SECURE_BOOT_MACHINE)
+    assert "smm=on" in SECURE_BOOT_MACHINE
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"firmware": "bios"},
+        {"firmware": "uefi"},
+        {"firmware": "uefi", "legacy_bios": True},
+    ],
+)
+def test_every_path_without_secure_boot_keeps_the_default_machine(options) -> None:
+    # These are the shapes a boot proof has already returned green on. Moving them to
+    # another machine would ask for that proof again and buy nothing: the plain
+    # firmware descriptor accepts the default machine as well.
+    assert "-M" not in QemuInvocation(iso=ISO, **options).argv()
+
+
+def test_the_secure_boot_machine_is_the_one_the_installed_firmware_declares() -> None:
+    """Check the constant against ovmf's own descriptors, not against a comment.
+
+    /usr/share/qemu/firmware is the packaged, machine-readable description of each
+    flash image. Reading it here means an ovmf upload that moves Secure Boot onto
+    another machine type, or drops the SMM requirement, turns this test red instead
+    of turning every Secure Boot proof into a silent 30-minute hang.
+    """
+    if not FIRMWARE_DESCRIPTORS.is_dir():
+        pytest.skip(f"{FIRMWARE_DESCRIPTORS} is not installed")
+    code = Path(default_ovmf_code(secure_boot=True)).resolve()
+    ours = []
+    for path in sorted(FIRMWARE_DESCRIPTORS.glob("*.json")):
+        descriptor = json.loads(path.read_text(encoding="utf-8"))
+        # Not every descriptor maps a flash image: the Intel TDX one on this machine
+        # carries a `mapping` with no `executable` at all.
+        named = descriptor.get("mapping", {}).get("executable", {}).get("filename", "")
+        if not named or "secure-boot" not in descriptor.get("features", ()):
+            continue
+        if Path(named).resolve() == code:
+            ours.append(descriptor)
+    if not ours:
+        pytest.skip(f"no installed firmware descriptor covers {code}")
+
+    machine, _, properties = SECURE_BOOT_MACHINE.partition(",")
+    for descriptor in ours:
+        targets = [name for target in descriptor["targets"] for name in target["machines"]]
+        # `pc-q35-9.2` and friends are the versioned names; `q35` is the alias for the
+        # newest of them, which is what a lab that wants today's machine should ask for.
+        assert targets, descriptor["description"]
+        assert all(name.startswith(f"pc-{machine}-") for name in targets), targets
+        if "requires-smm" in descriptor.get("features", ()):
+            assert "smm=on" in properties.split(",")
 
 
 # The OVMF resolver. Its absence was not a style problem: /usr/share/OVMF/OVMF_CODE.fd

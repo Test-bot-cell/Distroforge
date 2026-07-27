@@ -58,6 +58,17 @@ distroforge (0.3.5-4) resolute; urgency=medium
     cannot enforce Secure Boot instead of substituting one: the flag used to
     report Secure Boot on a VM running with it off. Add the first tests for
     validate_prebuild_vm_options, which had none.
+  * Run Secure Boot on the machine its firmware requires. Both Secure Boot
+    descriptors in /usr/share/qemu/firmware declare requires-smm and target
+    pc-q35-* alone, while QEMU's default machine is pc-i440fx-* without SMM,
+    so the firmware never handed off: measured on one desktop ISO, the run
+    that reaches a login prompt in two minutes under -M q35,smm=on emitted
+    not one serial byte on the default machine. It did not fail either -- the
+    lab waited out its whole timeout and then reported a missing serial
+    marker, so the ISO took the blame for a machine that never booted it, and
+    every --prebuild-vm-secure-boot run since the option shipped was that
+    hang. Only the Secure Boot path moves; BIOS and plain UEFI keep the
+    default machine their green boot proofs were measured on.
   * Correct docs/platform-refactor-audit.md, which still recorded that mypy,
     pre-commit and shellcheck were "not wired anywhere" long after make check
     and CI had begun running all three.

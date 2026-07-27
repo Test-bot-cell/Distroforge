@@ -30,6 +30,16 @@ _OVMF_SECBOOT_VARS = (
     "/usr/share/OVMF/OVMF_VARS_4M.ms.fd",
     "/usr/share/OVMF/OVMF_VARS.ms.fd",
 )
+# The Secure Boot firmware does not run on the machine QEMU picks by default. Both
+# Secure Boot descriptors in /usr/share/qemu/firmware declare `requires-smm` and
+# list `pc-q35-*` as their only target, and the flash image enforces that: measured
+# against one desktop ISO on ovmf 2026.02 / QEMU 10.2.1, the run that reaches a
+# graphical target under `-M q35,smm=on` emits not a single serial byte on the
+# default i440fx machine. It does not fail either -- it sits there until the lab
+# timeout expires and then reports a missing serial marker, so the ISO takes the
+# blame for a machine that never left the firmware. The type is therefore dictated
+# by the firmware rather than offered as a choice, and no option surface exposes it.
+SECURE_BOOT_MACHINE = "q35,smm=on"
 
 
 def default_ovmf_code(override: str = "", *, secure_boot: bool = False) -> str:
@@ -51,9 +61,18 @@ def default_ovmf_vars(override: str = "", *, secure_boot: bool = False) -> str:
 def is_secure_boot_firmware(code: str, vars_: str) -> bool:
     """Whether this pair can actually enforce Secure Boot.
 
-    Decided from the filenames because that is the only thing the packages expose:
-    ovmf ships the distinction as ``.secboot`` and ``.ms`` suffixes, with no
-    manifest and no way to interrogate a flash image cheaply.
+    Decided from the filenames, which ovmf uses as its own distinction: the
+    ``.secboot`` code build is the one that enforces, and the ``.ms`` variable store
+    is the one carrying the enrolled Microsoft keys a signed shim chains to.
+
+    The QEMU firmware descriptors in /usr/share/qemu/firmware describe the same
+    images in machine-readable form, and they agree with the names here: measured on
+    ovmf 2026.02, ``OVMF_CODE_4M.ms.fd`` from the enrolled-keys descriptor is a
+    symlink onto ``OVMF_CODE_4M.secboot.fd``, so the pair this returns True for is
+    byte-identical to the one that descriptor names. They are not read, because a
+    caller may name a firmware image no descriptor covers and that has to keep
+    working; ``SECURE_BOOT_MACHINE`` records the one thing they say that the
+    filenames do not.
     """
     return ".secboot." in Path(code).name and ".ms." in Path(vars_).name
 
@@ -104,6 +123,7 @@ class QemuInvocation:
         if self.timeout_seconds is not None:
             parts.extend(["timeout", str(self.timeout_seconds)])
         parts.append(QEMU_SYSTEM)
+        parts.extend(self._machine_args())
         parts.extend(["-m", str(self.memory_mb)])
         if self.cpus is not None:
             parts.extend(["-smp", str(self.cpus)])
@@ -128,6 +148,15 @@ class QemuInvocation:
         if self.enable_kvm:
             parts.append("-enable-kvm")
         return tuple(parts)
+
+    def _machine_args(self) -> list[str]:
+        # Only the Secure Boot path moves off the default machine. The BIOS and the
+        # plain UEFI paths are the ones a boot proof has already come back green on,
+        # and the plain firmware descriptor accepts `pc-i440fx-*` as well, so there
+        # is nothing to gain there and a proven result to lose.
+        if not self.secure_boot:
+            return []
+        return ["-M", SECURE_BOOT_MACHINE]
 
     def _firmware_args(self) -> list[str]:
         if self.firmware != "uefi":

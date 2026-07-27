@@ -277,6 +277,24 @@ resolves that pair, and validation refuses an explicitly named pair that cannot 
 Secure Boot rather than substituting one silently — a VM reporting Secure Boot while
 running with it off is worse than not offering the option.
 
+Secure Boot is also a property of the **machine**, and that half was missing. Both Secure
+Boot descriptors in `/usr/share/qemu/firmware` declare `requires-smm` and name `pc-q35-*`
+as their only target, while QEMU's default machine is `pc-i440fx-*` without SMM. Measured
+on one desktop ISO with ovmf 2026.02 and QEMU 10.2.1: on the default machine the run
+emitted **not one serial byte**, while the identical run under `-M q35,smm=on` reached
+`getty.target` and a login prompt in about two minutes. Nothing failed in between — the
+lab sat in the firmware until its timeout expired and then reported a missing serial
+marker, so **the ISO took the blame for a machine that never booted it**, and every
+`--prebuild-vm-secure-boot` run since the option shipped was that hang. `QemuInvocation`
+now emits `-M q35,smm=on` whenever Secure Boot is on, and only then: the BIOS and plain
+UEFI shapes are the ones a boot proof has already come back green on, and the plain
+firmware descriptor accepts `pc-i440fx-*` too, so there is nothing to gain there and a
+proven result to lose. The machine type is dictated by the firmware, so no option surface
+exposes it — a knob here could only ever be set wrong. `tests/test_qemu_invocation.py`
+reads the installed descriptors and checks the constant against them, so an ovmf upload
+that moves Secure Boot to another machine turns a test red instead of turning every proof
+back into a silent half-hour hang.
+
 `distroforge boot-proof` chooses its own firmware: `--firmware bios|uefi` and
 `--secure-boot`. Omitting `--firmware` keeps whatever the project or its definition already
 says, so the flag is only needed to change that answer — the same precedence as
