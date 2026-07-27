@@ -239,6 +239,21 @@ It stops there. Publishing is `git push origin refs/tags/<tag>`, typed separatel
 a tag that has been pushed must not be moved afterwards and that should not happen as a
 side effect of asking for a tag.
 
+The first tag under this convention is `debian/0.3.5-16` on `38217da`, cut and pushed
+2026-07-27. Annotated: `git cat-file -t` answers `tag`. Signed: `git verify-tag` reports a
+good signature, and GitHub's `GET /repos/{owner}/{repo}/git/tags/{sha}` answers
+`"verified": true` with `"reason": "valid"`.
+
+Signing needs the key's passphrase, which makes `make tag` a command to run where somebody
+is watching. `gpg-agent` launches pinentry, and an unanswered dialog does not report itself
+as an unanswered dialog: the sign fails with a timeout whose error source is `<Pinentry>`,
+visible as `command 'PKSIGN' failed` in `journalctl --user`. That message names a person who
+was not there and not a broken agent -- worth knowing, because it looks like the second
+thing. Whether the dialog appears at all is a separate question with a separate answer, and
+the agent will tell you which one you have: `gpg-connect-agent 'KEYINFO --list' /bye` prints
+`1` in its seventh field for a key whose passphrase is cached and `-` for one that will
+prompt.
+
 Versions released before the convention existed are not retro-tagged. The tags that would
 have to be invented for them are claims about which commit was uploaded when, and this
 repository's history begins at an imported 0.3.5-1 baseline -- most of those 46 versions
@@ -290,10 +305,19 @@ fast-forwarded only to a `develop` that is green -- the same condition, checked 
 push instead of at it. `required_signatures` is the part that does move server-side,
 because a signature is checkable at push time without waiting for anything to run.
 
+A ruleset's `fnmatch` does not let `*` cross a `/`, so `refs/tags/debian/*` covers every name
+DEP-14 produces from a Debian version and nothing below another slash.
+
 Enforcement was read back rather than assumed: `GET /repos/{owner}/{repo}/rules/branches/`
 returns all four rules for both branches when asked with the owner's own token, and
 returns nothing for a branch the ruleset does not cover. A rejected force-push would be
 the stronger evidence and has not been run.
+
+One scope question was settled by doing it instead of reading about it. The tag ruleset
+carries `update` and `deletion` but not `creation`, and GitHub's documentation does not say
+in so many words whether the first three together leave a new tag pushable. Pushing
+`debian/0.3.5-16` answered it: exit 0, `* [new tag]`. These rules freeze a tag that exists
+without standing in the way of the next one.
 
 ## Publishing the Signing Key
 
@@ -329,11 +353,28 @@ same command against a keyring with nothing imported returns 1, which is what ma
 evidence about the export rather than about an ambient keyring. Dropping a user id costs
 nothing an archive needs: verification uses the key material, not the labels on it.
 
-What the filter cannot do: it governs one export, not a key already uploaded somewhere. A
-keyserver that holds the key with its personal user id will not forget it, and neither will
-anyone who fetched it. Checked 2026-07-27 -- `keys.openpgp.org` and `keyserver.ubuntu.com`
-both answer 404 for that fingerprint, so nothing personal is published yet and this stays a
-precaution rather than a repair.
+What the filter cannot do: it governs one export, not a copy that is already published
+somewhere else. A keyserver that holds the key with its personal user id will not forget it,
+and neither will anyone who fetched it.
+
+Measured 2026-07-27, and the answer is not the reassuring one. `keys.openpgp.org` and
+`keyserver.ubuntu.com` both answer 404 for this fingerprint, but
+
+```
+curl https://github.com/Test-bot-cell.gpg   ->  HTTP 200, 4043 bytes, no authentication
+```
+
+serves the key with the personal user id on it. GitHub publishes every GPG key uploaded to
+an account at `https://github.com/<login>.gpg`, by design and without asking. So the
+personal address was public before this filter was written, and the filter repairs one
+channel rather than covering all of them. An earlier revision of this section concluded the
+opposite from the two 404s alone; two keyservers not holding a key is no evidence that
+nothing holds it, and the account was never asked.
+
+The remaining channel is not in this repository and no change here can close it. Removing
+the key from the account (Settings -> SSH and GPG keys) is the only lever, and what that
+does to the Verified badge on the commits already signed with it has to be measured before
+it is pulled rather than discovered afterwards. That has not been measured here.
 
 The gap it could not close is now closed. The `Maintainer` field names
 `github@distroforge.anonaddy.com` and the key had no user id for that address, so a keyring
@@ -344,6 +385,8 @@ address, so nothing in this procedure changed. One consequence to know about: gp
 most recently self-signed user id as primary, so that alias is now the identity gpg prints
 for a signature made by this key. The copy GitHub holds is unaffected -- it stores what was
 uploaded, the noreply user id is still on it, and commit verification there is unchanged.
+That is also the copy served at the URL above, which is why adding the alias here did not
+add it there, and why the personal user id served there is still the one that was uploaded.
 
 Two tests hold the parts of this a machine can check. One rejects any mailbox appearing in
 the tree that is not a published identity -- an allowlist, deliberately, because a denylist
