@@ -80,6 +80,14 @@ def _project(tmp_path: Path) -> Path:
 
 
 def test_a_build_that_breaks_writes_a_report_saying_what_broke(tmp_path, monkeypatch) -> None:
+    # run_iso_build asks the doctor first and only builds if it does not block, so on a
+    # host without xorriso and friends the orchestrator below is never reached and the
+    # status is "blocked" -- which is what this test asserts it is not. It passed here
+    # and failed on all nine CI runners for exactly that reason: this machine has the
+    # ISO toolchain installed and the runners do not. The neighbouring tests in
+    # test_core_smoke.py already seal that seam this way; this one did not, so it was
+    # measuring the host rather than the code.
+    monkeypatch.setattr("distroforge.core.iso_doctor.CommandRunner.has_binary", lambda *args: True)
     root = _project(tmp_path)
 
     def explode(self):  # type: ignore[no-untyped-def]

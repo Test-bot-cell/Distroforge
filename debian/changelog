@@ -346,7 +346,15 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     asked the archive for a suite that does not exist. Measured against
     archive.ubuntu.com/ubuntu/dists/stonking/Release: Suite stonking, Version
     26.10.
-
+  * Stopped a test from measuring the host instead of the code. The test that
+    pins "a broken build arrives as data" passed here and failed on all nine
+    CI runners: run_iso_build asks the doctor before it builds, so on a host
+    without the ISO toolchain the orchestrator it monkeypatches is never
+    reached and the status is blocked -- which is what the test asserts it is
+    not. This machine has xorriso and friends installed and the runners do
+    not, so a green make check meant nothing here. The three neighbouring
+    tests in test_core_smoke.py already sealed that seam; this one now does
+    too.
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
