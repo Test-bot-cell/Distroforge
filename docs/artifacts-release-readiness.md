@@ -49,8 +49,9 @@ distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend qemu 
 ```
 
 `--firmware` picks the machine the proof runs on, and the report names it. On a BIOS host
-that is the whole value of the run: without it a `ready` cannot be told apart from a green
-report about the half that already worked. Omitting the flag keeps the project's own choice.
+that is essential context: a BIOS result establishes BIOS only and says nothing about UEFI.
+The exact rebuilt ISO still requires digest-linked v2 proofs for both firmware paths.
+Omitting the flag keeps the project's own choice.
 `--secure-boot` needs `--firmware uefi` and the `.secboot` firmware paired with the `.ms`
 store of enrolled keys; both are refused before QEMU starts rather than reported afterwards.
 See `docs/build-pipeline.md` for how the firmware pair is detected.
@@ -75,10 +76,21 @@ for a project that has provenance. And the release support summary from
 `compatibility-report.txt` is *not* part of this report: that file is written by the build
 into the project output directory and is read by the dry-run and build reports instead.
 
-`release-gate` is stricter: it is the maintainer publication stoplight. It blocks when the
-final ISO, `SHA256SUMS` verification, source trust, boot proof, release files, release
-readiness, or packaging policy evidence are missing. It returns `blocked`, `review`, or
-`ready` in text or JSON.
+`release-gate` is stricter: it is the maintainer publication stoplight. It re-hashes the
+ISO and does not accept a report merely because a file exists. Build provenance must use
+the v2 schema, carry `attestation_kind: build`, match the ISO, and link to an append-only
+application run whose manifest, sidecar and every recorded file still verify. QEMU evidence
+must be a completed v2 pass for the same ISO through at least `login_prompt`, with serial
+and screenshot digests recorded in the run manifest and no terminal refusal anywhere in
+the final log. A structural scan never satisfies this runtime publication gate. The gate
+returns `blocked`, `review`, or `ready`.
+
+“Append-only” is an application rule, not a cryptographic filesystem property: the
+application refuses a reused run ID, but a local writer can still alter or delete the
+directory and recompute unsigned digests. The local checks detect ordinary drift against
+the recorded manifest; the bundle becomes tamper-evident and authenticated only after the
+manifest is signed and that signature is verified, or after the evidence is anchored in
+trusted WORM/content-addressed storage.
 
 `publish-bundle` creates `dist/publish/` for maintainer review. It copies the ISO,
 `SHA256SUMS`, `BUILDINFO`, provenance, HTML report, executed boot proof when present, plus
@@ -126,15 +138,23 @@ refresh the manifest so the notes are covered, verify the bundle, and write
 `RELEASE-PIPELINE.json`.
 
 `boot-proof` is the normalized boot evidence command. In dry-run mode it writes
-`boot-proof.json` with status `planned`. The default `auto` backend attempts QEMU runtime
+`boot-proof.plan.json` plus a run-scoped file under `dist/evidence/plans/`; it never
+replaces the last executed `boot-proof.json`. The default `auto` backend attempts QEMU runtime
 proof first, then falls back to `iso-scan` when QEMU is missing or blocked by the host.
 The report records `attempted_backends`, `selected_backend`, and `proof_level`. The `qemu`
 backend requires QEMU, runs the configured boot smoke, captures `qemu-lab-report.json`,
-and marks `boot-proof.json` ready only when the executed proof report exists. The
+and marks `boot-proof.json` ready only when the report schema, ISO digest, milestone,
+serial marker and artifact digests all verify. The
 `iso-scan` backend is a headless fallback: it records ISO size, SHA-256, ISO9660 volume
 metadata, El Torito boot catalog evidence and kernel/initrd or live payload markers. A
-complete scan can mark `boot-proof.json` ready; partial structural evidence is `review`.
-The release gate rejects planned or review proof as blocking evidence.
+complete scan can mark `boot-proof.json` structurally ready; partial structural evidence
+is `review`. The release gate nevertheless requires runtime evidence and blocks both.
+
+Executing ISO builds use the same separation. The authority is
+`dist/evidence/runs/<run_id>/ISO-BUILD.json`; `dist/ISO-BUILD.json` is an atomic alias to
+the latest execution, while a dry-run updates only `dist/ISO-BUILD.plan.json`. See
+[`iso-build-proof-ledger.md`](iso-build-proof-ledger.md) for the schemas and current
+milestone verdicts.
 
 An executed `boot-proof` that came back `blocked` exits **2**; `--dry-run` always exits 0,
 including against a project with no ISO, because reporting that is what a plan is for.
@@ -144,7 +164,8 @@ field was `true` and still exit 0 — see the exit-status table in
 
 ## Software Bill of Materials
 
-Every build writes `distroforge-provenance.json`. When `--sbom-format` selects a standard
+Every executing build writes `distroforge-provenance.json` as an alias to its append-only,
+run-scoped provenance. When `--sbom-format` selects a standard
 format, the build writes a portable SBOM next to it: `distroforge-sbom.spdx.json` for
 SPDX-2.3 or `distroforge-sbom.cdx.json` for CycloneDX 1.5. A published bundle therefore
 carries a vendor-neutral component inventory alongside the native provenance document.

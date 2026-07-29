@@ -106,7 +106,7 @@ def test_copy_file_can_go_privileged_without_trying_the_local_copy_first(tmp_pat
     # prefer_sudo skips the unprivileged attempt entirely: the caller already knows the
     # destination is root-owned, and a failed local copy2 can leave a partial file.
     source = tmp_path / "sources.list"
-    source.write_text("deb http://example.invalid noble main\n", encoding="utf-8")
+    source.write_text("deb http://example.invalid resolute main\n", encoding="utf-8")
     runner = RecordingRunner()
 
     FileSystemOps(runner).copy_file(source, tmp_path / "etc/apt/sources.list", prefer_sudo=True)

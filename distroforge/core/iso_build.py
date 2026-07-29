@@ -4,10 +4,19 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .artifact_paths import default_command_log, default_output_iso
+from .artifact_paths import default_output_iso
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
 from .command import CommandError, CommandRunner
+from .evidence_run import (
+    artifact_identity,
+    critical_artifact_identity,
+    evidence_run_path,
+    make_run_context,
+    reserve_evidence_run,
+    write_immutable_text,
+    write_text_alias,
+)
 from .hashing import sha256_file
 from .iso_doctor import IsoDoctorReport, diagnose_iso_build
 from .project import Project
@@ -16,6 +25,8 @@ from .project import Project
 # mmdebstrap to have said what went wrong -- their diagnosis is always at the end --
 # without letting one verbose command turn ISO-BUILD.json into a log file.
 _FAILURE_OUTPUT_TAIL = 8000
+ISO_BUILD_SCHEMA = "distroforge.iso-build.v2"
+RUN_MANIFEST_SCHEMA = "distroforge.build-run-manifest.v1"
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,13 @@ class IsoBuildReport:
     boot_proof: BootProofReport | None = None
     failure: BuildFailure | None = None
     command_log: Path | None = None
+    run_id: str = ""
+    created_at: str = ""
+    alias_report: Path | None = None
+    evidence_context: dict[str, object] | None = None
+    artifacts: tuple[dict[str, object], ...] = ()
+    provenance: dict[str, object] | None = None
+    run_manifest: Path | None = None
     """Where every command this build ran was recorded, named so a reader can find it.
 
     The report is what callers are told to read, and for one release cycle it described a
@@ -97,6 +115,9 @@ class IsoBuildReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "schema": ISO_BUILD_SCHEMA,
+            "run_id": self.run_id,
+            "created_at": self.created_at,
             "project": str(self.project),
             "output_iso": str(self.output_iso),
             "status": self.status,
@@ -105,6 +126,7 @@ class IsoBuildReport:
             "failure": self.failure.to_dict() if self.failure else None,
             "execute": self.execute,
             "report": str(self.report),
+            "alias_report": str(self.alias_report) if self.alias_report else None,
             "command_log": str(self.command_log) if self.command_log else None,
             "doctor": self.doctor.to_dict(),
             "build_steps": list(self.build_steps),
@@ -112,6 +134,10 @@ class IsoBuildReport:
             "output_size": self.output_size,
             "output_sha256": self.output_sha256,
             "boot_proof": self.boot_proof.to_dict() if self.boot_proof else None,
+            "evidence_context": self.evidence_context or {},
+            "artifacts": list(self.artifacts),
+            "provenance": self.provenance or {},
+            "run_manifest": str(self.run_manifest) if self.run_manifest else None,
         }
 
     def render_json(self) -> str:
@@ -162,13 +188,35 @@ def run_iso_build(
 ) -> IsoBuildReport:
     options = options or BuildOptions()
     options.output_iso = options.output_iso or default_output_iso(project)
-    # Default the log here rather than trust each caller to remember it. Both production
-    # callers had forgotten: commands/iso_build.py passed nothing and core/demo_iso.py
-    # passed nothing, so log_path stayed None, so _write_event returned before writing a
-    # line (core/command.py:224) and `distroforge iso-build --execute` -- the command the
-    # golden path runs -- produced no command log at all. The one caller that does pass a
-    # path, commands/build.py:77, spells the same default for the other entry point.
-    log_path = log_path or default_command_log(project, "iso-build")
+    options._evidence_context = None
+    options._evidence_reserved = False
+    options._evidence_injected = False
+    evidence_context = make_run_context(
+        project,
+        options,
+        definition=definition,
+        mode="execute" if execute else "plan",
+    )
+    run_id = str(evidence_context["run_id"])
+    reserve_evidence_run(project.output_dir, run_id, executed=execute)
+    options._evidence_context = evidence_context
+    options._evidence_reserved = True
+    options._evidence_injected = True
+    immutable_report = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "ISO-BUILD.json",
+        executed=execute,
+    )
+    alias_report = project.output_dir / (
+        "ISO-BUILD.json" if execute else "ISO-BUILD.plan.json"
+    )
+    log_path = log_path or evidence_run_path(
+        project.output_dir,
+        run_id,
+        "commands.jsonl",
+        executed=execute,
+    )
     doctor = diagnose_iso_build(project, options, definition=definition)
     boot_report = None
     steps: tuple[str, ...] = ()
@@ -193,6 +241,15 @@ def run_iso_build(
             failure = _failure_from(exc)
             status = "failed"
             exists, size, sha256 = _output_contract(options.output_iso)
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            failure = BuildFailure(
+                command=(),
+                description=type(exc).__name__,
+                returncode=1,
+                output=str(exc)[-_FAILURE_OUTPUT_TAIL:],
+            )
+            status = "failed"
+            exists, size, sha256 = _output_contract(options.output_iso)
         else:
             steps = tuple(step.phase.value for step in build.steps)
             exists, size, sha256 = _output_contract(options.output_iso)
@@ -209,23 +266,154 @@ def run_iso_build(
                     status = "blocked"
     else:
         exists, size, sha256 = _output_contract(options.output_iso)
-    report = IsoBuildReport(
-        project.root,
-        options.output_iso,
-        status,
-        execute,
-        project.output_dir / "ISO-BUILD.json",
-        doctor,
-        steps,
-        exists,
-        size,
-        sha256,
-        boot_report,
-        failure,
-        command_log,
+    # Diagnosed a second time, on purpose. The call above is the gate: it decides whether a
+    # build is attempted at all, and it has to run before one. This one describes the tree
+    # the rest of this report describes. One call served both, so every finished build
+    # shipped its own pre-build verdict -- ISO-BUILD.json from a green local run carried
+    # `output_exists: true, output_size: 1348337664` beside a doctor block reading "No output
+    # ISO has been produced yet. Run an executing build, not only a dry-run", and
+    # render_text printed exactly that under "Doctor:". It is the file the golden path
+    # publishes as evidence, and it contradicted itself eight lines apart.
+    #
+    # Cheap, because every finding that moves during a build is keyed on the output ISO
+    # existing: a stat and a few has_binary lookups, no command run and nothing written.
+    artifacts = critical_artifact_identity(project, options.output_iso)
+    if command_log and command_log.is_file():
+        artifacts.append(artifact_identity(command_log, role="command-log"))
+    output_artifacts: list[tuple[Path, str]] = [
+        (project.output_dir / "SHA256SUMS", "checksum-list"),
+        (project.output_dir / "BUILDINFO", "build-info"),
+        (
+            project.output_dir / "distroforge-provenance.json",
+            "provenance-alias",
+        ),
+        (
+            project.output_dir / options.prebuild_vm.report_name,
+            "qemu-report-alias",
+        ),
+        (project.output_dir / "boot-proof.json", "boot-proof-alias"),
+    ]
+    if options.html_report.enabled:
+        output_artifacts.append(
+            (project.output_dir / options.html_report.filename, "html-report")
+        )
+    if options.provenance.sbom_format == "spdx":
+        output_artifacts.append(
+            (project.output_dir / "distroforge-sbom.spdx.json", "sbom-alias")
+        )
+    elif options.provenance.sbom_format == "cyclonedx":
+        output_artifacts.append(
+            (project.output_dir / "distroforge-sbom.cdx.json", "sbom-alias")
+        )
+    for path, role in output_artifacts:
+        if path.is_file():
+            artifacts.append(artifact_identity(path, role=role))
+    optional_artifacts: list[tuple[Path | None, str]] = [
+        (
+            evidence_run_path(
+                project.output_dir,
+                run_id,
+                options.prebuild_vm.report_name,
+                executed=execute,
+            ),
+            "qemu-report",
+        ),
+        (project.output_dir / options.prebuild_vm.serial_log, "qemu-serial"),
+        (project.output_dir / options.prebuild_vm.screenshot_name, "qemu-screenshot"),
+        (
+            boot_report.immutable_proof
+            if boot_report and boot_report.immutable_proof
+            else None,
+            "boot-proof",
+        ),
+        (
+            boot_report.qemu_report
+            if boot_report and boot_report.qemu_report_sha256
+            else None,
+            "boot-proof-qemu-report",
+        ),
+    ]
+    for optional_path, role in optional_artifacts:
+        if optional_path is not None and optional_path.is_file():
+            artifacts.append(artifact_identity(optional_path, role=role))
+    provenance_path = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "distroforge-provenance.json",
+        executed=execute,
     )
-    project.output_dir.mkdir(parents=True, exist_ok=True)
-    report.report.write_text(report.render_json() + "\n", encoding="utf-8")
+    provenance_identity = (
+        artifact_identity(provenance_path, role="provenance")
+        if provenance_path.is_file()
+        else {}
+    )
+    evidence_dir = immutable_report.parent
+    recorded_paths = {
+        str(item.get("path"))
+        for item in artifacts
+        if isinstance(item.get("path"), str)
+    }
+    for evidence_path in sorted(evidence_dir.rglob("*")):
+        if (
+            not evidence_path.is_file()
+            or evidence_path == provenance_path
+            or str(evidence_path) in recorded_paths
+        ):
+            continue
+        artifacts.append(artifact_identity(evidence_path, role="run-evidence"))
+        recorded_paths.add(str(evidence_path))
+    run_manifest = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "RUN-MANIFEST.json",
+        executed=execute,
+    )
+    report = IsoBuildReport(
+        project=project.root,
+        output_iso=options.output_iso,
+        status=status,
+        execute=execute,
+        report=immutable_report,
+        doctor=diagnose_iso_build(project, options, definition=definition),
+        build_steps=steps,
+        output_exists=exists,
+        output_size=size,
+        output_sha256=sha256,
+        boot_proof=boot_report,
+        failure=failure,
+        command_log=command_log,
+        run_id=run_id,
+        created_at=str(evidence_context["created_at"]),
+        alias_report=alias_report,
+        evidence_context=evidence_context,
+        artifacts=tuple(artifacts),
+        provenance=provenance_identity,
+        run_manifest=run_manifest,
+    )
+    content = report.render_json() + "\n"
+    write_immutable_text(immutable_report, content)
+    manifest_files = [
+        artifact_identity(immutable_report, role="iso-build-report"),
+        *artifacts,
+    ]
+    if provenance_identity:
+        manifest_files.append(provenance_identity)
+    manifest_payload = {
+        "schema": RUN_MANIFEST_SCHEMA,
+        "run_id": run_id,
+        "mode": "execute" if execute else "plan",
+        "status": status,
+        "created_at": evidence_context["created_at"],
+        "files": manifest_files,
+    }
+    manifest_content = json.dumps(manifest_payload, indent=2) + "\n"
+    write_immutable_text(run_manifest, manifest_content)
+    manifest_sha = sha256_file(run_manifest)
+    write_immutable_text(
+        run_manifest.with_name(f"{run_manifest.name}.sha256"),
+        f"{manifest_sha}  {run_manifest.name}\n",
+    )
+    write_text_alias(alias_report, content)
     return report
 
 
@@ -234,4 +422,3 @@ def _output_contract(path: Path) -> tuple[bool, int, str]:
         return False, 0, ""
     size = path.stat().st_size
     return True, size, sha256_file(path) if size > 0 else ""
-

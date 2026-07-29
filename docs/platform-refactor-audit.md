@@ -89,7 +89,7 @@ source.
 
 ### 1. Source-To-ISO Kernel
 
-The dependable source-to-ISO path now lives in `distroforge/core/build_pipeline.py`.
+The canonical source-to-ISO path now lives in `distroforge/core/build_pipeline.py`.
 `BuildOrchestrator.run` is a thin driver that calls the extracted stages in order over a
 shared `BuildServices` boundary:
 
@@ -176,18 +176,14 @@ about what they do not:
   fixtures under `tests/fixtures/progress/` exist precisely so heavy tools stay
   out of the suite. That boundary is permanent and is what lets the same suite run
   under buildd and autopkgtest.
-- **The L2 gate is wired now, outside the suite.** This entry used to say there
-  was none, and that "nothing verifies that a real ISO builds, boots or installs"
-  and that the verification "is a manual maintainer step". All three stopped being
-  true when `.github/workflows/golden-path.yml` landed: weekly, and never on push,
-  it bootstraps a rootfs from the archive, packs it, builds an ISO, boots that ISO
-  under UEFI firmware with `--backend qemu` so the proof cannot degrade to a
-  structural scan, and builds the `.deb` with `lintian` and the declared
-  autopkgtest suite. `tests/test_golden_path.py` is what keeps it a real path
-  rather than a file: it fails if the schedule is removed, if `--execute` becomes
-  `--dry-run`, or if the boot proof is allowed to fall back. See
-  `docs/golden-path.md`. Install-media verification on real hardware remains a
-  manual maintainer step.
+- **The L2 harness is wired, but has not passed the full chain.**
+  `.github/workflows/golden-path.yml` executes real tools weekly and never on push;
+  `tests/test_golden_path.py` proves that workflow contract by refusing a removed
+  schedule, `--dry-run`, or a boot-proof fallback. Those source assertions do not
+  prove the workflow's outcome. Current evidence observes the minbase-to-ISO journey,
+  blocks the reference UEFI path, and reaches shim but not GRUB on an audit variant.
+  Kernel/login, installation and desktop runtime remain unproved; see
+  `docs/golden-path.md` and `docs/iso-build-proof-ledger.md`.
 - **Line coverage is 74.7% overall** (21351 of 28586 statements), and
   `distroforge/ui/` is the weakest surface at 58.6%. The GUI is covered by
   offscreen reachability, responsiveness and parity contracts rather than by
@@ -200,14 +196,16 @@ about what they do not:
   nothing clones and nothing pip-installs — and CI runs the same gates. See
   `docs/debian-canonical-compliance.md`, which is the source of truth for what is
   and is not enforced.
-- **`lintian` is a weekly gate now.** This entry used to say it never ran in one.
+- **`lintian` is configured as a weekly package gate.** This entry used to say it
+  never ran in one.
   `debian-package --execute` invokes it to produce `LINTIAN.txt`,
   `doctor --debian-dev` audits its presence, `debian/control` lists it under
-  `Suggests`, and the golden path runs it on a real `.deb` every week, accepting
-  `passed` or `review required` and nothing else. `debian/rules` still does not run
-  it and the rendered `sbuild` command still passes `--no-run-lintian`. Per-push CI
-  still does not lint a `.deb`; it checks the shape of the invocation instead,
-  because there is no `.deb` on a push to lint.
+  `Suggests`, and the golden path accepts `passed` or `review required` and nothing
+  else. The first executing attempt produced a real `.deb` and a lintian verdict,
+  but its declared autopkgtest failed. `debian/rules` still does not run lintian and
+  the rendered `sbuild` command still passes `--no-run-lintian`. Per-push CI still
+  does not lint a `.deb`; it checks the shape of the invocation instead, because
+  there is no `.deb` on a push to lint.
 
 ## First Extraction Targets
 

@@ -123,7 +123,7 @@ class PrebuildVmDefinition(BaseModel):
     serial_log: str = "prebuild-vm-serial.log"
     screenshot: bool = True
     screenshot_name: str = "prebuild-vm.ppm"
-    success_patterns: list[str] = Field(default_factory=lambda: ["login:", "Reached target"])
+    success_patterns: list[str] = Field(default_factory=lambda: ["login:"])
     qmp_socket: str = "qemu-lab.qmp"
     pid_file: str = "qemu-lab.pid"
     report_name: str = "qemu-lab-report.json"

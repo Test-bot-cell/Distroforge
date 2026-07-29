@@ -131,9 +131,10 @@ def test_iso_build_writes_a_command_log_without_being_asked(monkeypatch, tmp_pat
 
     report = run_iso_build(project, BuildOptions(), execute=False)
 
-    assert report.command_log == default_command_log(project, "iso-build")
+    assert report.command_log == report.report.parent / "commands.jsonl"
     assert report.command_log.exists(), "the report named a log nobody wrote"
     assert _events(report.command_log), "the log exists but recorded no command"
+    assert report.run_id in str(report.command_log)
 
 
 def test_the_report_says_where_the_log_went(monkeypatch, tmp_path) -> None:
@@ -144,9 +145,11 @@ def test_the_report_says_where_the_log_went(monkeypatch, tmp_path) -> None:
 
     report = run_iso_build(project, BuildOptions(), execute=False)
 
-    written = json.loads((project.output_dir / "ISO-BUILD.json").read_text(encoding="utf-8"))
-    assert written["command_log"] == str(default_command_log(project, "iso-build"))
+    written = json.loads(report.report.read_text(encoding="utf-8"))
+    assert written["command_log"] == str(report.command_log)
     assert f"Command log: {report.command_log}" in report.render_text()
+    assert report.alias_report == project.output_dir / "ISO-BUILD.plan.json"
+    assert not (project.output_dir / "ISO-BUILD.json").exists()
 
 
 def test_an_explicit_log_file_still_wins(monkeypatch, tmp_path) -> None:
@@ -172,6 +175,43 @@ def test_a_blocked_project_does_not_advertise_a_log_it_never_opened(tmp_path) ->
     assert report.command_log is None
     assert not default_command_log(project, "iso-build").exists()
     assert "Command log: not recorded" in report.render_text()
+
+
+def test_a_finished_build_does_not_ship_the_verdict_from_before_it_ran(monkeypatch, tmp_path) -> None:
+    """The doctor block in ISO-BUILD.json has to describe the tree the report describes.
+
+    The doctor was diagnosed once, before the build, and that one value was serialised into
+    the report written afterwards. So the evidence file the golden path publishes for a green
+    run carried ``output_exists: true`` and ``output_size: 1348337664`` beside a doctor
+    reading "No output ISO has been produced yet. Run an executing build, not only a
+    dry-run" -- and ``render_text`` printed that sentence under "Doctor:", eight lines below
+    the size of the ISO it claimed did not exist.
+    """
+    monkeypatch.setattr("distroforge.core.iso_doctor.CommandRunner.has_binary", lambda *args: True)
+    project = Project.create("Doctor", tmp_path / "doctor", "26.04")
+    project.source_mode = "bootstrap"
+    options = BuildOptions()
+    options.output_iso = tmp_path / "out.iso"
+
+    class _Built:
+        steps: tuple[object, ...] = ()
+
+    def _produce_the_iso(self) -> _Built:
+        options.output_iso.write_bytes(b"\x00" * 2048)
+        return _Built()
+
+    monkeypatch.setattr("distroforge.core.iso_build.BuildOrchestrator.run", _produce_the_iso)
+
+    report = run_iso_build(project, options, execute=False)
+
+    assert report.output_exists and report.output_size == 2048
+    codes = {finding.code for finding in report.doctor.findings}
+    assert "not-built-yet" not in codes, "the report shipped the verdict from before the build"
+    assert "iso-exists" in codes
+    assert "No output ISO has been produced yet" not in report.render_text()
+    written = json.loads(report.report.read_text(encoding="utf-8"))
+    assert written["output_exists"] is True
+    assert "not-built-yet" not in json.dumps(written["doctor"])
 
 
 def test_the_two_entry_points_that_build_keep_separate_logs(tmp_path) -> None:

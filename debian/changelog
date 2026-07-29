@@ -1,5 +1,120 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Replaced presence-based ISO evidence with an append-only, digest-linked
+    application run contract. Every iso-build now reserves a unique
+    runs/<run-id> or
+    plans/<run-id> directory before diagnosis, writes its own command log,
+    provenance, ISO-BUILD report and closing RUN-MANIFEST with a SHA256
+    sidecar, and refuses a colliding run id. ISO-BUILD.json is only the atomic
+    alias to the latest execution; a dry-run updates ISO-BUILD.plan.json and
+    can no longer overwrite the evidence from a real build. Provenance v2
+    binds the imported DistroForge Git HEAD/tree, tracked diff, untracked file
+    inventory and combined worktree digest, raw and effective definitions,
+    Python and tool executable paths/versions/SHA256s, and the staged kernel,
+    initrd, manifests, squashfs, EFI/GRUB files and final ISO. The release gate
+    re-hashes every manifest entry and rejects reconstructed provenance; the
+    beginner repair path labels what it derives after the fact and preserves
+    matching build provenance instead of replacing it. Publish bundles now
+    carry the exact append-only run directory and their signing manifest
+    covers its nested files. These writable local directories are not
+    cryptographically immutable or authenticated: a local writer can alter
+    them and recompute unsigned digests. They become tamper-evident against a
+    trusted anchor only after the closing manifest is signed and that
+    signature verified, or after the evidence is committed to trusted WORM or
+    content-addressed storage.
+  * Made QEMU proof a content contract rather than a filename. The v2 report
+    records a completed/aborted status and passed/failed verdict, exact ISO
+    size/SHA256 before and after the run, named reached milestone, matched
+    serial line and byte offset, stopped-VM serial and screenshot digests,
+    QEMU executable identity, acceleration and UEFI firmware digests. A
+    terminal firmware, GRUB, casper or kernel refusal wins even after an
+    earlier success marker; the generic `Reached target` marker is refused.
+    boot-proof binds the QEMU report digest and ISO, and release-gate validates
+    both reports through at least login_prompt. Empty JSON, a stale report for
+    another ISO and a structurally ready iso-scan are now blocking evidence.
+    Added falsification tests for each of those cases, late kernel panic,
+    modified serial output, overwritten provenance and a command log changed
+    after manifest closure.
+  * Closed two additional falsification paths found by the independent
+    pre-commit review. A serial line containing the substring login: no longer
+    proves login_prompt: both the live matcher and the offline validator now
+    require a complete getty prompt line and skip earlier audit/PAM-style
+    diagnostics. Evidence-run copies now verify every component from their
+    trusted output root through evidence/runs and refuse file, directory and
+    ancestor symlinks; copytree preserves rather than dereferences a link that
+    appears after the preflight check, and build, QEMU and boot-proof gates
+    apply the same confinement. A symlinked bundle destination is also refused
+    before its first write. Negative tests prove that external bytes are
+    neither accepted as a login milestone nor copied into a publish bundle.
+  * Added docs/iso-build-proof-ledger.md as the canonical observed/proved/
+    blocked/planned milestone register. It records that the real local
+    minbase-to-ISO journey is observed, while the reference ISO has no usable
+    UEFI path, the corrected layout reaches shim but not GRUB, and BIOS,
+    kernel/login, Secure Boot, the desktop and independent reproducibility
+    still require fresh v2 runs. Existing artifacts are not retroactively
+    promoted by the new report schema.
+  * Classified the boot observations retained in the published 0.3.5-3,
+    0.3.5-4 and 0.3.5-7 entries as historical diagnostics, not current proof.
+    Their preserved material does not bind source commit, effective
+    definition, toolchain digests, exact ISO and runtime output in one
+    authenticated chain. The old entries remain intact, but none is promoted
+    into a v2 milestone.
+  * Changed the from-scratch ISO assembly to append the ESP as a GPT partition
+    firmware can address. The reference ISO had produced no GPT at all:
+    --efi-boot <path> expands to -eltorito-alt-boot
+    -e <path> -no-emul-boot -eltorito-alt-boot, that trailing token closes the
+    entry, and so the -isohybrid-gpt-basdat emitted after it had no current
+    boot image left to promote. xorriso -report_system_area printed an MBR and
+    nothing else and fdisk called the label "dos". EDK2 carries no ISO9660
+    driver, so the firmware was left with an ESP it could not read sitting as a
+    file inside the ISO9660 tree, and OVMF said so: failed to load Boot0002 ...
+    Not Found, then No bootable option or device was found. The ESP is now
+    appended as a GPT partition with the El Torito EFI entry aimed at that
+    partition -- -append_partition 2 0xef <esp> -appended_part_as_gpt and
+    -e --interval:appended_partition_2:all:: -- which is the shape grub-mkrescue
+    writes, the shape the Ubuntu images ship, and the shape
+    boot_args_from_report() could already read long before anything here
+    produced it. Measured on ovmf 2026.02 / QEMU 10.2.1 from one 1.35 GB tree,
+    a separately constructed audit variant -- not yet a fresh authenticated v2
+    build -- got BdsDxe: loading Boot0002 followed by starting Boot0002. With
+    mmx64.efi put in place of BOOTX64.EFI, MokManager drew its full Shim UEFI
+    key management UI and counted down. A deliberately truncated ESP in the
+    same harness reported Not Found, so the negative direction is instrumented
+    too. This establishes readable media and nothing past it -- shim then fails
+    to read grubx64.efi off that volume with "Unexpected return from initial
+    read: Device Error", which is a separate defect and not one any xorriso
+    argument list can fix. The same function also paired the wrong two halves
+    of two bootloaders: isohdpfx.bin is ISOLINUX's MBR and was chosen
+    unconditionally, including in front of GRUB's
+    boot/grub/i386-pc/eltorito.img, so the MBR is now picked next to the BIOS
+    image it chains to and a GRUB tree gets --grub2-mbr boot_hybrid.img.
+  * Taught the boot proof to recognise a refusal instead of waiting one out.
+    _validate_serial_log scanned only for success markers, so a verdict the
+    firmware had already delivered bought nothing: measured on the reference
+    derivative, OVMF said "No bootable option or device was found." about three
+    minutes into a 1200 s proof, and the proof sat out the remaining seventeen
+    before reporting "did not emit expected serial marker(s): login:, Reached
+    target" -- blaming its own deadline for a decision made at minute three,
+    and never quoting the one line that said what was wrong. BOOT_REFUSALS now
+    carries the four lines a layer prints only once it has given up, one each
+    for the firmware, GRUB, casper and the kernel, and the wait ends the moment
+    one appears. Since that message is what reaches the notes field of
+    boot-proof.json, quoting the firmware there is also what puts the reason in
+    the report. Deliberately absent: "failed to load Boot####", which firmware
+    prints once per boot option, so a machine with a disk as well as a CD
+    prints it for the disk on its way to booting the CD.
+  * Stopped shipping a pre-build verdict inside a finished build report.
+    ISO-BUILD.json is what the golden path publishes as evidence, and for a
+    green local run it carried output_exists: true and output_size: 1348337664
+    beside a doctor block reading "No output ISO has been produced yet. Run an
+    executing build, not only a dry-run" -- with render_text printing that
+    sentence under "Doctor:", eight lines below the size of the ISO it claimed
+    did not exist. The doctor was diagnosed once, before the build, because it
+    is the gate that decides whether to build at all, and that one value was
+    then serialised into the report written afterwards. It is now diagnosed a
+    second time to describe the tree the rest of the report describes, which
+    costs a stat and a few has_binary lookups since every finding that moves
+    during a build is keyed on the output ISO existing.
   * Corrected a false reassurance in docs/packaging-release.md. It said that
     keys.openpgp.org and keyserver.ubuntu.com both answering 404 for the
     signing key's fingerprint meant nothing personal was published yet, so
@@ -56,6 +171,17 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     for them now would claim a fact that does not exist. This cadence was
     impossible here until the vendor fix above, since an entry left UNRELEASED
     for a cycle mis-graded the package for that whole cycle.
+  * Removed the release-tag ordering deadlock. The tag procedure required
+    origin/main to equal HEAD before it would create a tag, while the changelog
+    ratchet requires the finalized stanza to be tagged before the source gate
+    can pass. That contradicted the repository's staging sequence and forced a
+    push to main before the proof was complete. make tag now accepts develop
+    only when local main is its ancestor, passes that branch explicitly to gbp,
+    checks origin only for an existing tag-name collision, and creates and
+    verifies the signed tag locally without running any push. Pushing develop,
+    fast-forwarding and pushing main, and publishing the tag remain separate
+    operator-authorized actions. A policy test rejects any future git push in
+    the tag script.
   * Wrote down the commit subject convention and gated it. All 58 subjects in
     this repository already carried a Conventional Commits type prefix and
     nothing documented, hooked or asserted it. The optional scope field stays
@@ -185,12 +311,12 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     lintian is always invoked as --profile debian. The vendor has been
     resolved from the changelog suite since 0.3.5-17; measured on this tree
     the invocation is --profile ubuntu.
-  * Added the golden path: the one chain this project now walks for real.
-    .github/workflows/golden-path.yml bootstraps a rootfs from the archive,
-    packs it, builds an ISO, boots that ISO under UEFI firmware, and builds
-    the .deb through lintian and the autopkgtest suite debian/tests has
-    declared since long before anything ran it. Weekly on a schedule and on
-    workflow_dispatch, never on push: docs/debian-canonical-compliance.md
+  * Added the authorized golden-path execution harness, intended to bootstrap a
+    rootfs from the archive, pack it, build an ISO, require a UEFI QEMU runtime
+    proof, and build the .deb through lintian and the autopkgtest suite
+    debian/tests has declared since long before anything ran it. No run has yet
+    completed that chain. Weekly on a schedule and on workflow_dispatch, never
+    on push: docs/debian-canonical-compliance.md
     forbids producing build artifacts without explicit authorization and
     CONTRIBUTING.md says never build to verify a change, so committing one
     workflow for one named derivative is that authorization given once
@@ -287,9 +413,10 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     topic branch is listed by path whether it is valid or not. Two facts
     arrived together and one explanation was handed both. docs/golden-path.md
     now records the measurement in place of the inference.
-  * Walked the golden path for real, and made a failure arrive as data. Both
-    legs failed and neither said why, which was the finding. The ISO leg died
-    in the chroot on "env: 'apt-get': No such file or directory", exit 127,
+  * Executed the first real golden-path attempt and made its failure arrive as
+    data. It did not complete the path: both legs failed and neither said why,
+    which was the finding. The ISO leg died in the chroot on "env: 'apt-get':
+    No such file or directory", exit 127,
     and the log said "jq: Could not open file .../ISO-BUILD.json":
     run_iso_build let the CommandError out, so no report was written and the
     assertion failed on the absence of the file rather than on the cause,
@@ -319,7 +446,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     docs/build-pipeline.md. The rule each illustrated is unchanged.
   * Named the suite the golden path builds, instead of inheriting whatever is
     current. Measured in the first run's log: the ISO leg ran on
-    runs-on: ubuntu-latest, which is noble, so 2024's mmdebstrap 1.4.3-6, apt
+    runs-on: ubuntu-latest, an older LTS, so a 2024 mmdebstrap 1.4.3-6, apt
     and dpkg were asked to assemble resolute; the package leg ran in
     container: ubuntu:devel, which since 26.04 released is stonking, so a
     resolute package was built, linted and autopkgtested one release past the
@@ -404,6 +531,35 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     the evidence bundle before and independently of the check for a dist
     directory -- a build that dies early is at once the run whose log matters
     most and the run with no dist to publish.
+  * Asked the bootstrap for apt by name, which is why the golden path's first
+    real run produced a rootfs without one. --variant=minbase names two
+    different package sets: debootstrap(8) defines it as "required packages and
+    apt" and adds apt itself, while mmdebstrap(1) defines required/minbase as
+    the essential set plus Priority:required and never mentions apt. core/
+    bootstrap.py passed the same string to whichever tool has_binary found. It
+    looked equivalent only because package sets also pull "the direct and
+    indirect hard dependencies" (mmdebstrap(1), VARIANTS), so apt kept arriving
+    as another package's dependency; in the resolute index apt is
+    Priority:important, so minbase excludes it by definition and included it
+    only by accident. mmdebstrap exited 0 in 23 seconds having installed
+    precisely what was asked, and a chroot said env: 'apt-get': No such file or
+    directory five phases later. The include list now reads
+    apt,ca-certificates, a no-op for debootstrap and the whole point for
+    mmdebstrap, so neither the tool, its version nor the archive's priority
+    fields decide whether the next phase has a package manager. This retires
+    the version-difference explanation recorded in docs/golden-path.md and in
+    tests/test_bootstrap_requires_a_package_manager.py, which was wrong.
+  * Named the runner every CI job uses instead of inheriting it. Five jobs
+    across ci.yml and golden-path.yml read runs-on: ubuntu-latest, which is
+    whatever GitHub currently promotes and is an older LTS, so they exercised
+    another release's mmdebstrap, apt, dpkg and python3 against a codebase
+    whose development cycle is resolute. All five now name ubuntu-26.04. The
+    existing gate could not catch this: it compares container images with the
+    changelog, two of the five jobs have no container, and for the rest the
+    host label and the image were never compared with each other. Two new
+    tests close that -- no job may take a floating runner label, and every
+    label must be the release debian/changelog targets -- and both fail if a
+    single job is set back to ubuntu-latest.
 
  -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
 

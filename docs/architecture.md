@@ -2,11 +2,14 @@
 
 DistroForge is split into small service modules around a single build pipeline. The
 target product architecture is defined in `docs/distroforge-platform-architecture.md`:
-a reliable source-to-ISO reference path first, then optional advanced modules that
+a canonical source-to-ISO reference path first, then optional advanced modules that
 preserve the same contracts. The current structural debt and extraction tracks are
 tracked in `docs/platform-refactor-audit.md`. Every layer below is bound by the golden
 rule in `docs/debian-canonical-compliance.md`: all work stays strictly Debian-policy and
 Canonical-best-practices compliant.
+
+That is an architecture target, not a runtime verdict. Current build, firmware, GRUB,
+kernel and desktop evidence is recorded in `docs/iso-build-proof-ledger.md`.
 
 ## Layers
 
@@ -198,7 +201,7 @@ The codebase is being moved toward thinner entrypoints and domain-specific optio
 New features should prefer `core/` services plus small command adapters instead of growing
 `cli.py` or `ui/main_window.py`. Optional modules must be gated by validation, dry-run
 history, CLI/GUI parity, documentation, and regression tests before they are treated as
-part of the reliable source-to-ISO path.
+part of the canonical source-to-ISO path.
 
 ## GUI Parity
 

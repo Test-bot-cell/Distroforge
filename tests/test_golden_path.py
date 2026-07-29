@@ -466,13 +466,69 @@ def test_every_container_is_the_suite_debian_changelog_targets() -> None:
         )
 
 
+def _runners() -> list[tuple[str, str, object]]:
+    """Every (workflow, job, runs-on) across both workflows."""
+    return [
+        (path.name, name, job.get("runs-on"))
+        for path in (WORKFLOW, CI_WORKFLOW)
+        for name, job in _load(path)["jobs"].items()
+    ]
+
+
+def test_no_job_runs_on_a_floating_runner_label() -> None:
+    """The sibling of the container gate, for the host rather than the image.
+
+    ``ubuntu-latest`` is whatever GitHub currently promotes, which is an older LTS, and
+    five jobs across the two workflows took it. This project's development cycle is
+    resolute, so those jobs were exercising another release's mmdebstrap, apt, dpkg and
+    python3 against a resolute codebase -- and the first real golden-path run did exactly
+    that: a 2024 archive and ``mmdebstrap 1.4.3-6`` asked to assemble a 2026 suite.
+
+    The container gate above could not catch it. Two of the five jobs have no container at
+    all, and for the other two the host label and the image were never compared with each
+    other. This is the missing comparison, and it is deliberately about the *label*:
+    checking the suite at run time is the job of the step that reads /etc/os-release, and
+    a reviewer reading the YAML has to be able to see it too.
+    """
+    runners = _runners()
+    assert runners, "both workflows lost their jobs"
+    for workflow, job, label in runners:
+        assert isinstance(label, str), (
+            f"{workflow}: job {job!r} has runs-on={label!r}; a matrix or list of labels "
+            "here would slip past this gate, so state one label"
+        )
+        assert label not in {"ubuntu-latest", "ubuntu-rolling", "ubuntu-devel"}, (
+            f"{workflow}: job {job!r} runs on {label!r}, which names no release -- it "
+            "names whatever GitHub promotes on the day the run happens"
+        )
+
+
+def test_every_runner_is_the_release_debian_changelog_targets() -> None:
+    """And the named label is the release this source is packaged for: resolute.
+
+    Held to the changelog rather than to a literal, exactly as the container gate is, so
+    the runner label, the container image, distroforge/data/releases.toml and
+    debian/changelog stay one fact instead of four copies of it.
+    """
+    suite = debian_changelog_suite(REPO_ROOT)
+    versions = {release.codename: version for version, release in load_releases().items()}
+    assert suite in versions, f"debian/changelog targets {suite!r}, unknown to releases.toml"
+    expected = f"ubuntu-{versions[suite]}"
+    for workflow, job, label in _runners():
+        assert label == expected, (
+            f"{workflow}: job {job!r} runs on {label!r} while debian/changelog targets "
+            f"{suite}; {expected} names that release"
+        )
+
+
 def test_the_runner_is_the_suite_the_derivative_bootstraps() -> None:
     """The ISO leg's runner image must be the release it asks mmdebstrap for.
 
-    The first run bootstrapped resolute on ``ubuntu-latest``, which is 24.04: its log
-    reads ``azure.archive.ubuntu.com/ubuntu noble`` and ``mmdebstrap 1.4.3-6``, the 2024
-    archive's version, assembling a suite from 2026. It exited 0 with a rootfs that had
-    ``env`` and no ``apt-get``, and the build died five phases later inside the chroot.
+    The first run bootstrapped resolute with a toolchain inherited from a floating
+    ``ubuntu-latest``: its log reads a 2024 archive and ``mmdebstrap 1.4.3-6``, asked to
+    assemble a suite from 2026. It exited 0 with a rootfs that had ``env`` and no
+    ``apt-get``, and the build died five phases later inside the chroot. Resolute (26.04)
+    is this project's development cycle; every runner label is pinned to it.
 
     Two labels, one floating and one fixed, never compared -- the same defect as the
     container above. Both halves are checked: the label here, so a reviewer sees it, and

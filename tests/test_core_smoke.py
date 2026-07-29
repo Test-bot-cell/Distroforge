@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import pathlib
 
 import pytest
-from conftest import make_rootfs
+from conftest import make_rootfs, write_valid_boot_proof, write_valid_build_evidence
 
 from distroforge.core import squashfs as squashfs_module
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
@@ -46,16 +45,16 @@ class RecordingExecuteRunner(CommandRunner):
 
 def test_repository_parser_preserves_signed_by_option() -> None:
     repository = parse_repository_line(
-        "deb [signed-by=/usr/share/keyrings/example.gpg] https://example.invalid/ubuntu noble main universe"
+        "deb [signed-by=/usr/share/keyrings/example.gpg] https://example.invalid/ubuntu resolute main universe"
     )
 
     assert repository.uri == "https://example.invalid/ubuntu"
-    assert repository.suite == "noble"
+    assert repository.suite == "resolute"
     assert repository.components == ("main", "universe")
     assert repository.signed_by == "/usr/share/keyrings/example.gpg"
     assert repository.source_line() == (
         "deb [signed-by=/usr/share/keyrings/example.gpg] "
-        "https://example.invalid/ubuntu noble main universe"
+        "https://example.invalid/ubuntu resolute main universe"
     )
 
 
@@ -116,7 +115,9 @@ def test_iso_build_dry_run_writes_iso_build_report(monkeypatch, tmp_path) -> Non
     assert report.execute is False
     # The builder writes {name}-{version}.iso, so every consumer defaults there.
     assert report.output_iso == project.output_dir / "IsoPath-26.04.iso"
-    assert (project.output_dir / "ISO-BUILD.json").exists()
+    assert report.report.exists()
+    assert (project.output_dir / "ISO-BUILD.plan.json").exists()
+    assert not (project.output_dir / "ISO-BUILD.json").exists()
 
 
 def test_iso_build_execute_requires_real_output_iso(monkeypatch, tmp_path) -> None:
@@ -211,24 +212,8 @@ def test_iso_accept_accepts_built_iso_with_evidence(tmp_path) -> None:
     iso = default_output_iso(project)
     iso.parent.mkdir(parents=True, exist_ok=True)
     iso.write_bytes(b"accepted iso")
-    sha = hashlib.sha256(iso.read_bytes()).hexdigest()
-    (project.output_dir / "ISO-BUILD.json").write_text(json.dumps({
-        "project": str(project.root),
-        "output_iso": str(iso),
-        "status": "built",
-        "output_exists": True,
-        "output_size": iso.stat().st_size,
-        "output_sha256": sha,
-    }), encoding="utf-8")
-    (project.output_dir / "SHA256SUMS").write_text(f"{sha}  {iso.name}\n", encoding="utf-8")
-    (project.output_dir / "BUILDINFO").write_text("build\n", encoding="utf-8")
-    (project.output_dir / "distroforge-provenance.json").write_text("{}\n", encoding="utf-8")
-    (project.output_dir / "report.html").write_text("<html></html>\n", encoding="utf-8")
-    (project.output_dir / "boot-proof.json").write_text(json.dumps({
-        "status": "ready",
-        "selected_backend": "iso-scan",
-        "proof_level": "structural",
-    }), encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
 
     report = accept_iso(project, BuildOptions())
 
@@ -499,7 +484,7 @@ def test_bootstrap_reuse_sheds_stale_apt_overlays(tmp_path) -> None:
         apt / "apt.conf.d/01distroforge-proxy": 'Acquire::http::Proxy "http://dead.invalid";\n',
         apt / "apt.conf.d/02distroforge-cache": 'Acquire::http::Proxy "http://dead.invalid";\n',
         apt / "sources.list.d/distroforge-track.list": "deb https://archive.ubuntu.com/ubuntu devel main\n",
-        apt / "sources.list.d/distroforge-graphics.list": "deb https://ppa.invalid noble main\n",
+        apt / "sources.list.d/distroforge-graphics.list": "deb https://ppa.invalid resolute main\n",
         apt / "preferences.d/distroforge-proposed": "Package: *\n",
     }
     for path, text in overlays.items():
@@ -573,7 +558,7 @@ def test_ppa_reconfigure_sheds_a_dropped_ppas_residue(tmp_path) -> None:
     kept_source = sources / "distroforge-keep-tools.list"
     track_list = sources / "distroforge-track.list"
     for path in (dropped_source, kept_source, track_list):
-        path.write_text("deb https://ppa.invalid noble main\n", encoding="utf-8")
+        path.write_text("deb https://ppa.invalid resolute main\n", encoding="utf-8")
     dropped_keyring.write_bytes(b"stale-key")
 
     PpaService(

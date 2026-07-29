@@ -371,7 +371,14 @@ def test_bootstrap_installs_a_ca_store_so_the_chroot_can_speak_https(tmp_path) -
     # verify failed", because a minbase rootfs has no CA store and every archive URL
     # here is https -- while ca-certificates sat in the package list that update was
     # fetching for.
-    assert "--include=ca-certificates" in bootstrap
+    #
+    # Asserted as a member of the include list rather than as the whole option, because
+    # this test owns the CA store and not the list: apt joined it later, for its own
+    # reason, and spelling the option out here made an unrelated fix look like a
+    # regression in TLS. tests/test_bootstrap_requires_a_package_manager.py owns the rest.
+    includes = [arg for arg in bootstrap if arg.startswith("--include=")]
+    assert len(includes) == 1, includes
+    assert "ca-certificates" in includes[0].removeprefix("--include=").split(",")
     assert bootstrap[-1].startswith("https://")
 
 

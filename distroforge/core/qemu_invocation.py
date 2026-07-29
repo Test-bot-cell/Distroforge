@@ -76,7 +76,7 @@ def kvm_is_usable() -> bool:
 
     That used to read "no device -- every GitHub runner --", which was an assumption
     dressed as an example. The first real run of the weekly golden path measured
-    ``crw-rw---- 1 root kvm 10, 232 /dev/kvm`` on ``ubuntu-latest``, so the parenthesis
+    ``crw-rw---- 1 root kvm 10, 232 /dev/kvm`` on a GitHub runner, so the parenthesis
     was false and is gone. Whether the flag is added there is now what it should always
     have been: whatever access(2) says at the time, on that machine.
     """

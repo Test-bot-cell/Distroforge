@@ -99,7 +99,7 @@ def _service(project, options: BootstrapOptions | None = None) -> BootstrapServi
 
 
 def test_a_tree_from_another_suite_is_refused_instead_of_silently_reused(tmp_path) -> None:
-    """The defect, reproduced: this used to reuse a noble tree for a resolute build.
+    """The defect, reproduced: this used to reuse a questing tree for a resolute build.
 
     Both markers the old check looked at are present, so it said "valid, reuse". The
     tree says in its own os-release that it is something else. The refusal has to name
@@ -107,13 +107,13 @@ def test_a_tree_from_another_suite_is_refused_instead_of_silently_reused(tmp_pat
     it is an instruction to guess.
     """
     project = Project.create("Retargeted", tmp_path / "retargeted", "26.04")
-    _tree(project.squashfs_root, codename="noble")
+    _tree(project.squashfs_root, codename="questing")
 
     with pytest.raises(ValueError) as caught:
         _service(project).create_rootfs()
 
     message = str(caught.value)
-    assert "noble" in message and "resolute" in message, message
+    assert "questing" in message and "resolute" in message, message
     assert "different base" in message, message
 
 
@@ -151,7 +151,7 @@ def test_the_recorded_base_catches_what_a_tree_cannot_be_asked_about(tmp_path) -
         ("variant", "buildd"),
         ("mirror", "https://example.invalid/ubuntu"),
         ("family", "debian"),
-        ("codename", "noble"),
+        ("codename", "questing"),
     ):
         _stamp(root, **{field_name: wrong})
         verdict = rootfs_verdict(root, project.release, BootstrapOptions())
@@ -180,14 +180,14 @@ def test_a_record_this_code_cannot_read_falls_back_rather_than_deciding(tmp_path
     """
     project = Project.create("Unreadable", tmp_path / "unreadable", "26.04")
     root = project.squashfs_root
-    _tree(root, codename="noble")
+    _tree(root, codename="questing")
     stamp = bootstrap_stamp_path(root)
 
-    for content in ("{not json", "[]", '"a string"', '{"stamp_version": 99, "codename": "noble"}'):
+    for content in ("{not json", "[]", '"a string"', '{"stamp_version": 99, "codename": "questing"}'):
         stamp.write_text(content, encoding="utf-8")
         verdict = rootfs_verdict(root, project.release, BootstrapOptions())
         assert verdict.state == "mismatch", f"{content!r} short-circuited the suite check"
-        assert "noble" in verdict.reason, verdict.reason
+        assert "questing" in verdict.reason, verdict.reason
 
 
 def test_a_tree_that_declares_nothing_is_reused_and_says_it_was_not_verified(tmp_path) -> None:
@@ -216,9 +216,9 @@ def test_the_identity_is_read_from_the_vendor_copy_too(tmp_path) -> None:
     right one. Consolidated on the reader that finds both.
     """
     project = Project.create("VendorOnly", tmp_path / "vendor-only", "26.04")
-    _tree(project.squashfs_root, codename="noble", vendor_only=True)
+    _tree(project.squashfs_root, codename="questing", vendor_only=True)
 
-    assert read_os_release(project.squashfs_root)["VERSION_CODENAME"] == "noble"
+    assert read_os_release(project.squashfs_root)["VERSION_CODENAME"] == "questing"
     assert rootfs_verdict(project.squashfs_root, project.release, BootstrapOptions()).state == (
         "mismatch"
     )
@@ -307,7 +307,7 @@ def test_the_dry_run_report_asks_the_build_instead_of_re_deriving_the_answer(tmp
     must not announce a reuse the build will refuse.
     """
     project = Project.create("Reported", tmp_path / "reported", "26.04")
-    _tree(project.squashfs_root, codename="noble")
+    _tree(project.squashfs_root, codename="questing")
 
     codes = {finding.code for finding in _findings(project)}
 

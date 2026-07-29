@@ -134,10 +134,13 @@ build preflight finds missing required tools.
 common failure areas, and maps to the Start job result shown after a failed beginner build.
 `beginner-iso PROJECT --repair-release-artifacts` maps to **Repair release artifacts** on
 Start. It regenerates only derivable files from an existing ISO: `SHA256SUMS`, `BUILDINFO`,
-`distroforge-provenance.json`, and the HTML report. It does not invent boot proof.
-`beginner-iso PROJECT --run-boot-proof` maps to **Run boot proof**. The release gate treats
-boot proof as ready only when an executed proof report such as `qemu-lab-report.json`
-or `boot-proof.json` exists.
+`distroforge-provenance.json`, and the HTML report. Reconstructed provenance is explicitly
+labelled `attestation_kind: reconstructed`; it cannot replace matching build provenance or
+satisfy the publication gate by itself. The repair does not invent boot proof.
+`beginner-iso PROJECT --run-boot-proof` maps to **Run boot proof**. The release gate accepts
+boot evidence only when a validated `distroforge.boot-proof.v2` binds the exact ISO to a
+validated `distroforge.qemu-lab.v2` runtime report through at least `login_prompt`. File
+presence alone is never sufficient.
 `poweruser-iso PROJECT --apply-safe-defaults --dry-run` maps to **Prepare power user ISO
 path**. It extends the same source-to-ISO path with guarded advanced modules: deb822 mirrors,
 autoinstall, explicit systemd service intent, auto drivers and rollback snapshots.
@@ -186,8 +189,10 @@ artifacts when an ISO exists, creates the publish bundle, plans or executes sign
 writes notes, verifies the bundle and records `RELEASE-PIPELINE.json`.
 `boot-proof PROJECT --iso PATH --backend auto` maps to **Boot Proof** on Artifacts. It
 tries QEMU runtime proof first, falls back to structural `iso-scan` when QEMU is unavailable
-or blocked, and writes a normalized `boot-proof.json`. The release gate only accepts that
-proof when its status is `ready`, not merely `planned` or `review`.
+or blocked, and writes a normalized `boot-proof.json`. A structurally ready `iso-scan`
+remains useful diagnostic evidence but is blocking for publication. Release acceptance
+requires exact-ISO, digest-linked QEMU runtime evidence through `login_prompt`; a `ready`
+status by itself is insufficient.
 Its `--firmware bios|uefi` and `--secure-boot` map to the **VM firmware** combo and the
 **Secure Boot** checkbox on Virtualization Lab, not to controls of their own on Artifacts:
 both CLI flags and both widgets set the same prebuild-VM fields, and the Artifacts button

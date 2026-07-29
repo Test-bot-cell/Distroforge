@@ -626,7 +626,7 @@ def _prebuild_vm_options(args: argparse.Namespace) -> PrebuildVmOptions:
         serial_log=args.prebuild_vm_serial_log,
         screenshot=not args.prebuild_vm_no_screenshot,
         screenshot_name=args.prebuild_vm_screenshot_name,
-        success_patterns=args.prebuild_vm_success_pattern or ["login:", "Reached target"],
+        success_patterns=args.prebuild_vm_success_pattern or ["login:"],
         qmp_socket=args.prebuild_vm_qmp_socket,
         pid_file=args.prebuild_vm_pid_file,
         report_name=args.prebuild_vm_report_name,

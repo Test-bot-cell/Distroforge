@@ -58,11 +58,13 @@ only. No test has ever executed `debootstrap`, `mksquashfs`, `unsquashfs`,
 Nothing here verifies that a real ISO builds, boots, or installs, or that a real
 `.deb` passes `lintian`, and that is the honest boundary of *this* gate.
 
-It is no longer the boundary of the project. That confirmation used to be a manual
-maintainer step and nothing else; it now also runs weekly, outside the suite, in
-`.github/workflows/golden-path.yml` — a real bootstrap, a real ISO, a real UEFI boot and a
-real `.deb` through `lintian` and its own autopkgtest suite. See `docs/golden-path.md`.
-Install-media verification on real hardware is still a manual maintainer step.
+The project now has a weekly executing harness outside the suite,
+`.github/workflows/golden-path.yml`. It is configured to attempt a real bootstrap, ISO
+build, UEFI runtime proof and Debian package validation; the existence and source tests of
+that workflow are not a successful runtime verdict. The first run stopped before a
+complete ISO proof, and no digest-linked v2 evidence currently proves UEFI-to-login or the
+desktop. See `docs/golden-path.md` and `docs/iso-build-proof-ledger.md`. Install-media
+verification on real hardware is still a manual maintainer step.
 
 Line coverage is 74.7% overall (21351 of 28586 statements). `distroforge/ui/` is
 the weakest surface at 58.6%: the GUI is held by offscreen reachability,

@@ -14,7 +14,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 26.04 by name, never `ubuntu-latest`. This project's development cycle is resolute
+    # (26.04); `ubuntu-latest` is whatever GitHub currently promotes, which is an older
+    # LTS, so every job that took it was testing the wrong distribution's toolchain
+    # against a resolute codebase. Named here, and in every other job in this file and in
+    # golden-path.yml, so a runner migration cannot silently change what we test on.
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -61,7 +66,7 @@ jobs:
     # privilege and minutes, and every gate below is meaningful without one.
     # The package is built for real, with lintian and its own autopkgtest suite,
     # once a week in golden-path.yml -- not never, just not on every push.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -142,12 +147,13 @@ jobs:
     # python3 and its python3-* packages. Adding 3.14 to the matrix does not cover
     # this case.
     #
-    # It runs in a container of the target suite, not on the runner image: the
-    # runner is 24.04, whose python3-pydantic is 1.10 -- no field_validator, no
-    # ConfigDict -- so every test module failed to import. That was not a false
-    # alarm but a mislabelled one: the archive really is too old, and the missing
-    # piece was the versioned dependency, now declared in debian/control. The
-    # container is the suite debian/changelog targets.
+    # It runs in a container of the target suite rather than relying on the runner image
+    # alone, so the suite under test is stated in one place and cannot be inherited. An
+    # older archive's python3-pydantic is 1.10 -- no field_validator, no ConfigDict -- and
+    # every test module failed to import against it. That was not a false alarm but a
+    # mislabelled one: the archive really was too old, and the missing piece was the
+    # versioned dependency, now declared in debian/control. The container is the suite
+    # debian/changelog targets: resolute.
     #
     # Which it was not, while it said `ubuntu:devel`. The golden path's first run measured
     # that image resolving to `stonking` -- 26.10, whatever is currently in development --
@@ -156,7 +162,7 @@ jobs:
     # named. tests/test_golden_path.py holds the image to the changelog so the two cannot
     # drift again, and python3-pydantic there is 2.12.5-2, which is what makes the
     # (>= 2.7) in debian/control satisfiable at all.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     container: ubuntu:26.04
     timeout-minutes: 20
     steps:

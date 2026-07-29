@@ -5,7 +5,8 @@ It does not clone `/`, copy user homes, or package secrets into an ISO.
 
 ## Modes
 
-1. **Build from official base**: the existing verified base, chroot, squashfs, ISO pipeline.
+1. **Build from official base**: the standard base, chroot, squashfs and ISO workflow;
+   its current runtime proof level is tracked separately in `iso-build-proof-ledger.md`.
 2. **Capture installed system**: scan a mounted system and export a sanitized YAML profile.
 3. **Rebuild from captured profile**: create a normal DistroForge project from that profile.
 4. **GUI review**: inspect captured, ignored, dangerous, and not-reproducible findings before use.

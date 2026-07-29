@@ -165,8 +165,8 @@ def _staged_iso_root(tmp_path: Path, *, bios: bool = True, efi: bool = True) -> 
 
 
 def test_from_scratch_layout_boots_both_firmwares(tmp_path, monkeypatch) -> None:
-    mbr = tmp_path / "isohdpfx.bin"
-    # Pinned, because whether the runner has isolinux installed must not change the args.
+    mbr = tmp_path / "boot_hybrid.img"
+    # Pinned, because whether the runner has grub-pc-bin installed must not change the args.
     monkeypatch.setattr(iso_module, "_first_existing", lambda *paths: mbr)
     root = _staged_iso_root(tmp_path)
 
@@ -174,16 +174,48 @@ def test_from_scratch_layout_boots_both_firmwares(tmp_path, monkeypatch) -> None
 
     assert layout.description == "BIOS+UEFI"
     assert layout.xorriso_args() == [
-        "-isohybrid-mbr", str(mbr),
+        "--grub2-mbr", str(mbr),
         "-b", "boot/grub/i386-pc/eltorito.img",
         "-c", "boot.catalog",
         "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
-        # --efi-boot, not a bare -e: its trailing -eltorito-alt-boot closes the entry so
-        # the BIOS -boot-load-size above cannot bleed into the EFI one.
-        "--efi-boot", "boot/grub/efi.img",
-        "-isohybrid-gpt-basdat",
+        # The ESP as an appended GPT partition, with the El Torito EFI entry aimed at the
+        # partition instead of at a file in the ISO9660 tree. This asserted the opposite
+        # for as long as it existed -- `--efi-boot boot/grub/efi.img` then
+        # `-isohybrid-gpt-basdat` -- and that ISO does not boot: EDK2 has no ISO9660
+        # driver, the trailing -eltorito-alt-boot inside --efi-boot had already closed the
+        # entry so no GPT was written, and OVMF answered `failed to load Boot0002 ... Not
+        # Found` / `No bootable option or device was found.` This shape gets `loading` and
+        # `starting Boot0002` off the same tree.
+        "-append_partition", "2", "0xef", str(root / "boot/grub/efi.img"),
+        "-appended_part_as_gpt",
+        "-eltorito-alt-boot",
+        "-e", "--interval:appended_partition_2:all::", "-no-emul-boot",
         "-partition_offset", "16",
     ]
+
+
+def test_mbr_boot_code_matches_the_bios_image_it_chains_to(tmp_path, monkeypatch) -> None:
+    """ISOLINUX trees get ISOLINUX's MBR, GRUB trees get GRUB's, and never the reverse.
+
+    isohdpfx.bin was picked unconditionally, so a from-scratch tree -- which stages GRUB --
+    got ISOLINUX boot code spliced in front of boot/grub/i386-pc/eltorito.img. Two halves
+    of two different bootloaders, which is nobody's supported configuration, and no test
+    could see it because the MBR path was monkeypatched to one fixture either way.
+    """
+    monkeypatch.setattr(iso_module, "_first_existing", lambda *paths: Path(str(paths[0])))
+
+    grub_tree = BootLayout.detect(_staged_iso_root(tmp_path / "grub"))
+    assert grub_tree.mbr_option == "--grub2-mbr"
+    assert grub_tree.mbr_image == Path("/usr/lib/grub/i386-pc/boot_hybrid.img")
+
+    isolinux_root = _staged_iso_root(tmp_path / "isolinux", bios=False)
+    binary = isolinux_root / "isolinux/isolinux.bin"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\x00" * 512)
+    isolinux_tree = BootLayout.detect(isolinux_root)
+    assert isolinux_tree.mbr_option == "-isohybrid-mbr"
+    assert isolinux_tree.mbr_image == Path("/usr/lib/ISOLINUX/isohdpfx.bin")
+    assert isolinux_tree.bios_catalog == "isolinux/boot.cat"
 
 
 def test_efi_only_layout_omits_every_bios_only_option(tmp_path, monkeypatch) -> None:
@@ -195,13 +227,19 @@ def test_efi_only_layout_omits_every_bios_only_option(tmp_path, monkeypatch) -> 
     args = layout.xorriso_args()
 
     assert layout.description == "UEFI"
-    assert args == ["-e", "boot/grub/efi.img", "-no-emul-boot", "-partition_offset", "16"]
+    assert args == [
+        "-append_partition", "2", "0xef", str(root / "boot/grub/efi.img"),
+        "-appended_part_as_gpt",
+        "-e", "--interval:appended_partition_2:all::", "-no-emul-boot",
+        "-partition_offset", "16",
+    ]
     # man xorrisofs: -isohybrid-gpt-basdat "works only with -isohybrid-mbr", and
     # -eltorito-alt-boot may be omitted when no -b was given. Both used to be emitted
     # unconditionally, which nothing noticed while no path ever produced an EFI image.
     assert "-isohybrid-gpt-basdat" not in args
     assert "-eltorito-alt-boot" not in args
     assert "-isohybrid-mbr" not in args
+    assert "--grub2-mbr" not in args
 
 
 def test_rebuild_refuses_a_tree_with_no_bootable_amorce(tmp_path) -> None:

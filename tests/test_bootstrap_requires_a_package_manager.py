@@ -16,15 +16,23 @@ bootstrap in the log to blame.
 So this file pins both ranges of the same defect: the bootstrap must be checked where it
 happens, and a tree with no package manager must never be graded reusable.
 
-Note what is *not* claimed here. The cause of that run's missing apt is still open.
-``minbase`` does not mean the same thing to the two tools this code can call --
-debootstrap(8) says "required packages and apt", mmdebstrap(1) says the essential set
-plus Priority:required, which does not mention apt -- but measured on a resolute host,
-``mmdebstrap --simulate --verbose --variant=minbase --include=ca-certificates resolute``
-resolves 129 packages including ``apt (3.2.0)``, so with mmdebstrap 1.5.7 the two agree
-in practice. The run that broke used 1.4.3-6, from noble, against a resolute suite. These
-tests are deliberately indifferent to which explanation wins: whatever the cause, the
-build has to stop at the phase that produced the tree.
+That run's cause is no longer open, and the last group of tests here pins it. ``minbase``
+names two different package sets: debootstrap(8) defines it as "required packages and
+apt" and adds apt itself, while mmdebstrap(1) defines required/minbase as the essential
+set plus Priority:required, which never mentions apt. This code passes the same variant
+string to whichever tool ``has_binary`` finds, so what got installed depended on that.
+
+It looked equivalent because package sets also pull "the direct and indirect hard
+dependencies" (mmdebstrap(1), VARIANTS), so apt kept arriving as somebody else's
+dependency -- which is why a local simulate resolved 129 packages including
+``apt (3.2.0)`` while the golden path's tree had none. In the resolute index apt is
+Priority:important, so minbase excludes it by definition and included it only by
+accident. The fix is to ask for it by name; these tests pin that it is asked for whichever
+tool runs.
+
+The checks in the first group stay regardless. A tool exiting 0 over a tree that cannot
+host the next phase is a class of bug, not one instance of it, and they are the only
+place that compares what a bootstrap claimed against what it left.
 """
 
 from __future__ import annotations
@@ -160,6 +168,81 @@ def test_a_dry_run_does_not_invent_a_missing_rootfs(tmp_path) -> None:
     project = Project.create("Planned", tmp_path / "planned", "26.04")
 
     _service(project, CommandRunner(dry_run=True)).create_rootfs()
+
+
+class _RecordingBootstrap(CommandRunner):
+    """Runs nothing, remembers the argv, and decides which tool is on the host.
+
+    ``tool`` is what has_binary should answer for, because the branch under test is
+    exactly the one that picks between mmdebstrap and debootstrap.
+    """
+
+    def __init__(self, root, tool: str) -> None:
+        super().__init__(dry_run=False)
+        self.root = root
+        self.tool = tool
+
+    def has_binary(self, name: str) -> bool:  # type: ignore[override]
+        return name == self.tool
+
+    def run(self, spec: CommandSpec, check: bool = True) -> CommandResult:
+        self.history.append(spec)
+        if spec.argv and spec.argv[0] in {"mmdebstrap", "debootstrap"}:
+            make_rootfs(self.root)
+        return CommandResult(spec=spec, returncode=0, stdout="", stderr="")
+
+
+def _bootstrap_argv(runner: _RecordingBootstrap) -> tuple[str, ...]:
+    for spec in runner.history:
+        if spec.argv and spec.argv[0] in {"mmdebstrap", "debootstrap"}:
+            return spec.argv
+    raise AssertionError(f"no bootstrap command was run: {[s.argv for s in runner.history]}")
+
+
+@pytest.mark.parametrize("tool", ["mmdebstrap", "debootstrap"])
+def test_apt_is_asked_for_by_name_whichever_tool_runs(tmp_path, tool: str) -> None:
+    """The cause of the golden path's missing apt-get.
+
+    minbase means "essential plus Priority:required" to mmdebstrap and "required packages
+    and apt" to debootstrap. apt is Priority:important in resolute, so the mmdebstrap
+    reading excludes it, and it had been arriving only as another package's indirect
+    dependency. Asking by name is a no-op for debootstrap and the whole point for
+    mmdebstrap -- which is why this is parametrized rather than written once.
+    """
+    project = Project.create("Named", tmp_path / f"named-{tool}", "26.04")
+    runner = _RecordingBootstrap(project.squashfs_root, tool)
+
+    _service(project, runner).create_rootfs()
+
+    argv = _bootstrap_argv(runner)
+    assert argv[0] == tool, argv
+    includes = [arg for arg in argv if arg.startswith("--include=")]
+    assert len(includes) == 1, f"one include list, not {includes}"
+    named = includes[0].removeprefix("--include=").split(",")
+    assert "apt" in named, f"apt has to be requested, not hoped for: {argv}"
+    # The CA store stays for its own reason: an https archive and a chroot with no trust
+    # anchors. Losing it here would trade one broken phase for another.
+    assert "ca-certificates" in named, argv
+
+
+def test_the_two_tools_are_asked_for_the_same_packages(tmp_path) -> None:
+    """The invariant behind the fix, not just its two instances.
+
+    The defect was never "mmdebstrap is wrong"; it was that the request depended on which
+    binary happened to be installed. If a future include list diverges per tool, that
+    dependence is back and only one of the two paths gets exercised on any given host.
+    """
+    asked = {}
+    for tool in ("mmdebstrap", "debootstrap"):
+        project = Project.create("Same", tmp_path / f"same-{tool}", "26.04")
+        runner = _RecordingBootstrap(project.squashfs_root, tool)
+        _service(project, runner).create_rootfs()
+        argv = _bootstrap_argv(runner)
+        asked[tool] = sorted(
+            arg.removeprefix("--include=") for arg in argv if arg.startswith("--include=")
+        )
+
+    assert asked["mmdebstrap"] == asked["debootstrap"], asked
 
 
 def test_the_shared_rootfs_helper_satisfies_the_real_requirements(tmp_path) -> None:

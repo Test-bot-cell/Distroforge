@@ -83,12 +83,43 @@ def run_release_pipeline(
     else:
         stages.append(ReleasePipelineStage("repair-artifacts", "review", "ISO is missing; derivable release artifacts were not repaired."))
     bundle = create_publish_bundle(project, options, iso=iso, output_dir=output_dir, bundle_dir=bundle_dir)
-    stages.append(ReleasePipelineStage("publish-bundle", bundle.status, f"{bundle.bundle_dir}"))
-    first_sign = sign_release_bundle(project, bundle_dir=bundle.bundle_dir, execute=execute_signing, gpg_key=gpg_key)
-    stages.append(ReleasePipelineStage("sign-release-initial", first_sign.status, f"{len(first_sign.planned or first_sign.signed)} signature targets."))
+    bundle_detail = str(bundle.bundle_dir)
+    if bundle.missing:
+        bundle_detail += "; " + "; ".join(bundle.missing)
+    stages.append(
+        ReleasePipelineStage("publish-bundle", bundle.status, bundle_detail)
+    )
+    if not bundle.copied and any(
+        "bundle directory is not empty" in item for item in bundle.missing
+    ):
+        return ReleasePipelineReport(
+            project.root,
+            bundle.bundle_dir,
+            "blocked",
+            tuple(stages),
+        )
+    safe_execute_signing = execute_signing and not bundle.blocked
+    first_sign = sign_release_bundle(
+        project,
+        bundle_dir=bundle.bundle_dir,
+        execute=False,
+        gpg_key=gpg_key,
+    )
+    stages.append(
+        ReleasePipelineStage(
+            "manifest-plan",
+            first_sign.status,
+            f"{len(first_sign.planned)} signature targets.",
+        )
+    )
     notes = write_release_notes(project, bundle_dir=bundle.bundle_dir)
     stages.append(ReleasePipelineStage("release-notes", notes.status, f"{notes.notes.name}, {notes.changelog.name}"))
-    final_sign = sign_release_bundle(project, bundle_dir=bundle.bundle_dir, execute=execute_signing, gpg_key=gpg_key)
+    final_sign = sign_release_bundle(
+        project,
+        bundle_dir=bundle.bundle_dir,
+        execute=safe_execute_signing,
+        gpg_key=gpg_key,
+    )
     stages.append(ReleasePipelineStage("sign-release-final", final_sign.status, f"{len(final_sign.planned or final_sign.signed)} signature targets."))
     verify = verify_release_bundle(project, bundle_dir=bundle.bundle_dir)
     stages.append(ReleasePipelineStage("verify-release", verify.status, f"{len(verify.items)} verification checks."))

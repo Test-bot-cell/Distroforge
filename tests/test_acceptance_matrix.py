@@ -145,9 +145,8 @@ def test_cli_acceptance_matrix_runs_source_workflows_offline(
 
     pipeline = json.loads(_run_cli(capsys, ["release-pipeline", str(project_root), "--json"]))
     assert pipeline["status"] == "blocked"
-    assert {"publish-bundle", "sign-release-final", "verify-release"} <= {
-        stage["name"] for stage in pipeline["stages"]
-    }
+    assert [stage["name"] for stage in pipeline["stages"]][-1] == "publish-bundle"
+    assert "not empty" in pipeline["stages"][-1]["detail"]
 
     policy = json.loads(_run_cli(capsys, ["packaging-policy", str(ROOT), "--json"]))
     assert policy["blocked"] is False

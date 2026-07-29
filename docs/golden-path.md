@@ -1,11 +1,18 @@
 # The Golden Path
 
-The golden path is the one chain this project walks for real: a rootfs bootstrapped from
-the archive, packed, turned into an ISO, booted under UEFI firmware, and a `.deb` built,
-linted and put through its own autopkgtest suite. It lives in
+The golden path is the one chain this project is intended to walk for real: a rootfs
+bootstrapped from the archive, packed, turned into an ISO, booted under UEFI firmware,
+and a `.deb` built, linted and put through its own autopkgtest suite. It lives in
 `.github/workflows/golden-path.yml`, it runs weekly on a schedule and on demand, and it
-is the answer to a question the rest of the gates cannot answer: does the product work,
-as opposed to does the plan agree with itself.
+is where the project asks a question the rest of the gates cannot answer: does the
+product work, as opposed to does the plan agree with itself.
+
+That is its required scope, not its current verdict. The first real run failed before
+producing a complete ISO proof. The current local reference ISO is structurally valid but
+does not boot under UEFI; an audit variant reaches shim and then fails while shim reads
+`grubx64.efi`. No run has yet proved the full UEFI-to-login chain or the desktop. The
+authoritative milestone table is
+[iso-build-proof-ledger.md](iso-build-proof-ledger.md).
 
 Everything else in this project is level 0 or level 1 — unit tests and offline
 plan/dry-run tests, deliberately, so the suite stays offline, rootless and sub-second.
@@ -104,7 +111,7 @@ The compromises, with the measurements behind them:
 | `squashfs.compression: zstd` | 2.5× faster than the `xz` default for 1.5% more image | 37.1 s / 1466 MiB against 93.4 s / 1443 MiB, `docs/build-pipeline.md` |
 | no desktop | rootfs, squashfs and ISO already come to roughly 6 GB, against 14 GB of documented runner SSD | 2.6 GB minbase rootfs, `docs/build-pipeline.md` |
 
-## What each leg proves, and what it refuses to accept
+## What a completed, authenticated leg would prove, and what it refuses to accept
 
 **The ISO build** runs on the runner host rather than in a container, because the build
 mounts: it bind-mounts `/dev`, `/dev/pts`, `/proc` and `/sys` and puts a private tmpfs on
@@ -124,12 +131,13 @@ without booting it — a green report about a file, from the one step whose subj
 running kernel. Four claims are asserted separately, because `ready` alone does not
 distinguish a boot from a scan: `status`, `proof_level == "runtime"`, `selected_backend
 == "qemu"`, and `firmware == "uefi"`. The firmware matters on its own: a proof under BIOS
-only confirms the half that already worked.
+establishes BIOS only and says nothing about UEFI. The exact rebuilt ISO still requires
+digest-linked v2 proofs for both firmware paths.
 
-Whether the guest was accelerated is printed and not asserted. `/dev/kvm` is absent on
-GitHub-hosted runners, so the guest is emulated, the boot takes wall clock rather than
-CPU, and `--timeout 1200` replaces the 300-second default for that reason. TCG is a valid
-answer here; what matters is that the log records which one it was.
+Whether the guest was accelerated is printed and not asserted. The first measured
+GitHub-hosted runner exposed `/dev/kvm`; another image or runner class may not. The proof
+therefore records acceleration instead of assuming it, and `--timeout 1200` keeps the TCG
+case bounded. Either acceleration answer is valid; an unrecorded one is not.
 
 Secure Boot is **not** part of the weekly run yet. It needs the `.secboot` firmware
 paired with the `.ms` store of enrolled keys, and it is the rung above this one: the UEFI
@@ -172,26 +180,27 @@ same suite as an unprivileged builder, which is where those tests are covered.
 
 ## The evidence
 
-Both jobs upload an evidence bundle. The ISO leg publishes everything `dist/` holds
-except the images: `SHA256SUMS`, `BUILDINFO`, `INTEGRITY`, provenance, the HTML report,
-`ISO-BUILD.json`, `boot-proof.json`, `qemu-lab-report.json`, the serial log the kernel
-wrote, and the `publish-bundle` directory. The ISO itself and the copy `publish-bundle`
-makes of it are excluded on purpose and named on the way out rather than dropped in
-silence: they are roughly 1.5 GiB each, and a reader of a weekly run needs the digests
-and the reports, from which the image is reproducible. The package leg publishes the
-`.deb`, `.changes`, `.buildinfo` and the verdict JSON.
+Both jobs upload an evidence bundle. The ISO leg publishes the reports and append-only run
+directory: `SHA256SUMS`, `BUILDINFO`, provenance, `ISO-BUILD.json`,
+`boot-proof.json`, `qemu-lab-report.json`, serial output, command log and run manifest.
+The ISO itself has historically been excluded because of its size. That means the bundle
+can compare available ISO bytes with the recorded digest, but cannot reproduce or recover
+an absent ISO from a digest. A writable local run directory is append-only only by
+application policy; it is not cryptographically immutable or authenticated. That stronger
+claim requires a verified manifest signature or a trusted WORM/content-addressed anchor.
+Reproducibility remains unproved until two independent builds are compared, and historical
+evidence preservation requires retaining the corresponding ISO or a content-addressed
+artifact. The package leg publishes the `.deb`, `.changes`, `.buildinfo` and verdict JSON.
 
 `evidence-status` is given `--output-dir` explicitly, because its default is
 `dist/reports` while the build writes `dist`, so the default reports a successful build's
 own artifacts as missing.
 
-The bundle also carries `logs/`, the command log described in
-[build-pipeline.md](build-pipeline.md) — every command the build ran, its exit status, and a
-tail of what it printed. It is staged **before** the check for a `dist` directory and
-independently of it, because a build that dies early is at once the run whose log matters
-most and the run that has no `dist` to publish. For the same reason, a failing report makes
-the ISO step print the end of that log inline: `.failure` carries only the command that
-exited non-zero, and the first real failure here was *caused* by a command that exited zero.
+The command log now lives inside `dist/evidence/runs/<run_id>/commands.jsonl` (or
+`plans/<run_id>` for a dry-run), beside the reports it explains. Every command, exit
+status and bounded output tail is recorded by `RUN-MANIFEST.json`. That local closure is
+not authentication until the manifest is signed and verified or WORM-anchored. A failing
+run therefore keeps its own log without interleaving it with an earlier build.
 
 Before this, there was no command log to stage. `run_iso_build` accepted a `log_path` and
 both of its production callers passed nothing, so `_write_event` returned on its first line
@@ -203,12 +212,12 @@ and `distroforge iso-build --execute` recorded nothing at all. The default now l
 Dispatched 2026-07-27, and it is the reason several numbers on this page are now facts
 instead of quotes from documentation.
 
-The runner is not what the definition assumed. `ubuntu-latest` resolves to **noble**
-(24.04), with **145 GB** on `/` and **88 GB free** — not the 14 GB the Actions docs
-state, which `.github/golden-path/reference-derivative.yaml` had cited as the reason to
-skip a desktop. 4 CPUs, 15 GiB RAM. `sudo` authenticates with no prompt. Those figures
-are the noble image's; the ISO leg has since moved to `ubuntu-26.04`, so the next run
-re-measures them, which is why that step exists at all.
+The runner was not what the definition assumed. That run inherited a floating
+`ubuntu-latest`, an older LTS, and measured **145 GB** on `/` with **88 GB free** — not
+the 14 GB the Actions docs state, which `.github/golden-path/reference-derivative.yaml`
+had cited as the reason to skip a desktop. 4 CPUs, 15 GiB RAM. `sudo` authenticates with
+no prompt. Those figures are the previous image's; **every job now names `ubuntu-26.04`**,
+so the next run re-measures them, which is why that step exists at all.
 
 **`/dev/kvm` exists** — `crw-rw---- 1 root kvm 10, 232`. `core/qemu_invocation.py:74`
 says "a host with no device — every GitHub runner — never gets the flag"; that
@@ -246,26 +255,33 @@ downloading the artifact. All three assertion steps now report before they asser
 `jq -e … || jq -r` guard, which cannot abort and is how the ISO leg prints a failure
 before asserting there was none.
 
-Still open: **why** a `--variant=minbase` mmdebstrap produced a tree with `env` and no
-`apt-get`, in 23 seconds, exiting 0.
+Answered: a `--variant=minbase` mmdebstrap produced a tree with `env` and no `apt-get`, in
+23 seconds, exiting 0, because **nothing had asked it for apt**.
 
-One hypothesis was raised and refuted here rather than shipped. The two tools this code
-can call disagree in writing about that variant: debootstrap(8) defines `minbase` as
-"required packages **and apt**", while mmdebstrap(1) defines `required, minbase` as the
-essential set plus `?priority(required)` and does not mention apt — and in resolute's
-archive `apt` is `Priority: important`, neither `required` nor `Essential: yes`. So
-`create_rootfs` passing one string to whichever tool it finds looked like the whole bug.
-It is not: measured on a resolute host,
+The two tools this code can call disagree in writing about that variant. debootstrap(8)
+defines `minbase` as "required packages **and apt**" and adds apt itself; mmdebstrap(1)
+defines `required, minbase` as the essential set plus `?priority(required)`, and never
+mentions apt. In resolute's archive `apt` is `Priority: important` — neither `required`
+nor `Essential: yes` — so the mmdebstrap reading excludes it by definition. mmdebstrap
+exited 0 because it installed precisely what it was asked for.
 
-```
-mmdebstrap --simulate --verbose --variant=minbase --include=ca-certificates resolute
-```
+This was briefly written off here, on the grounds that a local simulate resolved **129**
+packages including `Inst apt (3.2.0 Ubuntu:26.04/resolute)` anyway. That measurement was
+real and the conclusion drawn from it was wrong. mmdebstrap(1)'s VARIANTS section says
+every package set "also include[s] the direct and indirect hard dependencies", so apt was
+arriving as some `Priority: required` package's dependency — an accident of the dependency
+graph, not a request. The run that broke resolved a different graph — an inherited
+`mmdebstrap` **1.4.3-6** against a resolute suite, which the pinned `ubuntu-26.04` runner
+fixes for its own reasons — and the accident did not hold.
 
-resolves **129** packages, `Inst apt (3.2.0 Ubuntu:26.04/resolute)` and
-`Inst ca-certificates` among them. With mmdebstrap 1.5.7 the two definitions agree in
-practice. The run that broke used **1.4.3-6**, from noble, against a resolute suite —
-which is what the section below is about, and why the pinned runner is the experiment
-that answers this. Note that `--simulate` alone prints no package set at all
+The fix is in `core/bootstrap.py`: the include list now reads `apt,ca-certificates`, so
+neither the tool, its version, nor the archive's priority fields decide whether the next
+phase has a package manager. Naming apt is a no-op for debootstrap, which had it already;
+that is the point — one request that does not depend on which binary `has_binary` found.
+
+No golden-path run has exercised this yet.
+
+Note, for anyone repeating the simulate: `--simulate` alone prints no package set at all
 (`I: no essential packages -- skipping`); the list only appears with `--verbose`.
 
 What does not depend on the answer is the refusal. A bootstrap tool exiting 0 is a claim
@@ -302,9 +318,13 @@ that names a release.
 
 | Leg | Label | What it resolved to |
 | --- | --- | --- |
-| ISO | `runs-on: ubuntu-latest` | **noble** (24.04), `mmdebstrap 1.4.3-6` |
+| ISO | `runs-on: ubuntu-latest` | an older LTS, `mmdebstrap 1.4.3-6` |
 | Package | `container: ubuntu:devel` | **stonking** (26.10) |
 | The source itself | `--release 26.04`, `debian/changelog` | **resolute** (26.04) |
+
+Every label in that table is now pinned: `runs-on: ubuntu-26.04` in every job of both
+workflows, and `container: ubuntu:26.04` in the two that use one. **Resolute is this
+project's development cycle and the only suite any leg may name.**
 
 So the ISO leg asked 2024's mmdebstrap, apt and dpkg to assemble a suite from 2026, and
 the package leg built, linted and autopkgtested a resolute package on the suite *after*

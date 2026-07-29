@@ -4,13 +4,20 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import write_valid_qemu_report
 
 from distroforge.core import boot_proof, qemu_invocation
 from distroforge.core.artifact_paths import default_output_iso
 from distroforge.core.boot_proof import resolve_firmware, run_boot_proof
 from distroforge.core.build import BuildOptions
 from distroforge.core.command import CommandRunner
-from distroforge.core.prebuild_vm import PrebuildVmOptions, QemuLabService
+from distroforge.core.hashing import sha256_file
+from distroforge.core.prebuild_vm import (
+    PrebuildVmOptions,
+    QemuLabService,
+    first_boot_refusal,
+    validate_qemu_report,
+)
 from distroforge.core.project import Project
 from distroforge.core.qemu_screenshot import QemuScreenshotOptions, QemuScreenshotService
 from distroforge.core.validate import validate_prebuild_vm_options
@@ -69,12 +76,236 @@ def test_the_journal_records_the_serial_assertion_once_the_marker_is_really_ther
     assert len(_asserted(runner)) == 1
 
 
+def test_a_login_word_inside_a_diagnostic_is_not_a_login_prompt(tmp_path) -> None:
+    runner, lab = _validating_lab(
+        tmp_path,
+        "audit: previous failed login: root from ttyS0\n",
+    )
+
+    with pytest.raises(ValueError, match="did not emit expected serial marker"):
+        lab._validate_serial_log()
+
+    assert _asserted(runner) == []
+
+
+def test_a_false_login_line_before_getty_does_not_hide_the_real_prompt(tmp_path) -> None:
+    runner, lab = _validating_lab(
+        tmp_path,
+        "audit: previous failed login: root\nhost login: ",
+    )
+
+    validation = lab._validate_serial_log()
+
+    assert validation is not None
+    assert validation.line == "host login:"
+    assert validation.byte_offset > len("audit: previous failed login:")
+    assert len(_asserted(runner)) == 1
+
+
 def test_a_serial_log_that_never_carries_the_marker_records_no_passing_assertion(tmp_path) -> None:
     # What a Secure Boot run on the wrong machine produced: a serial log that exists and
     # stays empty, because the firmware never handed off to anything that could write it.
     runner, lab = _validating_lab(tmp_path, "")
 
     with pytest.raises(ValueError, match="did not emit expected serial marker"):
+        lab._validate_serial_log()
+
+    assert _asserted(runner) == []
+
+
+def test_a_firmware_that_gave_up_is_quoted_instead_of_waited_out(tmp_path) -> None:
+    """The real log from the reference derivative, escapes and all.
+
+    OVMF reached this verdict about three minutes into a 1200 s proof, and the wait --
+    which knew only success markers -- sat out the remaining seventeen minutes and then
+    reported "did not emit expected serial marker(s): login:, Reached target". The report
+    blamed its own deadline for a decision the firmware had already made, and never quoted
+    the line that said what was wrong.
+    """
+    runner, lab = _validating_lab(
+        tmp_path,
+        '\x1b[2J\x1b[001;001HBdsDxe: failed to load Boot0002 "UEFI QEMU DVD-ROM QM00003 "'
+        " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0): Not Found\r\n"
+        "BdsDxe: No bootable option or device was found.\r\n"
+        "BdsDxe: Press any key to enter the Boot Manager Menu.\r\n",
+    )
+
+    with pytest.raises(ValueError) as raised:
+        lab._validate_serial_log()
+
+    # The firmware's own sentence, cleaned of the cursor addressing it shares the line with.
+    assert "BdsDxe: No bootable option or device was found." in str(raised.value)
+    assert "did not emit expected serial marker" not in str(raised.value)
+    assert _asserted(runner) == []
+
+
+def test_a_terminal_refusal_after_a_success_marker_invalidates_the_run(tmp_path) -> None:
+    runner, lab = _validating_lab(
+        tmp_path,
+        "host login:\nKernel panic - not syncing: late failure\n",
+    )
+
+    with pytest.raises(ValueError, match="Kernel panic"):
+        lab._validate_serial_log()
+
+    assert _asserted(runner) == []
+
+
+def test_qemu_report_validator_rejects_empty_json_and_changed_evidence(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"original")
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}\n", encoding="utf-8")
+
+    assert not validate_qemu_report(empty, iso).ok
+
+    report = write_valid_qemu_report(tmp_path, iso)
+    assert validate_qemu_report(report, iso).ok
+
+    iso.write_bytes(b"replacement")
+    assert "different ISO bytes" in validate_qemu_report(report, iso).detail
+
+
+def test_qemu_report_validator_rejects_a_modified_serial_log(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    serial = (
+        tmp_path
+        / "evidence"
+        / "runs"
+        / payload["run_id"]
+        / payload["artifacts"]["serial_log"]["path"]
+    )
+    serial.write_text("host login:\nKernel panic - not syncing\n", encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "serial evidence" in validation.detail
+
+
+def test_qemu_report_validator_derives_milestone_from_the_marker(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["boot"]["reached_milestone"] = "graphical_session"
+    forged = json.dumps(payload, indent=2) + "\n"
+    report.write_text(forged, encoding="utf-8")
+    immutable = (
+        tmp_path
+        / "evidence"
+        / "runs"
+        / payload["run_id"]
+        / report.name
+    )
+    immutable.write_text(forged, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "not implied" in validation.detail
+
+
+def test_qemu_report_validator_rejects_login_inside_a_diagnostic(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    run_dir = tmp_path / "evidence" / "runs" / payload["run_id"]
+    serial = run_dir / payload["artifacts"]["serial_log"]["path"]
+    serial.write_text(
+        "audit: previous failed login: root from ttyS0\n",
+        encoding="utf-8",
+    )
+    serial_identity = payload["artifacts"]["serial_log"]
+    serial_identity["size"] = serial.stat().st_size
+    serial_identity["sha256"] = sha256_file(serial)
+    marker = payload["boot"]["matched_marker"]
+    marker["line"] = "audit: previous failed login: root from ttyS0"
+    marker["byte_offset"] = serial.read_bytes().find(b"login:")
+    forged = json.dumps(payload, indent=2) + "\n"
+    report.write_text(forged, encoding="utf-8")
+    (run_dir / report.name).write_text(forged, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "diagnostic line" in validation.detail
+
+
+def test_qemu_report_validator_rejects_a_mutated_alias(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    report.write_text(report.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "alias differs" in validation.detail
+
+
+def test_qemu_report_validator_rejects_a_symlinked_runs_ancestor(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    runs = tmp_path / "evidence" / "runs"
+    external_runs = tmp_path / "external-runs"
+    runs.rename(external_runs)
+    runs.symlink_to(external_runs, target_is_directory=True)
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "unsafe symlink" in validation.detail
+
+
+def test_a_per_option_load_failure_is_not_treated_as_a_verdict(tmp_path) -> None:
+    # Firmware prints "failed to load Boot####" once per boot option, so a machine with a
+    # disk as well as a CD prints it for the disk on its way to booting the CD. Reading it
+    # as terminal would fail a run that goes on to succeed, which is why only the line
+    # printed after every option has been exhausted counts.
+    text = 'BdsDxe: failed to load Boot0001 "UEFI QEMU HARDDISK": Not Found\r\n'
+    assert first_boot_refusal(text) is None
+    assert first_boot_refusal(text + "BdsDxe: No bootable option or device was found.\r\n") == (
+        "BdsDxe: No bootable option or device was found."
+    )
+
+
+def test_qemu_artifact_paths_are_confined_before_launch(tmp_path) -> None:
+    options = PrebuildVmOptions(enabled=True)
+    options.pid_file = "../foreign.pid"
+
+    issues = validate_prebuild_vm_options(options)
+
+    assert any(issue.code == "prebuild-vm-artifact-path" for issue in issues)
+    with pytest.raises(ValueError, match="plain filename"):
+        QemuLabService(
+            CommandRunner(dry_run=True),
+            tmp_path / "image.iso",
+            tmp_path / "work",
+            tmp_path / "dist",
+            options,
+        ).run()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "error: no such device: /casper/vmlinuz.\r\nEntering rescue mode...\r\n",
+        "Unable to find a medium containing a live file system\r\n",
+        "Kernel panic - not syncing: VFS: Unable to mount root fs\r\n",
+    ],
+)
+def test_every_layer_below_the_firmware_can_also_end_the_wait(tmp_path, line: str) -> None:
+    # GRUB, casper and the kernel each have one line they print only once they have given
+    # up, and each of them is a reason a boot proof would otherwise run to its deadline.
+    runner, lab = _validating_lab(tmp_path, line)
+
+    with pytest.raises(ValueError, match="gave up and said so"):
         lab._validate_serial_log()
 
     assert _asserted(runner) == []
@@ -323,7 +554,7 @@ def test_secure_boot_asks_for_the_enrolled_pair_and_makes_the_firmware_enforce_i
     assert "-global" in qemu
     assert "Firmware: uefi with Secure Boot" in report.render_text()
     # The written proof is what a release gate reads, so the firmware belongs in it too.
-    proof = json.loads((project.output_dir / "boot-proof.json").read_text(encoding="utf-8"))
+    proof = json.loads(report.proof.read_text(encoding="utf-8"))
     assert proof["firmware"] == "uefi"
     assert proof["secure_boot"] is True
 

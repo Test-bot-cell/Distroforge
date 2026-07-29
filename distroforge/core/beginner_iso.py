@@ -301,38 +301,76 @@ def repair_beginner_iso_release_artifacts(project: Project, options: BuildOption
         output_dir = iso.parent
         output_dir.mkdir(parents=True, exist_ok=True)
         digest = sha256_file(iso)
-        (output_dir / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
-        repaired.append("SHA256SUMS")
-        (output_dir / "BUILDINFO").write_text(
+        provenance_path = output_dir / "distroforge-provenance.json"
+        preserve_build = _matching_build_provenance(provenance_path, digest)
+        sums_path = output_dir / "SHA256SUMS"
+        if preserve_build and sums_path.exists():
+            skipped.append("Existing SHA256SUMS belongs to sealed build evidence; it was preserved.")
+        else:
+            sums_path.write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
+            repaired.append("SHA256SUMS")
+        buildinfo_path = output_dir / "BUILDINFO"
+        buildinfo_content = (
             f"Build-Date: {datetime.now(UTC).isoformat()}\n"
             f"Artifact: {iso.name}\n"
             "Builder: DistroForge\n"
-            "Repair: beginner-iso\n",
-            encoding="utf-8",
+            "Repair: beginner-iso\n"
         )
-        repaired.append("BUILDINFO")
-        (output_dir / "distroforge-provenance.json").write_text(
-            json.dumps(
-                {
-                    "generated_at": datetime.now(UTC).isoformat(),
-                    "project": project.to_dict(),
-                    "output_iso": str(iso),
-                    "repair": "beginner-iso-release-artifacts",
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        repaired.append("distroforge-provenance.json")
+        if preserve_build and buildinfo_path.exists():
+            skipped.append("Existing BUILDINFO belongs to sealed build evidence; it was preserved.")
+        else:
+            buildinfo_path.write_text(buildinfo_content, encoding="utf-8")
+            repaired.append("BUILDINFO")
+        if preserve_build:
+            skipped.append("Existing build provenance already matches the ISO; it was preserved.")
+        else:
+            provenance_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "distroforge.provenance.v2",
+                        "attestation_kind": "reconstructed",
+                        "generated_at": datetime.now(UTC).isoformat(),
+                        "project": project.to_dict(),
+                        "output_iso": str(iso),
+                        "output_iso_sha256": digest,
+                        "repair": "beginner-iso-release-artifacts",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            repaired.append("distroforge-provenance.json")
         html_name = options.html_report.filename if options.html_report.enabled else "report.html"
-        (output_dir / html_name).write_text(_minimal_html_report(project, iso, digest), encoding="utf-8")
-        repaired.append(html_name)
+        html_path = output_dir / html_name
+        if preserve_build and html_path.exists():
+            skipped.append(f"Existing {html_name} belongs to sealed build evidence; it was preserved.")
+        else:
+            html_path.write_text(
+                _minimal_html_report(project, iso, digest),
+                encoding="utf-8",
+            )
+            repaired.append(html_name)
         skipped.append("Boot proof was not repaired; run QEMU/bootcheck/QA to prove bootability.")
     gate = ReleaseGateService().check(project, options, iso=iso, output_dir=iso.parent)
     next_action = (
         "Run boot proof and release-gate again." if gate.status != "ready" else "Release gate is ready."
     )
     return BeginnerIsoRepairReport(project.root, iso, tuple(repaired), tuple(skipped), gate.status, next_action)
+
+
+def _matching_build_provenance(path: Path, iso_sha256: str) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("schema") == "distroforge.provenance.v2"
+        and data.get("attestation_kind") == "build"
+        and data.get("output_iso_sha256") == iso_sha256
+    )
 
 
 def run_beginner_iso_boot_proof(

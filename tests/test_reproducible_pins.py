@@ -264,7 +264,7 @@ def test_no_source_carries_one_when_none_is_pinned() -> None:
 
 
 def test_an_operator_supplied_source_is_pinned_as_well() -> None:
-    repo = Repository(suite="noble", components=("main",), uri="http://archive.invalid/ubuntu")
+    repo = Repository(suite="resolute", components=("main",), uri="http://archive.invalid/ubuntu")
     rendered = _apt(SNAPSHOT).render_sources([repo])
     assert f"[snapshot={SNAPSHOT}]" in rendered
     assert "http://archive.invalid/ubuntu" in rendered
@@ -273,14 +273,14 @@ def test_an_operator_supplied_source_is_pinned_as_well() -> None:
 def test_a_source_the_operator_already_pinned_keeps_its_own_identifier() -> None:
     theirs = "20240401T000000Z"
     repo = Repository(
-        suite="noble", components=("main",), uri="http://a.invalid/ubuntu", snapshot=theirs
+        suite="resolute", components=("main",), uri="http://a.invalid/ubuntu", snapshot=theirs
     )
     assert pin_snapshot([repo], SNAPSHOT)[0].snapshot == theirs
 
 
 def test_the_option_shares_the_bracket_with_signed_by() -> None:
     repo = Repository(
-        suite="noble",
+        suite="resolute",
         components=("main", "universe"),
         uri="http://a.invalid/ubuntu",
         signed_by="/usr/share/keyrings/x.gpg",
@@ -288,7 +288,7 @@ def test_the_option_shares_the_bracket_with_signed_by() -> None:
     )
     assert repo.source_line() == (
         f"deb [signed-by=/usr/share/keyrings/x.gpg snapshot={SNAPSHOT}] "
-        "http://a.invalid/ubuntu noble main universe"
+        "http://a.invalid/ubuntu resolute main universe"
     )
 
 
@@ -297,7 +297,7 @@ def test_a_rendered_source_parses_back_into_itself() -> None:
     # source that made a round trip through it, and project.repositories does exactly
     # that on every build.
     repo = Repository(
-        suite="noble",
+        suite="resolute",
         components=("main",),
         uri="http://a.invalid/ubuntu",
         signed_by="/k.gpg",

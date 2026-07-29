@@ -10,14 +10,24 @@ from pathlib import Path
 from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .command import CommandError, CommandRunner
+from .evidence_run import (
+    artifact_identity,
+    evidence_run_path,
+    new_run_id,
+    reserve_evidence_run,
+    write_immutable_text,
+    write_text_alias,
+)
 from .hashing import sha256_file
-from .prebuild_vm import QemuLabService
+from .prebuild_vm import QemuLabService, validate_qemu_report
 from .project import Project
 from .validate import validate_prebuild_vm_options
 
 # The backends that start a machine. Only these can honour a firmware choice, and
 # only these have a firmware worth validating before anything runs.
 _QEMU_BACKENDS = frozenset({"auto", "qemu"})
+BOOT_PROOF_SCHEMA = "distroforge.boot-proof.v2"
+BOOT_RUN_MANIFEST_SCHEMA = "distroforge.boot-proof-run-manifest.v1"
 
 
 @dataclass(frozen=True)
@@ -35,6 +45,15 @@ class BootProofReport:
     proof_level: str = "none"
     firmware: str = ""
     secure_boot: bool = False
+    run_id: str = ""
+    created_at: str = ""
+    iso_sha256: str = ""
+    immutable_proof: Path | None = None
+    qemu_report_sha256: str = ""
+    reached_milestone: str = ""
+    build_run_id: str = ""
+    command_log: Path | None = None
+    run_manifest: Path | None = None
 
     @property
     def blocked(self) -> bool:
@@ -56,13 +75,17 @@ class BootProofReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "schema": BOOT_PROOF_SCHEMA,
+            "run_id": self.run_id,
+            "created_at": self.created_at,
             "project": str(self.project),
             "iso": str(self.iso),
+            "iso_sha256": self.iso_sha256,
             "backend": self.backend,
             "status": self.status,
             "blocked": self.blocked,
-            "proof": str(self.proof),
-            "qemu_report": str(self.qemu_report),
+            "proof": self.proof.name,
+            "qemu_report": self.qemu_report.name,
             "notes": list(self.notes),
             "evidence": self.evidence or {},
             "attempted_backends": list(self.attempted_backends or (self.backend,)),
@@ -70,6 +93,12 @@ class BootProofReport:
             "proof_level": self.proof_level,
             "firmware": self.firmware,
             "secure_boot": self.secure_boot,
+            "immutable_proof": self.immutable_proof.name if self.immutable_proof else None,
+            "qemu_report_sha256": self.qemu_report_sha256,
+            "reached_milestone": self.reached_milestone,
+            "build_run_id": self.build_run_id,
+            "command_log": self.command_log.name if self.command_log else None,
+            "run_manifest": self.run_manifest.name if self.run_manifest else None,
         }
 
     def render_json(self) -> str:
@@ -122,7 +151,16 @@ def run_boot_proof(
 ) -> BootProofReport:
     options = options or BuildOptions()
     iso = iso or options.output_iso or default_output_iso(project)
-    proof = project.output_dir / "boot-proof.json"
+    run_id = new_run_id()
+    created_at = datetime.now(UTC).isoformat()
+    proof = project.output_dir / ("boot-proof.json" if execute else "boot-proof.plan.json")
+    immutable_proof = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "boot-proof.json",
+        executed=execute,
+    )
+    reserve_evidence_run(project.output_dir, run_id, executed=execute)
     qemu_report = project.output_dir / options.prebuild_vm.report_name
     attempted = (backend,)
     selected = backend
@@ -159,21 +197,106 @@ def run_boot_proof(
         selected = "none"
     elif backend == "auto":
         status, notes, evidence, attempted, selected, proof_level = _run_auto_proof(
-            project, options, iso=iso, qemu_report=qemu_report, timeout=timeout, execute=execute
+            project,
+            options,
+            iso=iso,
+            qemu_report=qemu_report,
+            timeout=timeout,
+            execute=execute,
+            run_id=run_id,
         )
     elif backend == "iso-scan":
         status, notes, evidence = _run_iso_scan(iso, execute=execute)
         proof_level = "structural" if status == "ready" else "none"
     elif backend == "qemu":
-        status, notes, evidence = _run_qemu_proof(project, options, iso=iso, qemu_report=qemu_report, timeout=timeout, execute=execute)
+        status, notes, evidence = _run_qemu_proof(
+            project,
+            options,
+            iso=iso,
+            qemu_report=qemu_report,
+            timeout=timeout,
+            execute=execute,
+            run_id=run_id,
+        )
         proof_level = "runtime" if status == "ready" else "none"
     else:
         status = "blocked"
         notes = [f"Unsupported boot proof backend: {backend}."]
         evidence = None
         selected = "none"
-    report = BootProofReport(project.root, iso, backend, status, proof, qemu_report, tuple([*prelude, *notes]), evidence, attempted, selected, proof_level, run_firmware, run_secure_boot)
-    proof.write_text(report.render_json() + "\n", encoding="utf-8")
+    qemu_report_sha256 = (
+        sha256_file(qemu_report)
+        if qemu_report.is_file() and execute and selected == "qemu"
+        else ""
+    )
+    reached_milestone = ""
+    if isinstance(evidence, dict):
+        reached_milestone = str(evidence.get("reached_milestone", ""))
+        if not reached_milestone and isinstance(evidence.get("qemu"), dict):
+            reached_milestone = str(evidence["qemu"].get("reached_milestone", ""))
+    build_context = options._evidence_context or {}
+    command_log = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "commands.jsonl",
+        executed=execute,
+    )
+    run_manifest = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "RUN-MANIFEST.json",
+        executed=execute,
+    )
+    report = BootProofReport(
+        project=project.root,
+        iso=iso,
+        backend=backend,
+        status=status,
+        proof=proof,
+        qemu_report=qemu_report,
+        notes=tuple([*prelude, *notes]),
+        evidence=evidence,
+        attempted_backends=attempted,
+        selected_backend=selected,
+        proof_level=proof_level,
+        firmware=run_firmware,
+        secure_boot=run_secure_boot,
+        run_id=run_id,
+        created_at=created_at,
+        iso_sha256=sha256_file(iso) if iso.is_file() else "",
+        immutable_proof=immutable_proof,
+        qemu_report_sha256=qemu_report_sha256,
+        reached_milestone=reached_milestone,
+        build_run_id=str(build_context.get("run_id", "")),
+        command_log=command_log if command_log.is_file() else None,
+        run_manifest=run_manifest,
+    )
+    content = report.render_json() + "\n"
+    write_immutable_text(immutable_proof, content)
+    manifest_files = [
+        artifact_identity(path, role="boot-run-evidence")
+        for path in sorted(immutable_proof.parent.rglob("*"))
+        if path.is_file() and path not in {run_manifest, run_manifest.with_suffix(".json.sha256")}
+    ]
+    if iso.is_file():
+        manifest_files.append(artifact_identity(iso, role="proven-iso"))
+    manifest_payload = {
+        "schema": BOOT_RUN_MANIFEST_SCHEMA,
+        "run_id": run_id,
+        "mode": "execute" if execute else "plan",
+        "status": status,
+        "created_at": created_at,
+        "files": manifest_files,
+    }
+    write_immutable_text(
+        run_manifest,
+        json.dumps(manifest_payload, indent=2) + "\n",
+    )
+    write_immutable_text(
+        run_manifest.with_name(f"{run_manifest.name}.sha256"),
+        f"{sha256_file(run_manifest)}  {run_manifest.name}\n",
+    )
+    write_text_alias(proof, content)
     return report
 
 
@@ -185,9 +308,18 @@ def _run_auto_proof(
     qemu_report: Path,
     timeout: int | None,
     execute: bool,
+    run_id: str,
 ) -> tuple[str, list[str], dict[str, object], tuple[str, ...], str, str]:
     attempted = ["qemu"]
-    qemu_status, qemu_notes, qemu_evidence = _run_qemu_proof(project, options, iso=iso, qemu_report=qemu_report, timeout=timeout, execute=execute)
+    qemu_status, qemu_notes, qemu_evidence = _run_qemu_proof(
+        project,
+        options,
+        iso=iso,
+        qemu_report=qemu_report,
+        timeout=timeout,
+        execute=execute,
+        run_id=run_id,
+    )
     if qemu_status == "ready":
         evidence = {"qemu": qemu_evidence}
         return "ready", ["Auto selected QEMU runtime proof.", *qemu_notes], evidence, tuple(attempted), "qemu", "runtime"
@@ -217,6 +349,7 @@ def _run_qemu_proof(
     qemu_report: Path,
     timeout: int | None,
     execute: bool,
+    run_id: str,
 ) -> tuple[str, list[str], dict[str, object]]:
     notes: list[str] = []
     evidence: dict[str, object] = {
@@ -236,11 +369,34 @@ def _run_qemu_proof(
         options.prebuild_vm.enabled = True
         options.prebuild_vm.timeout_seconds = timeout or options.prebuild_vm.timeout_seconds
         runner = CommandRunner(dry_run=not execute)
+        runner.log_path = evidence_run_path(
+            project.output_dir,
+            run_id,
+            "commands.jsonl",
+            executed=execute,
+        )
         try:
-            QemuLabService(runner, iso, project.workdir, project.output_dir, options.prebuild_vm).run()
+            QemuLabService(
+                runner,
+                iso,
+                project.workdir,
+                project.output_dir,
+                options.prebuild_vm,
+                run_id=run_id,
+            ).run()
             if execute:
-                status = "ready" if qemu_report.exists() else "blocked"
-                notes.append("Executed QEMU boot proof." if qemu_report.exists() else "QEMU did not write the expected qemu-lab-report.json.")
+                validation = validate_qemu_report(qemu_report, iso)
+                status = "ready" if validation.ok else "blocked"
+                notes.append(
+                    "Executed and verified QEMU boot proof."
+                    if validation.ok
+                    else f"QEMU report validation failed: {validation.detail}"
+                )
+                evidence["qemu_report_validation"] = validation.detail
+                if validation.payload:
+                    boot = validation.payload.get("boot")
+                    if isinstance(boot, dict):
+                        evidence["reached_milestone"] = str(boot.get("reached_milestone", ""))
             else:
                 status = "planned"
                 notes.append("Planned QEMU boot proof without executing it.")
@@ -341,4 +497,3 @@ def _run_metadata_command(argv: tuple[str, ...]) -> str | None:
     if completed.returncode != 0 or not text:
         return None
     return " | ".join(text.splitlines()[:6])
-

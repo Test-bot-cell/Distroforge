@@ -192,7 +192,12 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
     # where a timestamp becomes part of an artifact. Reading it from the options at
     # construction keeps the switch (--reproducible) and the value in one decision.
     epoch = orch.options.reproducible.effective_source_date_epoch
-    iso = IsoService(orch.runner, use_sudo=orch.options.use_sudo, source_date_epoch=epoch)
+    iso = IsoService(
+        orch.runner,
+        use_sudo=orch.options.use_sudo,
+        source_date_epoch=epoch,
+        arch=orch.options.bootstrap.arch,
+    )
     squashfs = SquashfsService(
         orch.runner, use_sudo=orch.options.use_sudo, source_date_epoch=epoch
     )
@@ -679,6 +684,7 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         orch.project.workdir,
         orch.project.output_dir,
         orch.options.prebuild_vm,
+        run_id=str(getattr(orch.options, "_evidence_context", {}).get("run_id", "")) or None,
     ).run()
 
     orch._step(BuildPhase.RELEASE_ARTIFACTS, "Write release artifacts", "checksums")
@@ -713,11 +719,6 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         orch.options.qemu_screenshot,
     ).run()
 
-    orch._step(BuildPhase.PROVENANCE, "Write SBOM/provenance", "json")
-    ProvenanceService(orch.runner, orch.project, orch.options.provenance).write(
-        orch._output_iso(), orch._planned_packages()
-    )
-
     orch._step(BuildPhase.HTML_REPORT, "Write HTML report", orch.options.html_report.filename)
     HtmlReportService(orch.runner, orch.project, orch.options.html_report).write(
         orch.report,
@@ -745,3 +746,11 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
             orch.project.output_dir,
             QemuPreviewOptions(),
         ).run()
+
+    orch._step(BuildPhase.PROVENANCE, "Write SBOM/provenance", "json")
+    ProvenanceService(
+        orch.runner,
+        orch.project,
+        orch.options.provenance,
+        getattr(orch.options, "_evidence_context", None),
+    ).write(orch._output_iso(), orch._planned_packages())

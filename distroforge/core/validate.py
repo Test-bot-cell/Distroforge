@@ -510,6 +510,79 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
                 "Prebuild VM timeout must be at least 30 seconds",
             )
         )
+    patterns = [str(value).strip() for value in getattr(options, "success_patterns", [])]
+    if not patterns:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "prebuild-vm-success-marker-missing",
+                "Prebuild VM needs an explicit login, installer or graphical-session marker",
+            )
+        )
+    elif any(pattern.lower() == "reached target" for pattern in patterns):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "prebuild-vm-success-marker-generic",
+                "'Reached target' is not a boot milestone; name the exact login, "
+                "installer or graphical-session marker",
+            )
+        )
+    for field_name in (
+        "serial_log",
+        "screenshot_name",
+        "qmp_socket",
+        "pid_file",
+        "report_name",
+    ):
+        value = getattr(options, field_name, "")
+        path = Path(str(value))
+        if (
+            not isinstance(value, str)
+            or not value
+            or value in {".", ".."}
+            or path.is_absolute()
+            or path.name != value
+        ):
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "prebuild-vm-artifact-path",
+                    f"{field_name} must be a plain filename inside the managed "
+                    f"QEMU directory, not {value!r}",
+                )
+            )
+    output_names = {
+        str(getattr(options, "serial_log", "")),
+        str(getattr(options, "screenshot_name", "")),
+        str(getattr(options, "report_name", "")),
+    }
+    reserved = {
+        "ISO-BUILD.json",
+        "ISO-BUILD.plan.json",
+        "boot-proof.json",
+        "boot-proof.plan.json",
+        "distroforge-provenance.json",
+        "RUN-MANIFEST.json",
+        "commands.jsonl",
+    }
+    if len(output_names) != 3 or output_names & reserved:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "prebuild-vm-artifact-collision",
+                "QEMU report, serial and screenshot names must be distinct and "
+                "must not collide with managed build evidence.",
+            )
+        )
+    if getattr(options, "qmp_socket", "") == getattr(options, "pid_file", ""):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "prebuild-vm-control-collision",
+                "QEMU QMP socket and PID file names must be different.",
+            )
+        )
     secure_boot = bool(getattr(options, "secure_boot", False))
     if secure_boot and getattr(options, "firmware", "bios") != "uefi":
         issues.append(

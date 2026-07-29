@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -54,13 +55,45 @@ class QmpControl:
             raise ValueError(f"QMP command failed: {command}: {response}")
 
 
-def stop_by_pidfile(runner: CommandRunner, pid_file: Path, description: str = "Stop QEMU VM") -> None:
-    if not pid_file.exists():
+def stop_by_pidfile(
+    runner: CommandRunner,
+    pid_file: Path,
+    description: str = "Stop QEMU VM",
+    *,
+    known_pid: int | None = None,
+) -> None:
+    if not pid_file.exists() and known_pid is None:
         return
-    runner.run(
-        CommandSpec(
-            argv=("kill", pid_file.read_text(encoding="utf-8").strip()),
-            description=description,
-        ),
-        check=False,
-    )
+    if pid_file.exists():
+        raw_pid = pid_file.read_text(encoding="utf-8").strip()
+        if not raw_pid.isdigit() or int(raw_pid) <= 1:
+            raise ValueError(f"Refusing invalid QEMU PID file content in {pid_file}: {raw_pid!r}")
+        pid = int(raw_pid)
+        if known_pid is not None and known_pid != pid:
+            raise ValueError(
+                f"QEMU PID file changed from {known_pid} to {pid}: {pid_file}"
+            )
+        runner.run(
+            CommandSpec(
+                argv=("kill", raw_pid),
+                description=description,
+            ),
+            check=False,
+        )
+    else:
+        assert known_pid is not None
+        pid = known_pid
+    if runner.dry_run:
+        return
+    deadline = time.monotonic() + 30
+    while time.monotonic() <= deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError as exc:
+            raise RuntimeError(
+                f"Cannot confirm QEMU process {pid} stopped"
+            ) from exc
+        time.sleep(0.1)
+    raise TimeoutError(f"QEMU process {pid} did not stop within 30 seconds")

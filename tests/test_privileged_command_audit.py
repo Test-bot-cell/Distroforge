@@ -21,6 +21,9 @@ APPROVED_SUBPROCESS_MODULES = {
     "distroforge/core/boot_proof.py": "read-only ISO metadata helper with timeout",
     "distroforge/core/capture.py": "read-only installed-system capture probes",
     "distroforge/core/command.py": "central CommandRunner execution boundary",
+    "distroforge/core/evidence_run.py": (
+        "read-only Git and tool version probes used to seal build provenance"
+    ),
     "distroforge/core/packaging.py": "local packaging evidence capture without shell or privilege escalation",
     "distroforge/core/terminal.py": "interactive PTY terminal process boundary",
 }

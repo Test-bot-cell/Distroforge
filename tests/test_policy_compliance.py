@@ -919,6 +919,28 @@ def test_the_release_tag_procedure_is_wired_to_something() -> None:
     assert documented, "no document explains how a release version gets anchored to a commit"
 
 
+def test_release_tag_is_staged_locally_before_any_push() -> None:
+    """The release ratchet must not require or perform a branch push before tagging.
+
+    Development happens on ``develop`` and promotion to ``main`` is a later,
+    operator-authorized fast-forward.  The tag script therefore accepts a develop commit
+    only while local main is its ancestor, checks the remote solely for a tag-name
+    collision, and never runs ``git push`` itself.
+    """
+    script = (ROOT / "tools/release-tag.sh").read_text(encoding="utf-8")
+
+    assert 'case "$on_branch" in' in script
+    assert re.search(r"^\s*develop\)$", script, re.MULTILINE)
+    assert 'git merge-base --is-ancestor "$branch" HEAD' in script
+    assert 'gbp tag --debian-branch="$on_branch"' in script
+    assert "git ls-remote --tags origin" in script
+    assert "remote_branch=" not in script
+    assert "push the branch before tagging" not in script
+    assert not re.search(r"^\s*git\s+push(?:\s|$)", script, re.MULTILINE), (
+        "make tag must create a local tag only; every push requires a separate explicit command"
+    )
+
+
 def test_no_finalized_changelog_revision_is_left_without_a_release_tag() -> None:
     """The revision number was a commit counter. Measured, and it is not a Policy breach.
 

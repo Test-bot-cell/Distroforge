@@ -5,14 +5,14 @@
 <h1 align="center">DistroForge</h1>
 
 <p align="center">
-  <strong>Build Ubuntu and Debian live images with a workflow you can inspect,
-  reproduce, and trust.</strong>
+  <strong>Build Ubuntu and Debian live images with a workflow and evidence you
+  can inspect and verify.</strong>
 </p>
 
 <p align="center">
   A safety-first Python toolkit and Qt desktop app for planning, validating,
   building, testing, and releasing customized Ubuntu/Debian live ISOs with
-  dry-run workflows, reproducible artifacts, and maintainer guardrails.
+  dry-run workflows, reproducibility controls, and maintainer guardrails.
 </p>
 
 ## From an idea to an auditable ISO
@@ -247,12 +247,13 @@ The suite is offline, rootless and tool-free by design: it never runs
 suite proves the plan and the contracts, not that a real ISO boots. Line
 coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
 
-What proves a real ISO boots is [the golden path](docs/golden-path.md): a weekly
-workflow, outside the suite, that bootstraps a rootfs, builds an ISO, boots it under UEFI
-firmware, and builds the `.deb` through `lintian` and its own autopkgtest suite. `mypy`,
-`shellcheck` and `pre-commit` gate every push; `lintian` gates that weekly run. This
-paragraph used to say none of the four gated a change, which had been wrong for three of
-them since they were wired into CI.
+The [golden path](docs/golden-path.md) is the authorized weekly execution harness
+intended to prove that a real ISO boots; its existence is not that proof. Its current
+verdict is blocked: the reference ISO has no usable GPT ESP, an audit variant reaches
+shim but not GRUB, and no digest-linked v2 run has reached login or a desktop. `mypy`,
+`shellcheck` and `pre-commit` gate every push. The package leg is configured to gate on
+`lintian`, but the first executing attempt did not complete its declared autopkgtest.
+See the [ISO build proof ledger](docs/iso-build-proof-ledger.md) for the exact milestones.
 
 Focused bug reports and pull requests are welcome. New workflows should
 preserve dry-run behavior, CLI/GUI parity, explicit privilege boundaries, test

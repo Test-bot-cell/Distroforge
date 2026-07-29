@@ -89,7 +89,27 @@ def sign_release_bundle(
     skipped: list[str] = []
     signed: list[str] = []
     planned: list[str] = []
-    if execute and not CommandRunner.has_binary("gpg"):
+    unsafe = [
+        path.relative_to(bundle_dir).as_posix()
+        for path in bundle_dir.rglob("*")
+        if path.is_symlink()
+    ]
+    gate_status = _gate_status(bundle_dir / "RELEASE-GATE.json")
+    iso_entries = [entry for entry in entries if entry.name.endswith(".iso")]
+    if unsafe:
+        skipped.append(
+            "Bundle contains unsafe symlinks: " + ", ".join(unsafe)
+        )
+        status = "blocked"
+    elif execute and len(iso_entries) != 1:
+        skipped.append(
+            f"Bundle must contain exactly one ISO, found {len(iso_entries)}."
+        )
+        status = "blocked"
+    elif execute and gate_status == "blocked":
+        skipped.append("RELEASE-GATE.json is BLOCKED; signing was refused.")
+        status = "blocked"
+    elif execute and not CommandRunner.has_binary("gpg"):
         skipped.append("gpg is missing; install GnuPG or rerun without --execute for a signing plan.")
         status = "blocked"
     else:
@@ -113,9 +133,22 @@ def sign_release_bundle(
 
 def _write_manifest(project: Project, bundle_dir: Path, manifest_path: Path) -> tuple[ReleaseManifestEntry, ...]:
     entries = tuple(
-        ReleaseManifestEntry(path.name, path.stat().st_size, sha256_file(path))
-        for path in sorted(bundle_dir.iterdir())
-        if path.is_file() and path.name not in {"RELEASE-MANIFEST.json", "SIGNING-REPORT.json"} and not path.name.endswith(".asc")
+        ReleaseManifestEntry(
+            path.relative_to(bundle_dir).as_posix(),
+            path.stat().st_size,
+            sha256_file(path),
+        )
+        for path in sorted(bundle_dir.rglob("*"))
+        if path.is_file()
+        and not path.is_symlink()
+        and path.relative_to(bundle_dir).as_posix()
+        not in {
+            "RELEASE-MANIFEST.json",
+            "SIGNING-REPORT.json",
+            "VERIFY-REPORT.json",
+            "RELEASE-PIPELINE.json",
+        }
+        and not path.name.endswith(".asc")
     )
     gate_status = _gate_status(bundle_dir / "RELEASE-GATE.json")
     write_host_artifact(
@@ -143,4 +176,3 @@ def _gate_status(path: Path) -> str:
         return str(json.loads(path.read_text(encoding="utf-8")).get("status", "unknown"))
     except json.JSONDecodeError:
         return "unknown"
-

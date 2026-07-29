@@ -188,9 +188,9 @@ _ISO_NO_PREVIEW_GOLDEN = (
     (45, 907, "release_artifacts", "Write release artifacts"),
     (46, 920, "bootcheck", "Boot smoke test"),
     (47, 944, "qemu_screenshot", "Capture QEMU screenshot"),
-    (48, 957, "provenance", "Write SBOM/provenance"),
-    (49, 963, "html_report", "Write HTML report"),
-    (50, 969, "qa_matrix", "Run QA boot matrix"),
+    (48, 957, "html_report", "Write HTML report"),
+    (49, 963, "qa_matrix", "Run QA boot matrix"),
+    (50, 994, "provenance", "Write SBOM/provenance"),
 )
 
 

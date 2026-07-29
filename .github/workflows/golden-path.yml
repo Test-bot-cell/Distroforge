@@ -56,11 +56,11 @@ jobs:
     # privileged -- and because a root-owned dist/ is a worse thing to hand to
     # upload-artifact than a runner-owned one.
     # The suite this derivative targets, named, rather than "whatever GitHub calls latest".
-    # The first real run bootstrapped resolute on `ubuntu-latest`, which is 24.04: measured
-    # in its own log, `azure.archive.ubuntu.com/ubuntu noble` and `mmdebstrap 1.4.3-6`, the
-    # 2024 archive's version, asked to assemble a suite from 2026. Nothing in the file said
-    # so -- `ubuntu-latest` names a moving target and `--release 26.04` names a fixed one,
-    # and the two were never compared. GitHub publishes `ubuntu-26.04` for x64
+    # The first real run took its bootstrap toolchain from `ubuntu-latest` -- an older LTS
+    # -- and was asked to assemble a suite from 2026 with it: measured in its own log, a
+    # 2024 archive and `mmdebstrap 1.4.3-6`. Nothing in the file said so, because
+    # `ubuntu-latest` names a moving target and `--release 26.04` names a fixed one, and
+    # the two were never compared. GitHub publishes `ubuntu-26.04` for x64
     # (actions/runner-images#14226, public preview), so the label can name the suite; the
     # step below refuses the run if it ever stops matching.
     runs-on: ubuntu-26.04
@@ -145,10 +145,10 @@ jobs:
         # under you and a figure in a comment cannot notice. The du names what there is
         # to reclaim if disk ever does bind; it costs 80 seconds.
         #
-        # All three were measured on `ubuntu-latest`, which was 24.04, and this job has
-        # since moved to `ubuntu-26.04` -- the image changing under you, on purpose. The
-        # figures above are therefore the previous image's, kept as what the next run has
-        # to be compared against rather than as what this runner is.
+        # All three were measured before this job named its runner, on a floating
+        # `ubuntu-latest`, and it now pins `ubuntu-26.04` -- the image changing under you,
+        # on purpose. The figures above are therefore the previous image's, kept as what
+        # the next run has to be compared against rather than as what this runner is.
         run: |
           df -h /
           nproc && free -h
@@ -192,11 +192,11 @@ jobs:
         # image -- which ships 3.14 and would silently become the version these assertions
         # were written against.
         #
-        # The reason this line used to give was that the runner is 24.04, whose
-        # python3-pydantic is 1.10 and cannot import this package at all. That was true of
-        # the image and is no longer the image: 26.04 has python3-pydantic 2.12.5-2,
-        # measured, which satisfies debian/control's (>= 2.7). The archive is not the
-        # obstacle here any more; the pin is a choice about what this job is testing.
+        # The reason this line used to give was an archive whose python3-pydantic is 1.10
+        # and cannot import this package at all. That was true of the older image this job
+        # inherited and is not true of the one it names: resolute has python3-pydantic
+        # 2.12.5-2, measured, which satisfies debian/control's (>= 2.7). The archive is not
+        # the obstacle here any more; the pin is a choice about what this job is testing.
         run: python -m pip install -e .
 
       - name: Create the project
@@ -380,9 +380,9 @@ jobs:
     # `archive.ubuntu.com/ubuntu stonking InRelease`. `devel` is whatever is in development,
     # which since 26.04 released is 26.10, so this leg built and autopkgtested the package
     # against a suite one release *past* the one debian/changelog names -- the same class of
-    # error as the job above bootstrapping resolute on noble, in the opposite direction.
-    # The image is now named, and the step below refuses the run if it stops matching the
-    # changelog.
+    # error as the job above inheriting its suite from a floating runner label, in the
+    # opposite direction. The image is now named, and the step below refuses the run if it
+    # stops matching the changelog.
     #
     # A container is enough here, unlike the job above: nothing in this leg mounts. It runs
     # as the container's root, which autopkgtest's null backend needs in order to install
@@ -394,10 +394,11 @@ jobs:
     # Every run: script below is POSIX sh, not bash. Measured, not assumed: ci.yml's job in
     # this same image logs "shell: sh -e {0}", so a bashism here would fail inside the
     # container while passing every local check.
-    # `ubuntu-latest` here, unlike the job above, because the host contributes nothing to
-    # this leg but a kernel and a container runtime: the suite is the image's, and pinning
-    # the host as well would only make the run depend on a preview label for nothing.
-    runs-on: ubuntu-latest
+    # The host is named 26.04 like every other job here. It contributes little to this leg
+    # beyond a kernel and a container runtime, but `ubuntu-latest` is a floating label that
+    # resolves to an older LTS, and inheriting a suite from a floating label is the exact
+    # defect this workflow already hit twice.
+    runs-on: ubuntu-26.04
     container: ubuntu:26.04
     timeout-minutes: 45
     steps:

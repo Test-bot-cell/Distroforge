@@ -1,12 +1,15 @@
 # DistroForge Platform Architecture
 
-DistroForge is an operating-system forge, not a remix script. Its core job is to take a
-known source, apply policy-controlled changes, and produce a bootable, reviewable,
-redistributable ISO through a pipeline that can be understood by beginners and trusted by
-maintainers.
+DistroForge is an operating-system forge, not a remix script. Its intended core job is to
+take a known source, apply policy-controlled changes, and produce a reviewable ISO whose
+bootability and redistributability can be established through evidence.
 
-The product must keep one reliable reference path from source to ISO, then let advanced
+The product must keep one canonical reference path from source to ISO, then let advanced
 modules plug into that path without weakening it.
+
+This document describes the target architecture and workflow contract, not a completed
+runtime proof. The current source-to-ISO, firmware, GRUB, kernel and desktop verdicts are
+maintained in `docs/iso-build-proof-ledger.md`.
 
 The executable workflow map lives in `core/workflows.py`. The guided build journey lives
 in `core/build_journey.py`. Together they are the product taxonomy used by readiness
@@ -107,7 +110,7 @@ the build attempt instead of pretending the ISO is publishable before artifacts 
 
 ## Reference Source-To-ISO Path
 
-The dependable reference path is intentionally explicit:
+The canonical reference path is intentionally explicit:
 
 1. source starter or source ISO validation;
 2. project and host preflight;
@@ -147,7 +150,8 @@ The GUI should teach by showing state, not by dumping logs. Build Controls must 
 - final artifact paths and review status.
 
 Logs remain available for diagnosis, but the main experience should guide a beginner
-through decisions and give a maintainer enough proof to trust the output.
+through decisions and give a maintainer enough evidence to decide whether the output can
+be trusted.
 
 A beginner should never be blocked by unfamiliar vocabulary. DistroForge ships a didactic
 glossary in `core/education.py`, reachable through `distroforge glossary [term]`, that

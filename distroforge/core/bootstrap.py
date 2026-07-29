@@ -44,6 +44,11 @@ _EFI_ARCHES = {
     "i386": _EfiArch("BOOTIA32.EFI", "grubia32.efi", "i386-efi", "shimia32", "mmia32.efi", "ia32"),
     "arm64": _EfiArch("BOOTAA64.EFI", "grubaa64.efi", "arm64-efi", "shimaa64", "mmaa64.efi", "arm64"),
 }
+# The two boot images a from-scratch bootstrap stages, as paths inside the ISO tree, named
+# here so the ISO builder can *plan* them before they exist instead of probing a tree that
+# is not there yet. See planned_boot_images below for why that matters.
+BOOTSTRAP_BIOS_ELTORITO = "boot/grub/i386-pc/eltorito.img"
+BOOTSTRAP_ESP = "boot/grub/efi.img"
 # An El Torito boot image is addressed in 512-byte blocks by a 16-bit field, so the
 # ESP may not exceed 65535 of them. Slack covers the FAT itself plus the directory
 # entries; measured at 256 KiB against a real staging run, which left 1.4 MB free on
@@ -72,6 +77,29 @@ _HOST_ARCH_BY_MACHINE = {
 def host_dpkg_arch() -> str:
     machine = platform.machine().lower()
     return _HOST_ARCH_BY_MACHINE.get(machine, machine)
+
+
+def planned_boot_images(arch: str) -> tuple[str | None, str | None]:
+    """``(BIOS El Torito image, ESP)`` this bootstrap will stage for ``arch``, as tree paths.
+
+    ``BootLayout.detect`` answers the same question by looking at the tree, which is the
+    right answer for a tree that exists and the wrong one for a plan. A first-ever
+    ``distroforge iso-build`` -- a maintainer asking what the build is going to do, before
+    any build has run -- found nothing under ``work/iso`` and planned
+    ``xorriso -as mkisofs ... <tree>`` with no boot arguments whatsoever, described as
+    "Rebuild bootable ISO tree (boot assets not detected)": a plan for a data disc, printed
+    under the word "bootable".
+
+    ``_efi_payloads`` already states the rule this restores -- "a plan has to be a function
+    of the definition alone" -- and returns canonical names in dry-run for exactly that
+    reason. The arch gates are the same two this module builds against, so an EFI-only arch
+    plans no BIOS image and an arch with no known EFI layout plans no ESP, matching what
+    ``_create_grub_eltorito_image`` and ``_create_grub_efi_image`` actually skip.
+    """
+    return (
+        BOOTSTRAP_BIOS_ELTORITO if arch in _BIOS_ARCHES else None,
+        BOOTSTRAP_ESP if arch in _EFI_ARCHES else None,
+    )
 
 
 def _esp_blocks(sources: Iterable[Path]) -> int:
@@ -342,13 +370,31 @@ class BootstrapService:
             )
         mirror = self.options.mirror or self.release.archive_url
         tool = "mmdebstrap" if self.runner.has_binary("mmdebstrap") else "debootstrap"
-        # A minbase rootfs carries no CA store, and every archive URL here is https, so
-        # the first apt-get update *inside* the chroot failed TLS verification against
-        # every index -- while ca-certificates sat in the very package list that update
-        # was fetching for. Bootstrapping it closes the loop: the bootstrap tool itself
-        # fetches from the host, with the host's CA store, so it can install the store
-        # the chroot will need one step later.
-        include = "--include=ca-certificates"
+        # Both of these are asked for by name because --variant=minbase does not promise
+        # either one, and the next phase runs apt-get inside this tree.
+        #
+        # apt: debootstrap(8) defines minbase as "required packages and apt" and adds apt
+        # itself; mmdebstrap(1) defines required/minbase as the essential set plus
+        # Priority:required, which never mentions apt. The same string therefore means two
+        # different package sets depending on which tool has_binary() picked. It looked
+        # equivalent only because package sets also pull "the direct and indirect hard
+        # dependencies" (mmdebstrap(1), VARIANTS), so apt kept arriving as somebody else's
+        # dependency -- until the first real golden-path run, where it did not: mmdebstrap
+        # exited 0 in 23 seconds, correctly, having installed exactly what was asked, and
+        # five phases later a chroot said `env: 'apt-get': No such file or directory`. In
+        # the resolute index on this host apt is Priority:important, not required, so it is
+        # outside minbase's set by definition and inside it only by accident.
+        #
+        # ca-certificates: a minbase rootfs carries no CA store, and every archive URL here
+        # is https, so the first apt-get update *inside* the chroot failed TLS verification
+        # against every index -- while ca-certificates sat in the very package list that
+        # update was fetching for. Bootstrapping it closes the loop: the bootstrap tool
+        # fetches from the host, with the host's CA store, so it can install the store the
+        # chroot will need one step later.
+        #
+        # Naming apt is a no-op for debootstrap, which had it in minbase already. That is
+        # the point: one include list that does not depend on which tool ran.
+        include = "--include=apt,ca-certificates"
         if tool == "mmdebstrap":
             argv = (
                 "mmdebstrap",
@@ -398,14 +444,18 @@ class BootstrapService:
         missing -- at which point the tool's own output, which would have said why, had
         been discarded, because the runner keeps output only for commands that fail.
 
-        Naming the tool and the variant matters: ``minbase`` does not mean the same set
-        to both tools this code can call. debootstrap(8) defines it as "required packages
-        and apt"; mmdebstrap(1) defines it as the essential set plus Priority:required,
-        which does not mention apt at all. On this maintainer's host the resolved set does
-        contain apt -- ``mmdebstrap --simulate --verbose --variant=minbase --include=ca-certificates
-        resolute`` lists 129 packages including ``apt (3.2.0)`` -- so the two agree in
-        practice with mmdebstrap 1.5.7. They are not guaranteed to, and the run that broke
-        used 1.4.3-6. Whoever reads this message should be told which tool made the claim.
+        That run's cause is now understood and fixed upstream of here: the include list
+        asks for apt by name, because ``minbase`` named two different package sets
+        depending on which tool has_binary() picked, and apt was only ever arriving as
+        another package's indirect dependency. So this check should no longer be the thing
+        that catches a missing package manager.
+
+        It stays anyway, and it names the tool. It is the only place that compares what a
+        bootstrap tool *claimed* against what it *left*, and the class of bug it caught
+        once -- a tool exiting 0 over a tree that cannot host the next phase -- is not
+        specific to apt or to that one reason. Whoever reads the message needs to know
+        which of the two tools made the claim, since they do not agree about what a
+        variant means.
         """
         if self.runner.dry_run:
             return
@@ -485,10 +535,9 @@ class BootstrapService:
                 )
             )
             return
-        grub_dir = self.iso_root / "boot" / "grub"
-        image_dir = grub_dir / "i386-pc"
+        eltorito = self.iso_root / BOOTSTRAP_BIOS_ELTORITO
+        image_dir = eltorito.parent
         core_img = image_dir / "core.img"
-        eltorito = image_dir / "eltorito.img"
         self.fs.mkdir(image_dir, "Create GRUB BIOS boot image directory")
         if self.runner.dry_run:
             self.runner.run(CommandSpec(argv=("write-file", str(eltorito)), description="Plan GRUB El Torito boot image"))
@@ -613,7 +662,7 @@ class BootstrapService:
                 self._grub_trampoline(),
                 f"Write the GRUB trampoline into EFI/{directory}",
             )
-        esp = self.iso_root / "boot" / "grub" / "efi.img"
+        esp = self.iso_root / BOOTSTRAP_ESP
         if self.runner.dry_run:
             self.runner.run(CommandSpec(argv=("write-file", str(esp)), description="Plan UEFI El Torito boot image"))
             return

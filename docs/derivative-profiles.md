@@ -5,8 +5,9 @@ intent: base family, base release, repositories, keyrings, identity packages, in
 live session, hardware channel, branding, and optional build-container hints.
 
 They are not official vendor ISO recipes. They are structured starting points for
-maintainers who want a derivative to be explainable and reproducible before any ISO is
-published.
+maintainers who want a derivative's intent to be explainable before any ISO is published.
+Reproducibility remains a build result to establish by comparing independently produced,
+digest-linked artifact sets.
 
 ## Commands
 

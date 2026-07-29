@@ -395,7 +395,7 @@ def example_definition() -> str:
                 "disk_size": "24G",
                 "network": False,
                 "timeout_seconds": 300,
-                "success_patterns": ["login:", "Reached target"],
+                "success_patterns": ["login:"],
             },
             "qemu_screenshot": {"enabled": False},
             "policy": {"strict": False},

@@ -276,10 +276,16 @@ The cadence, from `0.3.5-17` onward:
 
 1. During a cycle, **one** `UNRELEASED` entry collects bullets. Adding a change means
    adding a bullet to it, not opening `0.3.5-18`.
-2. At release, `dch -r` finalizes it — that is precisely what it does, "if the
-   distribution is set to UNRELEASED, change it to the distribution from the previous
-   changelog entry" — and `make tag` anchors it.
-3. One revision, one tag, one artifact.
+2. Once the complete build and boot chain is proven locally, `dch -r` finalizes it — that
+   is precisely what it does, "if the distribution is set to UNRELEASED, change it to the
+   distribution from the previous changelog entry" — and the resulting signed commit is
+   created on `develop`.
+3. `make tag` anchors that exact local `develop` commit before any branch push. It creates
+   and verifies the signed tag locally; it performs no push.
+4. Only an explicit operator command may then push `develop`. Once that exact tagged
+   commit has been accepted, `main` is advanced by fast-forward only; pushing `main` and
+   the tag are also separate explicit operations.
+5. One revision, one tag, one artifact.
 
 This is what devscripts and gbp already assume rather than something invented here, and it
 was **not available in this repository until 0.3.5-17**. `debian_changelog_suite()` read
@@ -316,18 +322,21 @@ file for a reason that is easy to miss: gbp does not defer to Git on this.
 `tag.gpgsign = true` in the repository config, so leaving it out produces an unsigned
 release tag over commits that are every one of them signed.
 
-Cut a tag with `make tag`, which runs `tools/release-tag.sh`. It refuses more than it does:
-an `UNRELEASED` changelog entry, a dirty working tree, a branch other than the one
-`gbp.conf` calls `debian-branch`, a `HEAD` whose own signature does not verify, a version
-already tagged here or on the remote, and a `HEAD` that is not what `origin` already holds
--- there is deliberately no offline path around that last one, because a tag naming a
-commit nobody else can resolve means nothing to anyone. It asks gbp itself what the tag
-should be called instead of reimplementing the mangling, then checks after the fact that
-what gbp created is annotated, is named what was announced, and carries a good signature.
+Cut a tag with `make tag`, which runs `tools/release-tag.sh`. It accepts the configured
+release branch (`main`) or the staging branch (`develop`). On `develop`, it first proves
+that the local `main` is an ancestor, so the later promotion can remain a fast-forward. It
+refuses an `UNRELEASED` changelog entry, a dirty working tree, any other branch, a `HEAD`
+whose own signature does not verify, and a version already tagged here or on the remote.
+It asks gbp itself what the tag should be called instead of reimplementing the mangling,
+then checks after the fact that what gbp created is annotated, is named what was announced,
+and carries a good signature.
 
-It stops there. Publishing is `git push origin refs/tags/<tag>`, typed separately, because
-a tag that has been pushed must not be moved afterwards and that should not happen as a
-side effect of asking for a tag.
+It stops after creating and verifying the local tag. It neither pushes a branch nor a tag.
+The remote lookup is read-only and exists solely to reject a version name already
+published. Every later `git push` is an explicit operator action. The order is deliberate:
+prove the chain, finalize and sign the commit, create the signed tag locally, push
+`develop` only when ordered, fast-forward `main` only when ordered, then publish the
+already verified tag only when ordered.
 
 The first tag under this convention is `debian/0.3.5-16` on `38217da`, cut and pushed
 2026-07-27. Annotated: `git cat-file -t` answers `tag`. Signed: `git verify-tag` reports a

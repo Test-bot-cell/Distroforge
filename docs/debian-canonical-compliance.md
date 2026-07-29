@@ -39,10 +39,12 @@ than restating it.
 - CI must run Ruff and pytest on Python 3.11 through 3.14 against both Qt bindings; the
   policy guard tests are part of that pytest run and are additionally named as their own
   step so a collection error there cannot hide in the noise of a full matrix.
-- CI must also, weekly and never on push, build the package for real and run `lintian` and
-  the declared autopkgtest suite against it, and build and boot-proof one reference
-  derivative under UEFI firmware. That is `.github/workflows/golden-path.yml`, documented
-  in `docs/golden-path.md`.
+- CI must also, weekly and never on push, attempt a real package build and require
+  `lintian` plus the declared autopkgtest suite against it, then attempt one reference
+  derivative and require a UEFI runtime boot proof. That is
+  `.github/workflows/golden-path.yml`, documented in `docs/golden-path.md`. The workflow
+  fulfils the executing-harness requirement; only a completed evidence-linked run fulfils
+  the proof requirement.
 - `debian/rules` runs the test phase against the staged build tree, not the checkout:
   `PYBUILD_TEST_ARGS` passes `-o pythonpath={build_dir}` so `import distroforge` resolves
   to what the `.deb` will ship. A data file dropped from `package-data` therefore fails
@@ -116,11 +118,11 @@ the gap is part of the rule, not an exception to it:
   interpreter dies, and the surrounding `2>/dev/null` plus `|| true` swallow the traceback.
 - The test suite never executes an external build tool, and that boundary is deliberate
   and permanent: it keeps the suite offline, rootless and sub-second, and it is what lets
-  the same suite run under buildd and autopkgtest. What used to follow from it -- "nothing
-  verifies that a real package or a real ISO is produced" -- is no longer true. That
-  verification lives outside the suite, in `.github/workflows/golden-path.yml`, on a
-  weekly schedule: see `docs/golden-path.md`. The hermetic build path remains the
-  maintainer's own route for a publication build.
+  the same suite run under buildd and autopkgtest. An executing verification harness now
+  lives outside the suite, in `.github/workflows/golden-path.yml`, on a weekly schedule.
+  It has not yet established a successful source-to-UEFI/login chain; the current runtime
+  milestones are recorded in `docs/iso-build-proof-ledger.md`. The hermetic build path
+  remains the maintainer's own route for a publication build.
 
 ## GUI Theming Dependencies
 

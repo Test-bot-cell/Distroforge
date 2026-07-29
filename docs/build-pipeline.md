@@ -6,6 +6,7 @@ current build posture, then returns one next command.
 
 Use `distroforge iso-build PROJECT --execute --boot-proof auto` for the guarded
 one-command ISO path. Without `--execute`, it remains a dry-run and writes
+`dist/ISO-BUILD.plan.json`; it never replaces the latest executed
 `dist/ISO-BUILD.json`.
 
 Executed ISO builds are marked `built` only when the configured output ISO exists, is
@@ -13,9 +14,9 @@ non-empty, and has a recorded SHA-256 digest. A completed build attempt without 
 artifact stays `blocked`; dry-runs stay `planned`.
 
 Use `distroforge iso-accept PROJECT --iso dist/NAME-VERSION.iso` after a real build to get the
-publication verdict. It accepts only an ISO that matches `ISO-BUILD.json`, has a ready
-boot proof, and passes the release gate; otherwise it writes `ISO-ACCEPTANCE.json` with
-the next command to run.
+publication verdict. It accepts only an ISO that matches the digest-linked executed
+`ISO-BUILD.json`, has exact-ISO QEMU runtime proof through `login_prompt`, and passes the
+release gate; otherwise it writes `ISO-ACCEPTANCE.json` with the next command to run.
 
 Use `distroforge demo-iso PROJECT --execute` to create or reuse a minimal skeleton
 project and try the shortest local ISO path on the current host. Without `--execute`, it
@@ -303,7 +304,7 @@ module` when its default-on option meets such a host.
 
 That sentence used to name every GitHub runner as an example of a host with no device.
 The first real run of the weekly golden path measured `crw-rw---- 1 root kvm 10, 232` on
-`ubuntu-latest`, so the example was wrong; the rule it illustrated is unchanged, and the
+a GitHub runner, so the example was wrong; the rule it illustrated is unchanged, and the
 answer there is now whatever `access(2)` says on the day.
 
 Measured 2026-07-27, booting one desktop kernel and its 88 MB initramfs from the same
@@ -311,10 +312,11 @@ media under the lab's own defaults: **7.5 s** to the end of the initramfs emulat
 against **4.5 s** accelerated, and the Secure Boot firmware emitting the same 217 bytes
 either way, so acceleration changes the speed of a run and not its shape. `-cpu host`
 was measured too and is deliberately **not** passed: it bought nothing here (5.0 s), and
-leaving it out keeps the guest CPU model identical with and without acceleration, so a
-proof from an accelerated host stays comparable to one from an emulating runner. What
-the measurement does *not* establish is the folklore that a desktop `graphical.target`
-is unreachable under emulation — that needs a full ISO and has not been run.
+leaving it out keeps the guest CPU model identical with and without acceleration. This is
+a historical performance observation whose source, effective definition, toolchain and
+exact ISO chain was not preserved. It is not a current desktop or Secure Boot proof. Nor
+does it establish the folklore that a desktop `graphical.target` is unreachable under
+emulation — that needs a full ISO and has not been run.
 
 `qemu-lab-report.json` records the answer as `accelerated`. Two runs of the same command
 on the same ISO differ by more than half their wall-clock depending on it, and until it
@@ -357,14 +359,15 @@ emitted **not one serial byte**, while the identical run under `-M q35,smm=on` r
 lab sat in the firmware until its timeout expired and then reported a missing serial
 marker, so **the ISO took the blame for a machine that never booted it**, and every
 `--prebuild-vm-secure-boot` run since the option shipped was that hang. `QemuInvocation`
-now emits `-M q35,smm=on` whenever Secure Boot is on, and only then: the BIOS and plain
-UEFI shapes are the ones a boot proof has already come back green on, and the plain
-firmware descriptor accepts `pc-i440fx-*` too, so there is nothing to gain there and a
-proven result to lose. The machine type is dictated by the firmware, so no option surface
-exposes it — a knob here could only ever be set wrong. `tests/test_qemu_invocation.py`
-reads the installed descriptors and checks the constant against them, so an ovmf upload
-that moves Secure Boot to another machine turns a test red instead of turning every proof
-back into a silent half-hour hang.
+now emits `-M q35,smm=on` whenever Secure Boot is on, and only then. Historical,
+non-v2 runs reported BIOS, plain-UEFI and Secure-Boot observations on other media, but no
+retained evidence binds those results to the current source, effective definition,
+toolchain and exact ISO. They are diagnostic observations, not current proofs. The plain
+firmware descriptor accepts `pc-i440fx-*`; the machine type is dictated by the firmware,
+so no option surface exposes it. `tests/test_qemu_invocation.py` reads the installed
+descriptors and checks the constant against them, so an ovmf upload that moves Secure
+Boot to another machine turns a test red instead of turning every run back into a silent
+half-hour hang.
 
 `distroforge boot-proof` chooses its own firmware: `--firmware bios|uefi` and
 `--secure-boot`. Omitting `--firmware` keeps whatever the project or its definition already
@@ -375,7 +378,8 @@ firmware pair that cannot enforce Secure Boot are all **refused before QEMU star
 they report under the `prebuild-vm-*` codes because that is the option group holding the
 setting. The report names the firmware that ran (`Firmware: uefi with Secure Boot`, and the
 same two fields in `boot-proof.json`) because on a BIOS host a `ready` without that word is
-unreadable: it cannot be told apart from a green report about the half that already worked.
+unreadable: a BIOS result establishes BIOS only and says nothing about UEFI. The exact
+rebuilt ISO still requires digest-linked v2 proofs for both firmware paths.
 `--firmware` with `--backend iso-scan` boots nothing, so the report says the choice did not
 apply instead of wearing a firmware it never used.
 
@@ -387,9 +391,9 @@ the run names the firmware in the log line. Two widgets writing one field is how
 
 **Still a gap:** the in-build `--bootcheck` smoke test has no firmware selector of its own —
 `BootCheckService` builds its `QemuInvocation` without a firmware, so it is always BIOS.
-The same sentence applies to it as applied to `boot-proof` before this: on a BIOS host, a
-green bootcheck only confirms the half that already worked. Use `boot-proof --firmware uefi`
-or `build --prebuild-vm --prebuild-vm-firmware uefi` for a UEFI runtime proof.
+Such a result covers BIOS only; it cannot establish UEFI, and the exact rebuilt ISO still
+needs a digest-linked v2 BIOS proof too. Use `boot-proof --firmware uefi` or
+`build --prebuild-vm --prebuild-vm-firmware uefi` for a UEFI runtime proof.
 
 The interactive preview is the drivable, human-facing counterpart to the headless lab.
 `distroforge preview PROJECT` plans the session as a dry-run and prints the exact QEMU
@@ -412,10 +416,12 @@ file, a built-in plan (`boot-capture`, `headless-status`), or a smoke-matrix sce
 name; `--list` prints every available plan. The same canonical `QmpControl` drives the
 headless lab, the boot screenshot, and the interaction service, so there is one QMP engine
 instead of divergent copies. This is what makes the QEMU install smoke matrix executable: each smoke scenario
-maps to an interaction plan that boots the ISO, proves it reaches a login prompt, captures
-the screen, and shuts down. The run records a deterministic `qemu-interaction-report.json`
-and an `INTERACTION-INTEGRITY` manifest. The GUI **Virtualization** page exposes the same
-surface through the **Run interaction** action and the **Interaction plan** selector.
+maps to an interaction plan that, when successfully executed, requires a login marker,
+captures the screen, and shuts down. Merely defining or source-testing the plan does not
+establish that milestone for the current ISO. The run records a deterministic
+`qemu-interaction-report.json` and an `INTERACTION-INTEGRITY` manifest. The GUI
+**Virtualization** page exposes the same surface through the **Run interaction** action
+and the **Interaction plan** selector.
 
 ## Phase contracts
 
@@ -504,12 +510,12 @@ The ISO rebuild does not guess how to make the image bootable. In execute mode i
 source ISO to describe its own boot setup with `xorriso -indev <source> -report_el_torito
 as_mkisofs` and replays that description verbatim, overriding only the volume id, output
 path and modification date. Because the report is xorriso's own faithful, round-trippable
-account of the source's El Torito record, this reproduces whatever the source actually had
-— BIOS isolinux/GRUB, a UEFI El Torito alt-boot entry, or a modern appended EFI System
-Partition pulled straight from the source bytes via `--interval` — without DistroForge
-needing to interpret those tokens. This is the Debian/xorriso-recommended remaster path and
-it replaces the earlier brittle file-path guessing that silently dropped UEFI boot on
-recent Ubuntu layouts.
+account of the source's El Torito record, this replays the source's BIOS isolinux/GRUB,
+UEFI El Torito or appended EFI System Partition tokens without DistroForge needing to
+interpret them. That proves the argument-forwarding contract, not that the rebuilt media
+boots. This is the Debian/xorriso-recommended remaster path and it replaces the earlier
+brittle file-path guessing that silently dropped UEFI boot records on recent Ubuntu
+layouts.
 
 A generic `BootLayout.detect()` scan remains as an explicit fallback for when there is no
 source ISO to interrogate (bootstrap mode) or the source reports no boot record. The probe
@@ -521,12 +527,47 @@ bootstrap staged a BIOS El Torito image and nothing else, so `detect()` found no
 and `xorriso` was handed no EFI tokens: an amd64 ISO booted only in BIOS/CSM mode despite
 the target having `grub-efi-<arch>-bin` and `shim-signed` installed, and an arm64 ISO — where
 the BIOS image is deliberately skipped as "EFI-only" — carried no boot record whatsoever
-while the build exited 0. The bootstrap now stages both, and two options are gated where
-they were not: `-isohybrid-gpt-basdat` is emitted only alongside `-isohybrid-mbr`, which
-`man xorrisofs` says is the only case it works in, and the EFI entry is opened with
-`--efi-boot` rather than a bare `-eltorito-alt-boot -e`, because the macro's trailing
-`-eltorito-alt-boot` closes the entry so the BIOS entry's `-boot-load-size` cannot bleed
-into it.
+while the build exited 0. The bootstrap now stages both.
+
+Staging the images was necessary and not sufficient: the ISO that came out still did not
+boot under UEFI, and it took a real VM to find out. `--efi-boot <path>` expands to
+`-eltorito-alt-boot -e <path> -no-emul-boot -eltorito-alt-boot`, and that trailing token
+closes the entry — so the `-isohybrid-gpt-basdat` emitted after it had no current boot image
+left to promote and wrote no GPT at all. `xorriso -report_system_area` printed an MBR and
+nothing else; `fdisk` called the label `dos`. Since EDK2 carries no ISO9660 driver, the
+firmware was left with an ESP it could not read, sitting as a file inside the ISO9660 tree.
+
+The EFI System Partition is therefore appended as a GPT partition and the El Torito EFI
+entry aimed at that partition — `-append_partition 2 0xef <esp> -appended_part_as_gpt` and
+`-e --interval:appended_partition_2:all::` — which is the shape `grub-mkrescue` writes and
+the Ubuntu images ship, and the shape `boot_args_from_report()` could already *read* long
+before anything produced it. The MBR boot code is also now chosen next to the BIOS image it
+chains to: `isohdpfx.bin` is ISOLINUX's and `boot_hybrid.img` is GRUB's, and the former was
+picked unconditionally, so a from-scratch tree got ISOLINUX boot code spliced in front of
+`boot/grub/i386-pc/eltorito.img`.
+
+Measured on ovmf 2026.02 / QEMU 10.2.1, from one 1.35 GB reference-derivative tree:
+
+| ISO shape | what the firmware said |
+| --- | --- |
+| `--efi-boot` + `-isohybrid-gpt-basdat` (as shipped) | `failed to load Boot0002 … Not Found`, then `No bootable option or device was found.` |
+| appended ESP as GPT partition 2 | `BdsDxe: loading Boot0002`, then `BdsDxe: starting Boot0002` |
+
+The second row was confirmed with a positive control on the same ESP rather than on the
+firmware's word alone: with `BOOTX64.EFI` replaced by `mmx64.efi`, MokManager drew its full
+`Shim UEFI key management` UI and counted down, proving the appended partition really is a
+FAT volume the firmware reads and executes from. A deliberately truncated ESP in the same
+harness reported `Not Found`, so the negative direction is instrumented too.
+
+Two cautions belong with that table, both learned the hard way. First, the verdicts are slow:
+one variant took roughly six minutes to reach its firmware verdict and another said nothing
+for eighty seconds and then produced its whole story at once, so any window shorter than
+several minutes measures the window and not the ISO. An earlier round of this same
+comparison was scored at seventy seconds and at four minutes, and both readings were wrong.
+Second, a readable ESP is all this buys. shim starts and then fails to read `grubx64.efi`
+off that volume — `Unexpected return from initial read: Device Error, buffersize 0`, which is
+shim's own message — so the reference derivative still does not reach a GRUB menu. That is a
+separate defect from the partition layout, and no xorriso argument list fixes it.
 
 A tree that ends up with neither amorce is now refused rather than built. `xorriso` accepts
 such a tree happily and returns a valid ISO9660 image with a kernel, an initrd, a GRUB
@@ -751,13 +792,14 @@ make this work: `shim-signed` already depends on `grub-efi-<arch>-signed`, and
 that ships a ready-to-boot monolithic image. `grub-efi-<arch>-bin` itself ships no `.efi`
 file at all — only modules — so there is nothing in it to copy.
 
-Shim plus the signed GRUB is preferred, because that pair is what boots with Secure Boot on;
-the unsigned monolithic GRUB is the fallback and boots with it off. The files are placed in
-a FAT image at `boot/grub/efi.img`, which is what `BootLayout.detect()` looks for first and
-what an El Torito EFI entry is specified to contain, with plain copies under `EFI/boot/` for
-whatever reads the tree rather than its boot record. The FAT container is built on the host
-with `mtools`, which writes an image as an ordinary file: no loop mount, no privilege, and
-`mtools` stays out of the delivered filesystem. It is therefore a `Depends`, and `doctor`,
+Shim plus the signed GRUB is the preferred Secure Boot chain; the unsigned monolithic GRUB
+is the non-enforcing fallback. Those are intended roles, not proof that the current image
+completes either chain. The files are placed in a FAT image at `boot/grub/efi.img`, which is
+what `BootLayout.detect()` looks for first and what an El Torito EFI entry is specified to
+contain, with plain copies under `EFI/boot/` for whatever reads the tree rather than its
+boot record. The FAT container is built on the host with `mtools`, which writes an image as
+an ordinary file: no loop mount, no privilege, and `mtools` stays out of the delivered
+filesystem. It is therefore a `Depends`, and `doctor`,
 `iso-toolchain`, `iso-doctor` and bootstrap validation all report it — validation checks it
 up front so a missing tool costs a second rather than an hour of bootstrapping. The volume
 serial is pinned so two builds of one tree produce the same image; FAT directory timestamps
@@ -767,12 +809,10 @@ One thing here is **not machine-verified**: whether the staged GRUB finds
 `boot/grub/grub.cfg` from its own baked-in prefix. A signed GRUB's prefix is fixed at the
 vendor's build time and cannot be re-set — that is the point of signing. The
 `EFI/BOOT/grub.cfg` trampoline written into the image is the documented mitigation, and
-confirming it needs a real ISO booted under UEFI firmware. That sentence used to end "which
-no automated gate in this project performs"; the weekly golden path performs exactly that
-— `boot-proof --backend qemu --firmware uefi` on a freshly bootstrapped ISO, asserted down
-to `proof_level == "runtime"` so a structural scan cannot stand in for a boot. See
-`docs/golden-path.md`. What is still not machine-verified is the *signed* GRUB's prefix:
-the weekly proof boots without Secure Boot, so it exercises the trampoline but not the
-vendor-signed chain, and an enforcing-Secure-Boot proof remains a maintainer-run step. The
-refusal described under *Boot record reproduction* guarantees the media carries an amorce;
-it cannot guarantee that amorce chain-loads.
+confirming it needs a real ISO booted under UEFI firmware. The weekly golden path is
+configured to ask exactly that question with `boot-proof --backend qemu --firmware uefi`
+and a runtime milestone, but no completed run has yet proved the trampoline. The current
+audit reaches shim and fails before GRUB. The signed GRUB prefix and enforcing Secure Boot
+therefore remain unproved as well. See
+[`iso-build-proof-ledger.md`](iso-build-proof-ledger.md); structural boot records alone
+cannot guarantee that the amorce chain-loads.

@@ -153,12 +153,18 @@ def build_phase_sequence(*, source_mode: str, run_preview: bool) -> tuple[Planne
         _step(BuildPhase.RELEASE_ARTIFACTS, "Write release artifacts", "Generate SHA256SUMS, BUILDINFO and optional GPG signature"),
         _step(BuildPhase.BOOTCHECK, "Boot smoke test", "Optionally run a minimal headless QEMU boot check"),
         _step(BuildPhase.QEMU_SCREENSHOT, "Capture QEMU screenshot", "Optionally capture a boot screenshot for visual QA"),
-        _step(BuildPhase.PROVENANCE, "Write SBOM/provenance", "Record project definition, commands and output artifact metadata"),
         _step(BuildPhase.HTML_REPORT, "Write HTML report", "Write a human-readable build report for beginners and reviewers"),
         _step(BuildPhase.QA_MATRIX, "Run QA boot matrix", "Optionally run BIOS/UEFI/live/install QEMU scenarios"),
     ]
     if run_preview:
         steps.append(_step(BuildPhase.PREVIEW, "Preview ISO", "Boot the output ISO with QEMU"))
+    steps.append(
+        _step(
+            BuildPhase.PROVENANCE,
+            "Write SBOM/provenance",
+            "Record project definition, commands and output artifact metadata",
+        )
+    )
     return tuple(steps)
 
 

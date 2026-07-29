@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
+from conftest import (
+    write_valid_boot_proof,
+    write_valid_build_evidence,
+)
 
 from distroforge.cli import main
 from distroforge.core.artifact_paths import default_artifact_paths, default_output_iso
@@ -106,12 +111,8 @@ def test_release_gate_verifies_iso_sha_and_release_files(tmp_path) -> None:
     project.source_mode = "bootstrap"
     iso = project.output_dir / "GateReady.iso"
     iso.write_bytes(b"iso")
-    digest = __import__("hashlib").sha256(b"iso").hexdigest()
-    (project.output_dir / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
-    (project.output_dir / "BUILDINFO").write_text("Build-Date: now\n", encoding="utf-8")
-    (project.output_dir / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
-    (project.output_dir / "report.html").write_text("<html></html>\n", encoding="utf-8")
-    (project.output_dir / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
     options = BuildOptions()
     options.prebuild_vm.enabled = True
 
@@ -129,15 +130,8 @@ def test_publish_bundle_collects_maintainer_release_evidence(tmp_path) -> None:
     project.source_mode = "bootstrap"
     iso = project.output_dir / "BundleReady.iso"
     iso.write_bytes(b"iso")
-    digest = __import__("hashlib").sha256(b"iso").hexdigest()
-    for name, body in {
-        "SHA256SUMS": f"{digest}  {iso.name}\n",
-        "BUILDINFO": "Build-Date: now\n",
-        "distroforge-provenance.json": "{}\n",
-        "report.html": "<html></html>\n",
-        "qemu-lab-report.json": "{}\n",
-    }.items():
-        (project.output_dir / name).write_text(body, encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
     options = BuildOptions()
     options.prebuild_vm.enabled = True
 
@@ -168,6 +162,144 @@ def test_publish_bundle_marks_missing_boot_proof_as_blocked(tmp_path) -> None:
     assert "boot-proof" in (report.bundle_dir / "README-PUBLISH.txt").read_text(encoding="utf-8")
 
 
+def test_publish_bundle_copies_every_referenced_run_and_refuses_reuse(tmp_path) -> None:
+    project = Project.create("ClosedBundle", tmp_path / "closed-source", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "ClosedBundle.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    bundle = tmp_path / "closed-bundle"
+
+    first = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+    second = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+
+    assert not first.blocked
+    assert (bundle / "evidence" / "runs" / "build-run" / "RUN-MANIFEST.json").is_file()
+    assert (bundle / "evidence" / "runs" / "proof-run" / "qemu" / "serial.log").is_file()
+    assert second.blocked
+    assert any("not empty" in item for item in second.missing)
+
+
+@pytest.mark.parametrize(
+    ("run_id", "gate_code"),
+    (("build-run", "provenance"), ("proof-run", "boot-proof")),
+)
+def test_publish_bundle_never_follows_an_evidence_directory_symlink(
+    tmp_path,
+    run_id: str,
+    gate_code: str,
+) -> None:
+    project = Project.create(f"Linked{run_id}", tmp_path / f"linked-{run_id}", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / f"Linked{run_id}.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    outside = tmp_path / f"outside-{run_id}"
+    outside.mkdir()
+    (outside / "must-not-be-bundled.txt").write_text(
+        "external evidence bytes\n",
+        encoding="utf-8",
+    )
+    linked = project.output_dir / "evidence" / "runs" / run_id / "external"
+    linked.symlink_to(outside, target_is_directory=True)
+    bundle = tmp_path / f"bundle-{run_id}"
+
+    gate = ReleaseGateService().check(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+    )
+    report = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+
+    matching_gate = next(item for item in gate.items if item.code == gate_code)
+    assert matching_gate.status == "blocked"
+    assert "unsafe symlink" in matching_gate.detail
+    assert report.blocked
+    assert any("unsafe symlink" in item for item in report.missing)
+    assert not list(bundle.rglob("must-not-be-bundled.txt"))
+
+
+def test_publish_bundle_rejects_a_symlinked_runs_ancestor(tmp_path) -> None:
+    project = Project.create("LinkedRuns", tmp_path / "linked-runs", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "LinkedRuns.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    runs = project.output_dir / "evidence" / "runs"
+    external_runs = tmp_path / "external-runs"
+    runs.rename(external_runs)
+    runs.symlink_to(external_runs, target_is_directory=True)
+    bundle = tmp_path / "linked-runs-bundle"
+
+    gate = ReleaseGateService().check(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+    )
+    report = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+
+    provenance = next(item for item in gate.items if item.code == "provenance")
+    assert provenance.status == "blocked"
+    assert "unsafe symlink" in provenance.detail
+    assert report.blocked
+    assert any("unsafe symlink" in item for item in report.missing)
+    assert not (bundle / "evidence" / "runs" / "build-run").exists()
+
+
+def test_publish_bundle_refuses_a_symlinked_destination_root(tmp_path) -> None:
+    project = Project.create("LinkedBundle", tmp_path / "linked-bundle", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "LinkedBundle.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    external = tmp_path / "external-bundle-target"
+    external.mkdir()
+    bundle = tmp_path / "publish-link"
+    bundle.symlink_to(external, target_is_directory=True)
+
+    report = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+
+    assert report.blocked
+    assert any("bundle path contains unsafe symlink" in item for item in report.missing)
+    assert not list(external.iterdir())
+
+
 def test_sign_release_writes_manifest_and_plans_signatures(tmp_path) -> None:
     project = Project.create("SignBundle", tmp_path / "sign-bundle", "26.04")
     bundle = project.output_dir / "publish"
@@ -188,6 +320,29 @@ def test_sign_release_writes_manifest_and_plans_signatures(tmp_path) -> None:
     manifest = json.loads((bundle / "RELEASE-MANIFEST.json").read_text(encoding="utf-8"))
     assert manifest["gate_status"] == "review"
     assert any(entry["name"] == "SHA256SUMS" for entry in manifest["files"])
+
+
+def test_executing_signing_refuses_a_blocked_gate(tmp_path) -> None:
+    project = Project.create("BlockedSign", tmp_path / "blocked-sign", "26.04")
+    bundle = project.output_dir / "publish"
+    bundle.mkdir(parents=True)
+    iso = bundle / "BlockedSign.iso"
+    iso.write_bytes(b"iso")
+    digest = __import__("hashlib").sha256(iso.read_bytes()).hexdigest()
+    (bundle / "SHA256SUMS").write_text(
+        f"{digest}  {iso.name}\n",
+        encoding="utf-8",
+    )
+    (bundle / "RELEASE-GATE.json").write_text(
+        '{"status":"blocked","items":[]}\n',
+        encoding="utf-8",
+    )
+
+    report = sign_release_bundle(project, bundle_dir=bundle, execute=True)
+
+    assert report.status == "blocked"
+    assert any("signing was refused" in item for item in report.skipped)
+    assert not list(bundle.glob("*.asc"))
 
 
 def test_release_notes_use_bundle_manifest_gate_and_signing_report(tmp_path) -> None:
@@ -231,15 +386,8 @@ def test_verify_release_bundle_checks_manifest_and_sha256sums(tmp_path) -> None:
     project.source_mode = "bootstrap"
     iso = project.output_dir / "VerifyBundle.iso"
     iso.write_bytes(b"iso")
-    digest = __import__("hashlib").sha256(b"iso").hexdigest()
-    for name, body in {
-        "SHA256SUMS": f"{digest}  {iso.name}\n",
-        "BUILDINFO": "Build-Date: now\n",
-        "distroforge-provenance.json": "{}\n",
-        "report.html": "<html></html>\n",
-        "qemu-lab-report.json": "{}\n",
-    }.items():
-        (project.output_dir / name).write_text(body, encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
     options = BuildOptions()
     options.prebuild_vm.enabled = True
     create_publish_bundle(project, options, iso=iso, output_dir=project.output_dir)
@@ -274,6 +422,87 @@ def test_verify_release_bundle_blocks_manifest_mismatch(tmp_path) -> None:
     assert any(item.code == "manifest-size" and item.status == "blocked" for item in report.items)
 
 
+def test_verify_release_rejects_manifest_escape_and_unmanifested_files(tmp_path) -> None:
+    project = Project.create("ManifestEscape", tmp_path / "manifest-escape", "26.04")
+    bundle = project.output_dir / "publish"
+    bundle.mkdir(parents=True)
+    outside = project.output_dir / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    digest = __import__("hashlib").sha256(outside.read_bytes()).hexdigest()
+    (bundle / "RELEASE-MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "gate_status": "ready",
+                "files": [
+                    {
+                        "name": "../outside.txt",
+                        "size": outside.stat().st_size,
+                        "sha256": digest,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "RELEASE-GATE.json").write_text(
+        '{"status":"ready","items":[]}\n',
+        encoding="utf-8",
+    )
+    (bundle / "SIGNING-REPORT.json").write_text(
+        '{"status":"planned","planned":[]}\n',
+        encoding="utf-8",
+    )
+    (bundle / "extra.txt").write_text("not manifested\n", encoding="utf-8")
+
+    report = verify_release_bundle(project, bundle_dir=bundle)
+
+    assert report.blocked
+    assert any(item.code == "manifest-path" for item in report.items)
+    assert any(item.code == "manifest-extra" for item in report.items)
+
+
+def test_relocated_bundle_verifies_runtime_evidence_without_source_tree(tmp_path) -> None:
+    project = Project.create("Portable", tmp_path / "portable-source", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "Portable.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    bundle = tmp_path / "portable-bundle"
+    publish = create_publish_bundle(
+        project,
+        BuildOptions(),
+        iso=iso,
+        output_dir=project.output_dir,
+        bundle_dir=bundle,
+    )
+    assert not publish.blocked
+    sign_release_bundle(project, bundle_dir=bundle)
+    manifest = json.loads(
+        (bundle / "RELEASE-MANIFEST.json").read_text(encoding="utf-8")
+    )
+    sealed_before = {
+        entry["name"]: __import__("hashlib").sha256(
+            (bundle / entry["name"]).read_bytes()
+        ).hexdigest()
+        for entry in manifest["files"]
+    }
+    shutil.move(
+        str(project.output_dir / "evidence"),
+        str(tmp_path / "detached-source-evidence"),
+    )
+
+    report = verify_release_bundle(project, bundle_dir=bundle)
+
+    runtime = next(item for item in report.items if item.code == "runtime-evidence")
+    assert runtime.status == "ready"
+    assert not report.blocked
+    assert sealed_before == {
+        name: __import__("hashlib").sha256((bundle / name).read_bytes()).hexdigest()
+        for name in sealed_before
+    }
+
+
 def test_release_pipeline_runs_publish_sign_notes_and_verify(tmp_path) -> None:
     project = Project.create("PipelineBundle", tmp_path / "pipeline-bundle", "26.04")
     project.source_mode = "bootstrap"
@@ -281,11 +510,12 @@ def test_release_pipeline_runs_publish_sign_notes_and_verify(tmp_path) -> None:
     iso.write_bytes(b"iso")
     options = BuildOptions()
     options.prebuild_vm.enabled = True
-    (project.output_dir / "qemu-lab-report.json").write_text("{}\n", encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
 
     report = run_release_pipeline(project, options, iso=iso, output_dir=project.output_dir)
 
-    assert report.status == "review"
+    assert report.status in {"review", "ready"}
     bundle = project.output_dir / "publish"
     assert (bundle / "RELEASE-PIPELINE.json").exists()
     assert (bundle / "RELEASE-MANIFEST.json").exists()
@@ -343,7 +573,7 @@ def test_release_explain_summarizes_boot_proof_and_next_commands(monkeypatch, tm
     report = explain_release(project, iso=iso)
 
     assert report.boot_proof["proof_level"] == "structural"
-    assert any("boot-proof" in item for item in report.ready)
+    assert any("boot-proof" in item for item in report.blocked)
     assert any("--backend qemu" in command for command in report.next_commands)
     assert (project.output_dir / "publish" / "RELEASE-EXPLAIN.md").exists()
     assert "Release Evidence" in (project.output_dir / "publish" / "RELEASE-EXPLAIN.md").read_text(encoding="utf-8")
@@ -362,7 +592,7 @@ def test_publish_drill_runs_safe_rehearsal_without_signing(monkeypatch, tmp_path
 
     payload = json.loads((project.output_dir / "publish" / "PUBLISH-DRILL.json").read_text(encoding="utf-8"))
     signing = json.loads((project.output_dir / "publish" / "SIGNING-REPORT.json").read_text(encoding="utf-8"))
-    assert report.status in {"review_required", "ready_to_publish"}
+    assert report.status == "blocked"
     assert payload["execute_signing"] is False
     assert signing["execute"] is False
     assert (project.output_dir / "publish" / "RELEASE-EXPLAIN.md").exists()
@@ -412,7 +642,7 @@ def test_boot_proof_writes_planned_normalized_report(tmp_path) -> None:
     report = run_boot_proof(project, iso=iso, backend="qemu", execute=False, timeout=120)
 
     assert report.status == "planned"
-    proof = json.loads((project.output_dir / "boot-proof.json").read_text(encoding="utf-8"))
+    proof = json.loads(report.proof.read_text(encoding="utf-8"))
     assert proof["status"] == "planned"
     assert proof["backend"] == "qemu"
 
@@ -469,7 +699,7 @@ def test_release_gate_rejects_planned_boot_proof(tmp_path) -> None:
     assert {item.code: item.status for item in gate.items}["boot-proof"] == "blocked"
 
 
-def test_release_gate_accepts_ready_iso_scan_boot_proof(tmp_path) -> None:
+def test_release_gate_rejects_structural_iso_scan_as_runtime_proof(tmp_path) -> None:
     project = Project.create("IsoScanGate", tmp_path / "iso-scan-gate", "26.04")
     project.source_mode = "bootstrap"
     iso = project.output_dir / "IsoScanGate.iso"
@@ -483,7 +713,7 @@ def test_release_gate_accepts_ready_iso_scan_boot_proof(tmp_path) -> None:
 
     gate = ReleaseGateService().check(project, BuildOptions(), iso=iso, output_dir=project.output_dir)
 
-    assert {item.code: item.status for item in gate.items}["boot-proof"] == "ready"
+    assert {item.code: item.status for item in gate.items}["boot-proof"] == "blocked"
 
 
 def test_release_gate_marks_required_publish_signing_as_review(tmp_path) -> None:

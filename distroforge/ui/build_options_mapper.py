@@ -216,7 +216,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             screenshot=window.prebuild_vm_screenshot_check.isChecked(),
             screenshot_name=window.prebuild_vm_screenshot_name_edit.text().strip() or "prebuild-vm.ppm",
             success_patterns=_split_values(window.prebuild_vm_success_patterns_edit.text())
-            or ["login:", "Reached target"],
+            or ["login:"],
             qmp_socket=window.prebuild_vm_qmp_socket_edit.text().strip() or "qemu-lab.qmp",
             pid_file=window.prebuild_vm_pid_file_edit.text().strip() or "qemu-lab.pid",
             report_name=window.prebuild_vm_report_name_edit.text().strip()

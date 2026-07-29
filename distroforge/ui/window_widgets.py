@@ -373,7 +373,7 @@ def build_window_widgets(window) -> None:
         "Secure Boot keys. Copied per run so the system template stays pristine. Leave "
         "empty to use the one detected on this host, shown in grey."
     )
-    window.prebuild_vm_success_patterns_edit = QLineEdit("login:,Reached target")
+    window.prebuild_vm_success_patterns_edit = QLineEdit("login:")
     window.artifacts_output_iso_edit = QLineEdit()
     window.artifacts_reports_dir_edit = QLineEdit()
     window.artifacts_livefs_work_dir_edit = QLineEdit()

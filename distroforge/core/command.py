@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 import io
 import json
 import os
@@ -128,6 +129,7 @@ class CommandRunner:
         self.dry_run = dry_run
         self.log_path = log_path
         self.history: list[CommandSpec] = []
+        self.execution_identities: list[dict[str, object]] = []
 
     def run(self, spec: CommandSpec, check: bool = True) -> CommandResult:
         self.history.append(spec)
@@ -141,6 +143,7 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
+        self._capture_execution_identity(spec)
         completed = subprocess.run(
             spec.argv,
             cwd=spec.cwd,
@@ -192,6 +195,7 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
+        self._capture_execution_identity(spec)
         captured: list[str] = []
         with subprocess.Popen(
             spec.argv,
@@ -259,6 +263,8 @@ class CommandRunner:
             "needs_root": spec.needs_root,
             "description": spec.description,
             "has_stdin": spec.stdin is not None,
+            "env_keys": sorted(spec.env),
+            "env_sha256": _environment_sha256(spec.env),
             "returncode": result.returncode if result else None,
             # The command's own words, for every command rather than only the ones that
             # fail. stdin stays a bare boolean above on purpose -- it is where a
@@ -270,6 +276,184 @@ class CommandRunner:
         }
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def _capture_execution_identity(self, spec: CommandSpec) -> None:
+        """Snapshot wrapper and target-root executables just before dispatch.
+
+        The first item is the host process Python dispatches. Recognised sudo,
+        chroot, nspawn and env layers are also resolved and hashed, including the
+        final executable inside the target root. This closes the common gap where a
+        host ``apt-get`` digest was reported for ``chroot /target apt-get``.
+        """
+        chain = _execution_chain(spec.argv)
+        entrypoint = chain[0]
+        identity: dict[str, object] = {
+            "history_index": len(self.history) - 1,
+            "captured_at": datetime.now(UTC).isoformat(),
+            "scope": "host-entrypoint-pre-dispatch",
+            "argv": list(spec.argv),
+            "argv0": spec.argv[0],
+            "available": entrypoint["available"],
+            "path": entrypoint["path"],
+            "size": entrypoint["size"],
+            "sha256": entrypoint["sha256"],
+            "stable_while_hashed": entrypoint["stable_while_hashed"],
+            "execution_chain": chain,
+        }
+        self.execution_identities.append(identity)
+        if not self.log_path:
+            return
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"event": "execution-identity", **identity}
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _execution_chain(argv: Sequence[str]) -> list[dict[str, object]]:
+    nested = tuple(argv)
+    target_root: Path | None = None
+    chain: list[dict[str, object]] = []
+    while nested:
+        command = nested[0]
+        chain.append(_snapshot_executable(command, target_root))
+        leaf = Path(command).name
+        if leaf == "sudo":
+            index = 1
+            while index < len(nested) and nested[index] in {"-A", "-n"}:
+                index += 1
+            nested = nested[index:]
+            continue
+        if leaf == "pkexec":
+            nested = nested[1:]
+            continue
+        if leaf == "chroot":
+            if len(nested) < 3:
+                break
+            target_root = Path(nested[1]).resolve()
+            nested = nested[2:]
+            continue
+        if leaf == "systemd-nspawn":
+            index = 1
+            selected_root: Path | None = None
+            options_with_value = {
+                "--directory",
+                "-D",
+                "--machine",
+                "-M",
+                "--image",
+                "-i",
+                "--setenv",
+                "-E",
+            }
+            while index < len(nested) and nested[index].startswith("-"):
+                token = nested[index]
+                if token in {"--directory", "-D"} and index + 1 < len(nested):
+                    selected_root = Path(nested[index + 1]).resolve()
+                index += 2 if token in options_with_value else 1
+            target_root = selected_root
+            nested = nested[index:]
+            continue
+        if leaf == "env":
+            index = 1
+            while index < len(nested):
+                token = nested[index]
+                if token == "--":
+                    index += 1
+                    break
+                if token.startswith("-") or "=" in token:
+                    index += 1
+                    continue
+                break
+            nested = nested[index:]
+            continue
+        break
+    return chain
+
+
+def _snapshot_executable(
+    command: str,
+    target_root: Path | None,
+) -> dict[str, object]:
+    if target_root is None:
+        resolved = shutil.which(command)
+        path = Path(resolved).resolve() if resolved else Path(command)
+        scope = "host-pre-dispatch"
+    else:
+        path = _target_executable(target_root, command)
+        scope = "target-root-pre-dispatch"
+    identity: dict[str, object] = {
+        "command": command,
+        "scope": scope,
+        "root": str(target_root) if target_root else None,
+        "available": path.is_file(),
+        "path": str(path),
+        "size": 0,
+        "sha256": "",
+        "stable_while_hashed": False,
+    }
+    if not path.is_file():
+        return identity
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        stat_before = os.fstat(handle.fileno())
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+        stat_after = os.fstat(handle.fileno())
+    identity.update(
+        {
+            "size": stat_after.st_size,
+            "sha256": digest.hexdigest(),
+            "stable_while_hashed": (
+                stat_before.st_dev,
+                stat_before.st_ino,
+                stat_before.st_size,
+                stat_before.st_mtime_ns,
+            )
+            == (
+                stat_after.st_dev,
+                stat_after.st_ino,
+                stat_after.st_size,
+                stat_after.st_mtime_ns,
+            ),
+        }
+    )
+    return identity
+
+
+def _target_executable(root: Path, command: str) -> Path:
+    candidates = (
+        (root / command.lstrip("/"),)
+        if command.startswith("/")
+        else tuple(
+            root / relative / command
+            for relative in ("usr/sbin", "usr/bin", "sbin", "bin")
+        )
+    )
+    for candidate in candidates:
+        resolved = _resolve_target_link(root, candidate)
+        if resolved.is_file():
+            return resolved
+    return candidates[0]
+
+
+def _resolve_target_link(root: Path, candidate: Path) -> Path:
+    current = candidate
+    for _ in range(16):
+        normalised = Path(os.path.abspath(current))
+        try:
+            normalised.relative_to(root)
+        except ValueError:
+            return root / ".distroforge-escaped-executable"
+        current = normalised
+        if not current.is_symlink():
+            return current
+        target = Path(os.readlink(current))
+        current = (
+            root / str(target).lstrip("/")
+            if target.is_absolute()
+            else current.parent / target
+        )
+    return current
 
 
 def sudo(argv: Sequence[str], use_sudo: bool = True) -> tuple[str, ...]:
@@ -333,3 +517,12 @@ def _quote(value: str) -> str:
     # to be printed raw. The same defect was live in the GUI's CLI-equivalent
     # panel and in the desktop-source chroot command.
     return shlex.quote(value)
+
+
+def _environment_sha256(environment: Mapping[str, str]) -> str:
+    body = json.dumps(
+        dict(sorted(environment.items())),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()

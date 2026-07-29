@@ -26,6 +26,7 @@ from .command import CommandRunner, CommandSpec
 from .customize import desktop_conflicting_packages, desktop_package_plan, split_desktop_packages
 from .desktop_source import DesktopSourceOptions
 from .drivers import DriverOptions
+from .evidence_run import make_run_context, reserve_evidence_run
 from .fsops import FileSystemOps
 from .html_report import HtmlReportOptions
 from .importer import ImportOptions
@@ -102,6 +103,24 @@ class BuildOptions:
     prebuild_vm: PrebuildVmOptions = field(default_factory=PrebuildVmOptions)
     trust: TrustOptions = field(default_factory=TrustOptions)
     vuln_scan: VulnScanOptions = field(default_factory=VulnScanOptions)
+    _evidence_context: dict[str, object] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _evidence_reserved: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _evidence_injected: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
@@ -153,6 +172,25 @@ class BuildOrchestrator:
         self.project = project
         self.runner = runner
         self.options = options or BuildOptions()
+        evidence_context = (
+            self.options._evidence_context if self.options._evidence_injected else None
+        )
+        self.options._evidence_injected = False
+        if not isinstance(evidence_context, dict):
+            evidence_context = make_run_context(
+                project,
+                self.options,
+                mode="plan" if runner.dry_run else "execute",
+            )
+            self.options._evidence_context = evidence_context
+            self.options._evidence_reserved = False
+        if not runner.dry_run and not self.options._evidence_reserved:
+            reserve_evidence_run(
+                project.output_dir,
+                str(evidence_context["run_id"]),
+                executed=True,
+            )
+            self.options._evidence_reserved = True
         self.context = BuildContext(project, runner, self.options)
         self.progress = progress
         self.report = BuildReport()

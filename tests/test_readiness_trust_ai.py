@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import make_rootfs
+from conftest import (
+    make_rootfs,
+    write_valid_boot_proof,
+    write_valid_build_evidence,
+)
 
 from distroforge.ai.forgeadvisor import ForgeAdvisor
 from distroforge.ai.review import ConstrainedRecipeAssistant, PlanReviewer
@@ -316,6 +320,8 @@ def test_build_journey_guides_beginner_and_maintainer_paths(tmp_path: Path) -> N
     (project.output_dir / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
     (project.output_dir / "report.html").write_text("<html></html>\n", encoding="utf-8")
     (project.output_dir / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
     options.output_iso = iso
     options.prebuild_vm.enabled = True
     options.release_artifacts.enabled = True
@@ -579,6 +585,8 @@ def test_release_confidence_ritual_is_advisory_not_gating(tmp_path: Path) -> Non
     (project.output_dir / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
     (project.output_dir / "report.html").write_text("<html></html>\n", encoding="utf-8")
     (project.output_dir / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
     options = BuildOptions()
     options.output_iso = iso
     options.prebuild_vm.enabled = True
@@ -625,6 +633,8 @@ def test_beginner_iso_path_prepares_definition_dry_run_and_gate(tmp_path: Path, 
             (iso.parent / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
             (iso.parent / "report.html").write_text("<html></html>\n", encoding="utf-8")
             (iso.parent / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
+            write_valid_build_evidence(self.project, iso)
+            write_valid_boot_proof(self.project, iso)
             self.runner.run(__import__("distroforge.core.command", fromlist=["CommandSpec"]).CommandSpec(("write-file", str(iso))))
 
     monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", FakeOrchestrator)
@@ -767,7 +777,11 @@ def test_beginner_iso_boot_proof_plans_and_gate_uses_proof_report(capsys, tmp_pa
     repair_beginner_iso_release_artifacts(project, options)
     gate = __import__("distroforge.core.release_gate", fromlist=["ReleaseGateService"]).ReleaseGateService().check(project, options, iso=iso, output_dir=project.output_dir)
     statuses = {item.code: item.status for item in gate.items}
-    assert statuses["boot-proof"] == "ready"
+    assert statuses["boot-proof"] == "blocked"
+
+    write_valid_boot_proof(project, iso)
+    gate = __import__("distroforge.core.release_gate", fromlist=["ReleaseGateService"]).ReleaseGateService().check(project, options, iso=iso, output_dir=project.output_dir)
+    assert {item.code: item.status for item in gate.items}["boot-proof"] == "ready"
 
     definition = project.root / "boot-proof.yaml"
     write_definition(definition_from_project(project, options), definition)
