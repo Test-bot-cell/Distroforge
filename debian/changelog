@@ -19,7 +19,14 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     skipping that proof there. The original failures were reproduced with
     PATH=/nonexistent and umask 0022; the complete local gate now passes 1,279
     tests with one skip. No ISO, package, Golden-path run, tag, main
-    fast-forward or publication occurred.
+    fast-forward or publication occurred. After the separately authorized
+    develop-only push, GitHub Actions run 30488026011 passed all ten jobs for
+    exact signed commit 7b87af7e2e2a411fdf626f02ba26928ac1c75dcb:
+    each Python/Qt leg reported 1,243 passed and 37 skipped tests, and the
+    distribution-only leg reported 1,272 passed and eight skipped tests while
+    installing the declared GPG and SquashFS providers. GitHub accepts the
+    commit signature as valid; main and debian/0.3.5-16 remained unchanged.
+    This is a source/test CI receipt, not package or ISO build proof.
   * Preserved the signed staging receipt while restoring the commit-subject
     ratchet. Commit 33ddb64c4205428e4208d2ce01a37f6cefb32d8e had already
     been pushed to develop when all ten jobs in GitHub Actions run 30482945660

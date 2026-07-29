@@ -24,8 +24,8 @@ bootloader, a kernel or a desktop session ran.
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
-| source checkout | observed | the audited base of this local M2.2 work is signed commit `ccf1febf361857e47b1447e04f244d79d16ae393`, also `origin/develop`; its signature verifies under primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The two authorized staging pushes advanced only `develop`, first to signed audit commit `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`, then to its signed M2.1 repair. `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
-| CI action inputs | blocked | GitHub Actions run `30485032512` executed per-push CI for exact commit `ccf1febf…`. `packaging-static` passed the complete-history M2.1 ratchet; the other nine jobs exposed three test-environment debts: CLI planning tests depended on host ISO tools, a FIFO fixture depended on umask, and the distribution-only leg invoked an undeclared `gpg`. This is a captured source/test CI refusal, not a Golden-path or ISO-build result. |
+| source checkout | observed | the audited M2.2 source and `origin/develop` are signed commit `7b87af7e2e2a411fdf626f02ba26928ac1c75dcb`; GitHub and local GPG verification both accept primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The three authorized staging pushes advanced only `develop`, through signed audit commit `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`, its signed M2.1 repair `ccf1febf361857e47b1447e04f244d79d16ae393`, and the signed M2.2 repair. `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
+| CI action inputs | observed | GitHub Actions run `30488026011` executed per-push CI for exact signed commit `7b87af7e…` and completed all ten jobs successfully. Every Python/Qt leg reported 1,243 passed and 37 skipped tests; the distribution-only leg, which installed the declared GPG and SquashFS providers, reported 1,272 passed and eight skipped tests. The run has no failed or skipped Actions job/step. Its ten non-blocking annotations are the separately tracked Node 20 action-runtime deprecation. This closes the M2.2 runner-coupling refusal as an observed CI result, not as a Golden-path or ISO-build proof. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -264,30 +264,26 @@ merely copied.
 
 ## Next executing milestones
 
-No existing artifact can be retrofitted into v2 proof. The next acceptable journey is:
+No existing artifact can be retrofitted into v2 proof. M2.2 is now closed at its stated
+source/test boundary by the receipt below. The next acceptable journey is:
 
-1. push the signed local M2.2 test-environment repair only after explicit authorization,
-   then record its remote CI verdict. M2.1 already preserved the exact
-   `(33ddb64c4205428e4208d2ce01a37f6cefb32d8e, audit: harden ISO build evidence
-   chain)` pair while keeping every other `audit:` subject rejected; run `30485032512`
-   proved that complete-history ratchet green and exposed the next portability debts;
-2. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
+1. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
    package item can become publication-ready for evidence rather than by assertion;
-3. seal the source-ISO detached signature, verification status and exact keyring for
+2. seal the source-ISO detached signature, verification status and exact keyring for
    offline release-gate replay, or keep ISO-remaster publication explicitly at `review`;
-4. execute a fresh minimal build with the externally pinned archive trust policy, package
+3. execute a fresh minimal build with the externally pinned archive trust policy, package
    transaction closure, corrected GRUB MBR and appended GPT ESP;
-5. replay the semantic rootfs manifest from that exact final ISO and verify every
+4. replay the semantic rootfs manifest from that exact final ISO and verify every
    append-only run file and intermediate identity;
-6. review the executed command identities and explicitly account for the still-open
+5. review the executed command identities and explicitly account for the still-open
    transitive ELF loader/library boundary;
-7. execute BIOS and UEFI proofs against that exact ISO through `login_prompt`;
-8. execute UEFI Secure Boot and prove shim, signed GRUB, kernel and casper milestones;
-9. repeat with the selected desktop and require display-manager and graphical-session
+6. execute BIOS and UEFI proofs against that exact ISO through `login_prompt`;
+7. execute UEFI Secure Boot and prove shim, signed GRUB, kernel and casper milestones;
+8. repeat with the selected desktop and require display-manager and graphical-session
    milestones;
-10. build independently a second time from pinned inputs and compare the complete
+9. build independently a second time from pinned inputs and compare the complete
    artifact manifests;
-11. sign and verify the closing manifests, or commit them and the corresponding artifacts
+10. sign and verify the closing manifests, or commit them and the corresponding artifacts
    to trusted WORM/content-addressed storage.
 
 Until those rows are proved, `0.3.5-17` stays `UNRELEASED`; no release tag or `main`
@@ -362,4 +358,35 @@ ISO build.
   passed, mypy checked 255 source files, pytest reported 1,279 passed and one skipped,
   ShellCheck passed and both embedded Python payloads compiled. All eight
   `pre-commit run --all-files` ratchets also passed. These are local source/test
-  results; the remote M2.2 verdict does not exist until an explicitly authorized push.
+  results. At that point the remote M2.2 verdict did not yet exist; the following
+  receipt records the later, separately authorized push and result.
+
+### 2026-07-29 — M2.2 remote verdict
+
+- The explicitly authorized fast-forward advanced only `origin/develop`, from
+  `ccf1febf361857e47b1447e04f244d79d16ae393` to signed commit
+  `7b87af7e2e2a411fdf626f02ba26928ac1c75dcb`. GitHub reports the commit signature
+  `verified: true` with reason `valid`; local verification accepts primary fingerprint
+  `93D942241BECDD422606C36C4C0D75219B5506CF`.
+- Per-push [CI run 30488026011](https://github.com/Test-bot-cell/Distroforge/actions/runs/30488026011)
+  was created for event `push`, branch `develop` and that exact full SHA. It completed
+  `success` at `2026-07-29T20:22:47Z`: all eight Python 3.11--3.14 / Qt matrix jobs,
+  `packaging-static` and `distro-dependencies` succeeded.
+- Each matrix leg passed Ruff, mypy over 255 source files and pytest with 1,243 passed
+  and 37 skipped tests. `distro-dependencies` installed only the declared distribution
+  packages, satisfied the declared Pydantic version, then ran the suite as the
+  unprivileged builder with 1,272 passed and eight skipped tests. `packaging-static`
+  passed ShellCheck, embedded-Python compilation, every whole-tree pre-commit ratchet,
+  107 packaging/policy tests and the five targeted Lintian-vendor tests.
+- No Actions job or step was failed or skipped. The ten annotations, one per job, contain
+  no error and report only that the pinned checkout/setup-python actions still target
+  deprecated Node 20 and are being forced onto Node 24. That maintenance debt remains
+  separate from M2.2.
+- `origin/main` remained `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`.
+  Annotated tag `debian/0.3.5-16` remained object
+  `b7e5f3b3504a793a457954f12301c37ab1b17e92`, peeled to
+  `38217da4ecbd1076514c9c4e949100a18272ee8a`. No pull request, tag or `main`
+  fast-forward was created.
+- This receipt closes only the M2.2 source/test-environment milestone. The run did not
+  build a Debian package, execute the Golden path, assemble an ISO or boot one, and it
+  cannot promote any of those ledger rows.
