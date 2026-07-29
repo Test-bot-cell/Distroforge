@@ -59,9 +59,28 @@ class SanitizeService:
                 )
             )
             return
+        self.finalize_packages()
+        self.clean_target()
+
+    def finalize_packages(self) -> None:
+        """Apply the last dpkg mutation before package evidence is sealed."""
+        if not self.options.enabled:
+            return
         chroot = ChrootService(self.runner, self.root, self.use_sudo)
         if self.options.package_autoremove:
             self._guarded_autoremove(chroot)
+
+    def clean_target(self) -> None:
+        """Remove caches and host state after their evidence has been copied out."""
+        if not self.options.enabled:
+            self.runner.run(
+                CommandSpec(
+                    argv=("sanitize-skip", str(self.root)),
+                    description="Sanitize disabled",
+                )
+            )
+            return
+        chroot = ChrootService(self.runner, self.root, self.use_sudo)
         if self.options.apt_cache:
             self.runner.run(
                 CommandSpec(

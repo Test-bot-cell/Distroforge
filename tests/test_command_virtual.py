@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from distroforge.core.command import VIRTUAL_COMMANDS, CommandRunner, CommandSpec
+from distroforge.core.command import (
+    VIRTUAL_COMMANDS,
+    CommandRunner,
+    CommandSpec,
+    ExecutionIdentityError,
+)
 from distroforge.core.vulnscan import VulnScanOptions, VulnScanService
 
 # Internal reporting/assertion verbs that are recorded as runner events, never
@@ -31,12 +36,12 @@ def test_real_runner_treats_marker_as_virtual(argv: tuple[str, ...]) -> None:
     assert result.returncode == 0
 
 
-def test_unregistered_command_still_execs_and_raises() -> None:
-    # Negative control: a verb that is NOT virtual is exec'd for real, so a
-    # missing binary raises FileNotFoundError. This is exactly what the markers
-    # above were doing before they were registered.
+def test_unregistered_missing_command_is_refused_before_dispatch() -> None:
+    # Negative control: a verb that is NOT virtual must enter the real execution
+    # boundary. A missing executable cannot be opened and descriptor-bound, so the
+    # runner fails closed before asking subprocess to resolve a pathname.
     runner = CommandRunner(dry_run=False)
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(ExecutionIdentityError, match="cannot bind dispatch"):
         runner.run(CommandSpec(argv=("distroforge-not-a-real-binary",)))
 
 

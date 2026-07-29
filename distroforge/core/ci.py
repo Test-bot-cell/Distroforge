@@ -33,7 +33,18 @@ class CiService:
                 CommandSpec(argv=(sys.executable, "-m", "pytest"), description="Run pytest suite")
             )
         if self.options.build_dry_run:
-            BuildOrchestrator(self.project, self.runner, BuildOptions(use_sudo=False)).run()
+            # `ci --execute` executes lint/package checks, but this option is explicitly
+            # a build *dry run*. Reusing self.runner made it a hidden real ISO build
+            # whenever --execute was present, bypassing run_iso_build and its evidence
+            # manifest. Keep the preview structurally non-executing and copy its history
+            # back only so the CLI can still display the planned commands.
+            preview = CommandRunner(dry_run=True)
+            BuildOrchestrator(
+                self.project,
+                preview,
+                BuildOptions(use_sudo=False),
+            ).run()
+            self.runner.history.extend(preview.history)
         if self.options.debian_package:
             report = run_packaging_ci(self.runner, self.project.root, execute=not self.runner.dry_run)
             self.runner.run(

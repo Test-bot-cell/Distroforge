@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,7 @@ from distroforge.core.gpg import (
 from distroforge.core.integrity import IntegrityOptions, IntegrityService
 from distroforge.core.rollback import RestoreRequest, RollbackService
 from distroforge.core.snapshots import SnapshotOptions, SnapshotService
+from distroforge.core.trust import TrustOptions, TrustService
 
 FINGERPRINT = "4248DCA20A9407BBFA31818518BC560A874C3C7F"
 LONG_KEY_ID = FINGERPRINT[-16:]
@@ -135,6 +137,26 @@ def test_real_signature_from_another_key_is_refused(
 
     with pytest.raises(ValueError, match="not from the pinned fingerprint"):
         service.verify_gpg(signature, payload, "the source ISO")
+
+
+@gpg_binary
+def test_real_executing_source_trust_closes_sha_signature_and_full_pin(
+    signed_payload: tuple[Path, Path, str],
+) -> None:
+    signature, payload, fingerprint = signed_payload
+    options = TrustOptions(
+        source_sha256=hashlib.sha256(payload.read_bytes()).hexdigest(),
+        source_signature=signature,
+        source_gpg_fingerprint=fingerprint,
+    )
+
+    report = TrustService().enforce_source_iso(
+        payload,
+        options,
+        CommandRunner(dry_run=False),
+    )
+
+    assert report.ok
 
 
 # One restore path. RollbackService used to run tar with no sudo() wrapper over a

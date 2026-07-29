@@ -170,7 +170,7 @@ def apply_definition(project: Project, data: dict[str, object]) -> BuildOptions:
         run_preview=bool(data.get("preview", False)),
         run_synaptic=bool(data.get("synaptic", False)),
         sanitize=_group(data, "sanitize", SanitizeOptions),
-        bootstrap=_group(data, "bootstrap", BootstrapOptions),
+        bootstrap=_bootstrap_options(data.get("bootstrap", {})),
         snaps=SnapOptions([SnapSpec.parse(str(value)) for value in data.get("snaps", [])]),
         drivers=_group(data, "drivers", DriverOptions),
         autoinstall=_group(data, "autoinstall", AutoinstallOptions),
@@ -245,6 +245,44 @@ def _trust_options(data: object) -> TrustOptions:
         else None,
         require_source_checksum=bool(data.get("require_source_checksum", False)),
         require_source_signature=bool(data.get("require_source_signature", False)),
+    )
+
+
+def _bootstrap_options(data: object) -> BootstrapOptions:
+    if not isinstance(data, dict):
+        return BootstrapOptions()
+    raw_source_policies = data.get("source_policies", [])
+    if not isinstance(raw_source_policies, list) or not all(
+        isinstance(value, dict) for value in raw_source_policies
+    ):
+        raise ValueError("bootstrap.source_policies must be a list of mappings")
+    return BootstrapOptions(
+        arch=str(data.get("arch", "amd64")),
+        variant=str(data.get("variant", "minbase")),
+        mirror=str(data["mirror"]) if data.get("mirror") else None,
+        base_packages=(
+            [str(value) for value in data.get("base_packages", [])]
+            if data.get("base_packages") is not None
+            else None
+        ),
+        archive_keyring=(
+            Path(str(data["archive_keyring"]))
+            if data.get("archive_keyring")
+            else None
+        ),
+        archive_keyring_sha256=(
+            str(data["archive_keyring_sha256"])
+            if data.get("archive_keyring_sha256")
+            else None
+        ),
+        archive_signer_fingerprints=[
+            str(value)
+            for value in data.get("archive_signer_fingerprints", [])
+        ],
+        source_policies=[
+            {str(key): value for key, value in policy.items()}
+            for policy in raw_source_policies
+        ],
     )
 
 

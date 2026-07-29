@@ -5,6 +5,7 @@ import shutil
 
 import pytest
 from conftest import (
+    package_fixture_options,
     write_valid_boot_proof,
     write_valid_build_evidence,
 )
@@ -113,7 +114,7 @@ def test_release_gate_verifies_iso_sha_and_release_files(tmp_path) -> None:
     iso.write_bytes(b"iso")
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
-    options = BuildOptions()
+    options = package_fixture_options()
     options.prebuild_vm.enabled = True
 
     report = ReleaseGateService().check(project, options, iso=iso, output_dir=project.output_dir)
@@ -122,6 +123,9 @@ def test_release_gate_verifies_iso_sha_and_release_files(tmp_path) -> None:
     assert statuses["iso"] == "ready"
     assert statuses["sha256"] == "ready"
     assert statuses["boot-proof"] == "ready"
+    assert statuses["rootfs-identity"] == "ready"
+    assert statuses["iso-assembly"] == "ready"
+    assert statuses["package-inputs"] == "blocked"
     assert statuses["packaging-policy"] in {"ready", "review"}
 
 
@@ -132,12 +136,16 @@ def test_publish_bundle_collects_maintainer_release_evidence(tmp_path) -> None:
     iso.write_bytes(b"iso")
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
-    options = BuildOptions()
+    options = package_fixture_options()
     options.prebuild_vm.enabled = True
 
     report = create_publish_bundle(project, options, iso=iso, output_dir=project.output_dir)
 
-    assert report.status in {"review", "ready"}
+    assert report.status == "blocked"
+    package_inputs = next(
+        item for item in report.gate.items if item.code == "package-inputs"
+    )
+    assert "installed-file causality" in package_inputs.detail
     assert {"BundleReady.iso", "SHA256SUMS", "BUILDINFO", "distroforge-provenance.json", "report.html", "qemu-lab-report.json", "RELEASE-GATE.json", "README-PUBLISH.txt"} <= set(report.copied)
     assert (report.bundle_dir / "README-PUBLISH.txt").read_text(encoding="utf-8").startswith("DistroForge maintainer publish bundle")
 
@@ -173,20 +181,24 @@ def test_publish_bundle_copies_every_referenced_run_and_refuses_reuse(tmp_path) 
 
     first = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
     )
     second = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
     )
 
-    assert not first.blocked
+    assert first.blocked
+    assert any(
+        item.code == "package-inputs" and item.status == "blocked"
+        for item in first.gate.items
+    )
     assert (bundle / "evidence" / "runs" / "build-run" / "RUN-MANIFEST.json").is_file()
     assert (bundle / "evidence" / "runs" / "proof-run" / "qemu" / "serial.log").is_file()
     assert second.blocked
@@ -220,13 +232,13 @@ def test_publish_bundle_never_follows_an_evidence_directory_symlink(
 
     gate = ReleaseGateService().check(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
     )
     report = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
@@ -255,13 +267,13 @@ def test_publish_bundle_rejects_a_symlinked_runs_ancestor(tmp_path) -> None:
 
     gate = ReleaseGateService().check(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
     )
     report = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
@@ -289,7 +301,7 @@ def test_publish_bundle_refuses_a_symlinked_destination_root(tmp_path) -> None:
 
     report = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
@@ -388,18 +400,19 @@ def test_verify_release_bundle_checks_manifest_and_sha256sums(tmp_path) -> None:
     iso.write_bytes(b"iso")
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
-    options = BuildOptions()
+    options = package_fixture_options()
     options.prebuild_vm.enabled = True
     create_publish_bundle(project, options, iso=iso, output_dir=project.output_dir)
     sign_release_bundle(project)
 
     report = verify_release_bundle(project)
 
-    assert report.status == "review"
+    assert report.status == "blocked"
     assert (project.output_dir / "publish" / "VERIFY-REPORT.json").exists()
     statuses = {item.code: item.status for item in report.items}
     assert statuses["manifest"] == "ready"
     assert statuses["sha256sums"] == "ready"
+    assert statuses["gate-status"] == "blocked"
     assert any(item.code == "signature" and item.status == "review" for item in report.items)
 
 
@@ -471,12 +484,16 @@ def test_relocated_bundle_verifies_runtime_evidence_without_source_tree(tmp_path
     bundle = tmp_path / "portable-bundle"
     publish = create_publish_bundle(
         project,
-        BuildOptions(),
+        package_fixture_options(),
         iso=iso,
         output_dir=project.output_dir,
         bundle_dir=bundle,
     )
-    assert not publish.blocked
+    assert publish.blocked
+    assert any(
+        item.code == "package-inputs" and item.status == "blocked"
+        for item in publish.gate.items
+    )
     sign_release_bundle(project, bundle_dir=bundle)
     manifest = json.loads(
         (bundle / "RELEASE-MANIFEST.json").read_text(encoding="utf-8")
@@ -496,7 +513,7 @@ def test_relocated_bundle_verifies_runtime_evidence_without_source_tree(tmp_path
 
     runtime = next(item for item in report.items if item.code == "runtime-evidence")
     assert runtime.status == "ready"
-    assert not report.blocked
+    assert report.blocked
     assert sealed_before == {
         name: __import__("hashlib").sha256((bundle / name).read_bytes()).hexdigest()
         for name in sealed_before
@@ -508,20 +525,22 @@ def test_release_pipeline_runs_publish_sign_notes_and_verify(tmp_path) -> None:
     project.source_mode = "bootstrap"
     iso = default_output_iso(project)
     iso.write_bytes(b"iso")
-    options = BuildOptions()
+    options = package_fixture_options()
     options.prebuild_vm.enabled = True
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
 
     report = run_release_pipeline(project, options, iso=iso, output_dir=project.output_dir)
 
-    assert report.status in {"review", "ready"}
+    assert report.status == "blocked"
     bundle = project.output_dir / "publish"
     assert (bundle / "RELEASE-PIPELINE.json").exists()
     assert (bundle / "RELEASE-MANIFEST.json").exists()
     assert (bundle / "RELEASE-NOTES.md").exists()
     assert (bundle / "VERIFY-REPORT.json").exists()
     assert {"repair-artifacts", "publish-bundle", "sign-release-final", "verify-release"} <= {stage.name for stage in report.stages}
+    publish_stage = next(stage for stage in report.stages if stage.name == "publish-bundle")
+    assert publish_stage.status == "blocked"
 
 
 def test_release_pipeline_can_run_iso_scan_boot_proof(tmp_path) -> None:
@@ -1045,25 +1064,35 @@ def test_cli_release_readiness_and_qemu_smoke_plan(monkeypatch, tmp_path, capsys
     assert exc.value.code == 2
     assert '"status": "blocked"' in capsys.readouterr().out
 
-    main(["publish-bundle", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["publish-bundle", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
 
     main(["sign-release", str(project.root), "--json"])
     assert json.loads(capsys.readouterr().out)["status"] in {"planned", "blocked"}
 
-    main(["release-notes", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["release-notes", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
 
-    main(["verify-release", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["verify-release", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert json.loads(capsys.readouterr().out)["status"] in {"blocked", "review"}
 
     main(["explain-release", str(project.root), "--json"])
     assert "next_commands" in json.loads(capsys.readouterr().out)
 
-    main(["publish-drill", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["publish-drill", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert "execute_signing" in json.loads(capsys.readouterr().out)
 
-    main(["publish-drill-baseline", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["publish-drill-baseline", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert "promoted" in json.loads(capsys.readouterr().out)
 
     old = tmp_path / "old-drill.json"
@@ -1073,7 +1102,9 @@ def test_cli_release_readiness_and_qemu_smoke_plan(monkeypatch, tmp_path, capsys
     main(["publish-drill-diff", str(old), str(new), "--json"])
     assert json.loads(capsys.readouterr().out)["verdict"] == "regressed"
 
-    main(["release-pipeline", str(project.root), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main(["release-pipeline", str(project.root), "--json"])
+    assert exc.value.code == 2
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
 
     main(["boot-proof", str(project.root), "--dry-run", "--json"])

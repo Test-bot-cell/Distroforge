@@ -104,8 +104,13 @@ source-only path shared by CLI and GUI.
 ## Extension Points
 
 - Local scripts under project `hooks/`.
-- Local plugins under project `plugins/`.
-- Optional Pluggy plugin hooks when `pluggy` is installed.
+- Executable phase scripts under project `plugins/*/<phase>.*`. During a sealed ISO
+  build they run through `CommandRunner`, which records and descriptor-binds their
+  executable bytes.
+- `plugins/*/plugin.py` is refused during a sealed ISO build. In-process Python import
+  would execute outside the command/executable evidence boundary; installing Pluggy does
+  not make that path acceptable. Such a plugin must be converted to an executable phase
+  script before it can participate in the sealed pipeline.
 - JSON/YAML image definitions for reproducible presets.
 
 ## Capture and Image Workflows

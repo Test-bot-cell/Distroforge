@@ -77,6 +77,7 @@ def run_publish_drill(
     bundle_dir: Path | None = None,
     execute_signing: bool = False,
     gpg_key: str | None = None,
+    gpg_keyring: Path | None = None,
     boot_backend: str = "auto",
 ) -> PublishDrillReport:
     options = options or BuildOptions()
@@ -90,6 +91,7 @@ def run_publish_drill(
         bundle_dir=bundle_dir,
         execute_signing=execute_signing,
         gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
         run_boot_proof=True,
         boot_proof_execute=True,
         boot_proof_backend=boot_backend,
@@ -108,4 +110,3 @@ def _drill_status(pipeline_status: str, explanation_status: str) -> str:
     if pipeline_status == "ready" and explanation_status == "ready":
         return "ready_to_publish"
     return "review_required"
-

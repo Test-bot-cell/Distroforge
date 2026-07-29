@@ -4,10 +4,12 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import (
     make_rootfs,
+    package_fixture_options,
     write_valid_boot_proof,
     write_valid_build_evidence,
 )
@@ -322,6 +324,7 @@ def test_build_journey_guides_beginner_and_maintainer_paths(tmp_path: Path) -> N
     (project.output_dir / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
+    options = package_fixture_options(options)
     options.output_iso = iso
     options.prebuild_vm.enabled = True
     options.release_artifacts.enabled = True
@@ -329,8 +332,9 @@ def test_build_journey_guides_beginner_and_maintainer_paths(tmp_path: Path) -> N
     options.html_report.enabled = True
     report = build_journey(project, options, "maintainer")
 
-    assert report.complete
-    assert report.to_dict()["current_step"] is None
+    assert not report.complete
+    assert report.current is not None
+    assert report.current.step.step_id == "publish-gate"
 
 
 def test_journey_apply_turns_steps_into_project_and_definition_state(tmp_path: Path) -> None:
@@ -570,10 +574,12 @@ def test_publish_gate_journey_reflects_existing_release_reports(tmp_path: Path) 
     assert "CVE scan: enabled (policy=block-high)" in blob
 
 
-def test_release_confidence_ritual_is_advisory_not_gating(tmp_path: Path) -> None:
+def test_release_confidence_ritual_does_not_hide_package_causality_debt(
+    tmp_path: Path,
+) -> None:
     # Signing/verification/baseline are publishing discipline, not gate requirements: a
-    # maintainer journey completes on gate evidence alone even when those reports are absent,
-    # while the advisory check still flags that they were never run.
+    # signing and verification stay advisory, while the independently identified
+    # package-to-rootfs causality debt remains a hard publication blocker.
     project = Project.create("RitualAdvisory", tmp_path / "ritual-advisory", "26.04")
     project.source_mode = "bootstrap"
     project.customization.desktop = "ubuntu"
@@ -587,7 +593,7 @@ def test_release_confidence_ritual_is_advisory_not_gating(tmp_path: Path) -> Non
     (project.output_dir / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
-    options = BuildOptions()
+    options = package_fixture_options()
     options.output_iso = iso
     options.prebuild_vm.enabled = True
     options.release_artifacts.enabled = True
@@ -596,8 +602,8 @@ def test_release_confidence_ritual_is_advisory_not_gating(tmp_path: Path) -> Non
 
     report = build_journey(project, options, "maintainer")
     publish = next(i for i in report.items if i.step.step_id == "publish-gate")
-    assert publish.status == "done"
-    assert report.complete
+    assert publish.status == "active"
+    assert not report.complete
     blob = " ".join(check_journey_step(project, options, "publish-gate").findings)
     assert "Signing not run" in blob
     assert "Verification not run" in blob
@@ -615,36 +621,47 @@ def test_beginner_iso_path_prepares_definition_dry_run_and_gate(tmp_path: Path, 
     assert report.gate_status == "blocked"
     assert "--execute" in report.next_command
 
-    class FakeOrchestrator:
-        def __init__(self, project, runner, options, progress=None) -> None:
-            self.project = project
-            self.runner = runner
-            self.options = options
-            self.progress = progress
+    def fake_sealed_build(project, options, **kwargs):
+        iso = options.output_iso
+        assert iso is not None
+        iso.parent.mkdir(parents=True, exist_ok=True)
+        iso.write_bytes(b"iso")
+        digest = hashlib.sha256(b"iso").hexdigest()
+        (iso.parent / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
+        (iso.parent / "BUILDINFO").write_text("Build-Date: now\n", encoding="utf-8")
+        (iso.parent / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
+        (iso.parent / "report.html").write_text("<html></html>\n", encoding="utf-8")
+        (iso.parent / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
+        write_valid_build_evidence(project, iso)
+        write_valid_boot_proof(project, iso)
+        command_log = kwargs["log_path"] or (
+            project.output_dir / "evidence" / "runs" / "fake-run" / "commands.jsonl"
+        )
+        command_log.parent.mkdir(parents=True, exist_ok=True)
+        command_log.write_text(
+            '{"event":"finish","command":"write-file","returncode":0}\n',
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            status="built",
+            failure=None,
+            command_log=command_log,
+            report=project.output_dir / "evidence" / "runs" / "fake-run" / "ISO-BUILD.json",
+            run_manifest=project.output_dir
+            / "evidence"
+            / "runs"
+            / "fake-run"
+            / "RUN-MANIFEST.json",
+        )
 
-        def run(self) -> None:
-            iso = self.options.output_iso
-            assert iso is not None
-            iso.parent.mkdir(parents=True, exist_ok=True)
-            iso.write_bytes(b"iso")
-            digest = hashlib.sha256(b"iso").hexdigest()
-            (iso.parent / "SHA256SUMS").write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
-            (iso.parent / "BUILDINFO").write_text("Build-Date: now\n", encoding="utf-8")
-            (iso.parent / "distroforge-provenance.json").write_text("{}", encoding="utf-8")
-            (iso.parent / "report.html").write_text("<html></html>\n", encoding="utf-8")
-            (iso.parent / "qemu-lab-report.json").write_text("{}", encoding="utf-8")
-            write_valid_build_evidence(self.project, iso)
-            write_valid_boot_proof(self.project, iso)
-            self.runner.run(__import__("distroforge.core.command", fromlist=["CommandSpec"]).CommandSpec(("write-file", str(iso))))
-
-    monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr("distroforge.core.beginner_iso.run_iso_build", fake_sealed_build)
 
     executed = prepare_beginner_iso_path(project, apply_safe_defaults=True, dry_run=True, execute=True)
 
     assert executed.executed
     assert executed.build_status == "completed"
     assert executed.command_log is not None
-    assert executed.gate_status == "review"
+    assert executed.gate_status == "blocked"
     assert "release-gate" in executed.next_command
 
 

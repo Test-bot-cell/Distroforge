@@ -65,6 +65,7 @@ def run_release_pipeline(
     bundle_dir: Path | None = None,
     execute_signing: bool = False,
     gpg_key: str | None = None,
+    gpg_keyring: Path | None = None,
     run_boot_proof: bool = False,
     boot_proof_execute: bool = True,
     boot_proof_backend: str = "auto",
@@ -104,6 +105,7 @@ def run_release_pipeline(
         bundle_dir=bundle.bundle_dir,
         execute=False,
         gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
     )
     stages.append(
         ReleasePipelineStage(
@@ -119,9 +121,14 @@ def run_release_pipeline(
         bundle_dir=bundle.bundle_dir,
         execute=safe_execute_signing,
         gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
     )
     stages.append(ReleasePipelineStage("sign-release-final", final_sign.status, f"{len(final_sign.planned or final_sign.signed)} signature targets."))
-    verify = verify_release_bundle(project, bundle_dir=bundle.bundle_dir)
+    verify = verify_release_bundle(
+        project,
+        bundle_dir=bundle.bundle_dir,
+        expected_signer_fingerprint=gpg_key,
+    )
     stages.append(ReleasePipelineStage("verify-release", verify.status, f"{len(verify.items)} verification checks."))
     status = "blocked" if any(stage.status == "blocked" for stage in stages) else "review" if any(stage.status in {"review", "planned"} for stage in stages) else "ready"
     report = ReleasePipelineReport(project.root, bundle.bundle_dir, status, tuple(stages))

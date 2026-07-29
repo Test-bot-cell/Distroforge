@@ -66,6 +66,29 @@ dropped, so a short record cannot be mistaken for a quiet tool.
 What is never recorded is stdin: the log keeps a boolean saying whether there was any. That
 is where a passphrase would be.
 
+### Executable dispatch identity
+
+For a real sealed build, recording the command string is not enough. `CommandRunner`
+resolves the outer executable and the recognized `sudo`/`chroot`/`env`/nspawn target
+chain, opens each file, records its path, device, inode, size and SHA-256, and keeps those
+descriptors open through the child process. The outer process is dispatched with
+`Popen(executable=/proc/<parent-pid>/fd/<fd>)`; nested wrapper-selected executables are
+rewritten at their argv position to the corresponding descriptor path. The original
+`argv[0]` remains in the recorded command.
+
+The evidence contains `dispatch_bound`, `dispatch_argv`, `dispatch_executable` and one
+`dispatch_bindings` entry per recognized executable. Dispatch is refused before the child
+runs when that complete chain cannot be bound. After the child exits, the runner re-hashes
+the held descriptors and re-resolves the paths; the release gate requires the
+pre-dispatch, binding and post-dispatch identities to agree. This prevents an atomic path
+replacement from selecting different entrypoint bytes after they were measured.
+
+This boundary is precise and intentionally not described as a complete toolchain closure.
+An ELF entrypoint can still select an interpreter and dynamically loaded libraries after
+dispatch. The current record does not independently bind that loader, every shared
+library, loader configuration, kernel or firmware. Closing that transitive runtime graph
+remains evidence debt for the toolchain milestone.
+
 Build options are governed by `commands/build_contracts.py`. Each option is assigned to
 Beginner, Power user, Maintainer, or Developer level, plus an expected GUI surface. The
 contract is tested against the parser and GUI so the build cycle remains explicit instead
@@ -85,6 +108,14 @@ QEMU online/offline install smoke matrix.
 1. Resolve the source starter: skeleton, official ISO/netboot, local ISO, or previous project.
 2. Validate project, host, and option contracts.
 3. Check source trust metadata, consistency, safety policy, and release compatibility.
+   An executing ISO remaster requires a regular, non-symlink source ISO, an externally
+   supplied full SHA-256, a regular detached signature and one full 40- or 64-hex signer
+   fingerprint. GPG's `VALIDSIG` status must name that signer exclusively, and the source,
+   signature and ancestor identities must remain stable across verification. Extraction
+   then reads the source through a held descriptor whose bytes match the trusted opening
+   digest. This is a strict execution boundary, not yet a publication proof: because the
+   signature, verification status and exact keyring bytes are not sealed for independent
+   offline replay, the release gate reports source-ISO trust as `review`.
    Execution writes `dist/compatibility-report.txt` in the project output directory;
    dry-runs record the same report as a virtual command event.
 4. Plan a transaction id, import legacy scripts and preview the requested diff.
@@ -99,8 +130,9 @@ QEMU online/offline install smoke matrix.
    Cross-architecture bootstrap is supported through `--bootstrap-arch`. When the target
    arch differs from the host, the build requires `qemu-user-static` so foreign binaries
    run during debootstrap; non-BIOS arches such as arm64 skip the El Torito BIOS image.
-   The bootstrap tool is passed `--include=ca-certificates`, because a `minbase` rootfs
-   has no CA store and every archive URL here is `https`: without it the first
+   The bootstrap tool is passed `--include=apt,ca-certificates`, because mmdebstrap's
+   `minbase` does not promise apt and a minimal rootfs has no CA store. Without the latter
+   the first
    *in-chroot* `apt-get update` fails TLS verification against every index — while
    `ca-certificates` sits in the very package list that update is fetching for. The
    bootstrap tool itself fetches from the host, with the host's CA store, so it can
@@ -241,6 +273,49 @@ QEMU online/offline install smoke matrix.
    picked up by the squashfs, read by nothing in the image, and different between two builds
    of one definition on two machines. The sanitize phase deletes it, whatever the sanitize
    options say: keeping the build machine's DNS out of a delivered image is not a preference.
+
+   Executing builds also install a DPkg pre-install hook before post-bootstrap package
+   changes. Before APT cleanup can remove the evidence, the hook seals the effective source
+   and APT configuration, explicit keyrings, signed Release metadata, the active `Packages`
+   indices and every downloaded `.deb` into a run-scoped content-addressed store. A bootstrap
+   is captured separately because it runs before an in-root hook can exist. Its externally
+   pinned archive keyring is re-hashed, copied into the run CAS and consumed from that sealed
+   path by mmdebstrap/debootstrap.
+
+   `PACKAGE-INPUTS.json` references immutable transaction records rather than asserting a
+   free-standing green flag. Each configured repository namespace independently pins its
+   base URI, suites/codenames, components, architectures, signer fingerprints, keyring
+   digests and Release freshness window. The run instant is the provenance verification
+   time, and a digest of every APT-affecting argv is recomputed from the complete final
+   `commands.jsonl`, so a later unrecorded trust override or package transaction cannot
+   hide behind an earlier aggregate. Its offline validator:
+
+   - re-hashes every referenced byte and rejects symlinks, path escapes, duplicate
+     transaction identities and CAS collisions;
+   - verifies `InRelease` or `Release.gpg` with captured explicit keyrings in an isolated
+     `gpgv` home and accepts only full signer fingerprints supplied again by the effective
+     build policy;
+   - binds each `Packages` index digest and size to the signed Release, then each `.deb`
+     digest, size and internal package/version/architecture to its safe `Packages`
+     `Filename` stanza;
+   - reconciles the final dpkg inventory. A fresh bootstrap has no baseline exemption and
+     every bootstrap package needs captured `.deb` bytes; an ISO remaster may exempt only
+     the exact inventory captured before mutation;
+   - enforces the signed Release `Date`, optional `Valid-Until`, configured maximum age
+     and future-skew limits at that bound run instant;
+   - refuses insecure APT trust/date overrides, conflicting bytes for one package identity,
+     missing final repository state and locally built `.deb` files without a separate
+     producer attestation.
+
+   Source mode, allowed signer fingerprints and bootstrap keyring SHA-256 are external
+   verifier inputs. Copying different values into the evidence payload cannot redefine
+   trust. The release gate replays this chain from the provenance run ID. The implemented
+   ledger closes signed repository metadata to exact `.deb` bytes and installed dpkg
+   identities, but it does not yet prove that each package payload caused every
+   corresponding file in the final rootfs. `filesystem_causality` therefore remains
+   `unverified` and publication is blocked even when the package-input validation itself
+   succeeds. This is currently a code/test contract: no new real ISO build in the
+   2026-07-29 hardening lot has yet produced it from the live distribution archive.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after
@@ -251,8 +326,23 @@ QEMU online/offline install smoke matrix.
    rewritten through the configured privilege helper instead of direct Python writes.
    Branding, wallpaper, locale, hostname, Netplan, kiosk autostart, OEM markers,
    autoinstall, seeds, Casper metadata, and staged chroot hooks follow the same rule.
-10. Run hooks/plugins, sanitize target, and produce health status.
-11. Generate autoinstall, seeds, metadata, squashfs, checksums, and ISO.
+10. Run hooks/plugins, sanitize target, and produce health status. A sealed ISO build
+    refuses every in-process `plugins/*/plugin.py`: importing arbitrary Python would execute
+    code outside the command identity/provenance boundary. Executable
+    `plugins/*/<phase>.*` scripts remain supported and run through `CommandRunner`, so the
+    executable file is descriptor-bound and recorded. Installing Pluggy does not weaken
+    this rule.
+11. Generate autoinstall, seeds, metadata, squashfs, checksums, and ISO. Before packing,
+    `ROOTFS-MANIFEST.json` records the portable semantic tree and a host-specific
+    device/inode/time guard. The rootfs is rescanned after `mksquashfs`; that exact
+    SquashFS is held open, unpacked into a fresh tree and compared with the manifest.
+    `ISO-ASSEMBLY.json` then binds the witnessed staged SquashFS to the exact member
+    extracted from the final ISO. An authoritative release-gate refresh independently
+    opens the published ISO, extracts that member through its descriptor, opens and
+    unpacks the member through another descriptor, and compares the replayed semantic
+    tree field-for-field with `ROOTFS-MANIFEST.json`. These paths are implemented and
+    covered by round-trip and falsification tests; no new real build has yet emitted and
+    replayed this evidence.
 12. Produce release artifacts, boot checks, screenshots, provenance, HTML report, and QA matrix.
 
 Dry-run builds should produce command history and findings only. The dry-run report checks
@@ -264,6 +354,14 @@ needs to write during dry-run, that write should be represented as a `CommandSpe
 Before execution, `distroforge readiness` should be clean enough for the selected mode:
 source SHA/GPG state, host tools, policy findings, transaction paths, timeline and diff
 preview must all be reviewable without producing package artifacts.
+
+An executing CLI path is fail-closed: a failed build or a blocked executed report exits
+with status 2 after writing the available failure evidence. Dry-run and plan modes remain
+status 0 because their product is the report, not an ISO. Release commands follow the same
+distinction; a blocked `release-gate`, publish bundle, verification or release pipeline is
+propagated to the top-level CLI instead of being printed behind a successful process
+status, while `sign-release` keeps its non-mutating plan non-failing and fails only a
+blocked `--execute` signing attempt.
 
 Source starters are a first-level product entry. Ubuntu 26.04 and Debian 13.5 both expose
 minimal skeleton starters for CLI-only seed images, plus official ISO/netboot choices whose

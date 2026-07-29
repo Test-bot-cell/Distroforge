@@ -4,11 +4,17 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .command import CommandRunner, CommandSpec
+from .command import CommandRunner
 from .hashing import sha256_file, sha256_from_sums
 from .host_artifacts import write_host_artifact
 from .prebuild_vm import validate_qemu_report
 from .project import Project
+from .release_signing import (
+    SIGN_TARGETS,
+    SIGNING_KEYRING,
+    full_fingerprint,
+    verify_detached_signature,
+)
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,12 @@ class ReleaseVerifyReport:
         return "\n".join(lines)
 
 
-def verify_release_bundle(project: Project, *, bundle_dir: Path | None = None) -> ReleaseVerifyReport:
+def verify_release_bundle(
+    project: Project,
+    *,
+    bundle_dir: Path | None = None,
+    expected_signer_fingerprint: str | None = None,
+) -> ReleaseVerifyReport:
     bundle_dir = bundle_dir or project.output_dir / "publish"
     items: list[ReleaseVerifyItem] = []
     manifest = _read_json(bundle_dir / "RELEASE-MANIFEST.json", items, "manifest")
@@ -66,7 +77,12 @@ def verify_release_bundle(project: Project, *, bundle_dir: Path | None = None) -
     _verify_sha256sums(bundle_dir, items)
     _verify_runtime_evidence(bundle_dir, items)
     _verify_gate(gate, manifest, items)
-    _verify_signatures(bundle_dir, signing, items)
+    _verify_signatures(
+        bundle_dir,
+        signing,
+        items,
+        expected_signer_fingerprint,
+    )
     status = "blocked" if any(item.status == "blocked" for item in items) else "review" if any(item.status == "review" for item in items) else "ready"
     report = ReleaseVerifyReport(project.root, bundle_dir, status, tuple(items))
     write_host_artifact(bundle_dir / "VERIFY-REPORT.json", report.render_json() + "\n", "Write VERIFY-REPORT.json")
@@ -385,34 +401,280 @@ def _relocated_run_manifest_error(run_dir: Path, iso: Path) -> str | None:
 def _verify_gate(gate: dict[str, object], manifest: dict[str, object], items: list[ReleaseVerifyItem]) -> None:
     gate_status = str(gate.get("status", "unknown"))
     manifest_status = str(manifest.get("gate_status", "unknown"))
-    if gate_status == "unknown":
-        items.append(ReleaseVerifyItem("gate-status", "blocked", "Release gate status is missing."))
-    elif manifest_status not in {"unknown", gate_status}:
-        items.append(ReleaseVerifyItem("gate-status", "blocked", f"Manifest gate status {manifest_status} does not match {gate_status}."))
-    else:
-        items.append(ReleaseVerifyItem("gate-status", "ready" if gate_status == "ready" else "review", f"Release gate is {gate_status}."))
+    if gate_status not in {"ready", "review", "blocked"}:
+        items.append(
+            ReleaseVerifyItem(
+                "gate-status",
+                "blocked",
+                "Release gate status is missing or invalid.",
+            )
+        )
+        return
+    if manifest_status != gate_status:
+        items.append(
+            ReleaseVerifyItem(
+                "gate-status",
+                "blocked",
+                f"Manifest gate status {manifest_status} does not match {gate_status}.",
+            )
+        )
+        return
+    blocked_flag = gate.get("blocked")
+    if blocked_flag is not None and (
+        not isinstance(blocked_flag, bool)
+        or blocked_flag is not (gate_status == "blocked")
+    ):
+        items.append(
+            ReleaseVerifyItem(
+                "gate-status",
+                "blocked",
+                "Release gate blocked flag contradicts its status.",
+            )
+        )
+        return
+    raw_gate_items = gate.get("items")
+    if raw_gate_items is not None:
+        if not isinstance(raw_gate_items, list) or not all(
+            isinstance(item, dict)
+            and item.get("status") in {"ready", "review", "blocked"}
+            for item in raw_gate_items
+        ):
+            items.append(
+                ReleaseVerifyItem(
+                    "gate-status",
+                    "blocked",
+                    "Release gate contains malformed item verdicts.",
+                )
+            )
+            return
+        item_statuses = [str(item["status"]) for item in raw_gate_items]
+        if item_statuses:
+            derived_status = (
+                "blocked"
+                if "blocked" in item_statuses
+                else "review"
+                if "review" in item_statuses
+                else "ready"
+            )
+            if derived_status != gate_status:
+                items.append(
+                    ReleaseVerifyItem(
+                        "gate-status",
+                        "blocked",
+                        "Release gate aggregate status contradicts its item verdicts.",
+                    )
+                )
+                return
+    items.append(
+        ReleaseVerifyItem(
+            "gate-status",
+            gate_status,
+            f"Release gate is {gate_status}.",
+        )
+    )
 
 
-def _verify_signatures(bundle_dir: Path, signing: dict[str, object], items: list[ReleaseVerifyItem]) -> None:
+def _verify_signatures(
+    bundle_dir: Path,
+    signing: dict[str, object],
+    items: list[ReleaseVerifyItem],
+    expected_signer_fingerprint: str | None,
+) -> None:
     planned = {str(name) for name in signing.get("planned", []) if isinstance(name, str)}
     signed = {str(name) for name in signing.get("signed", []) if isinstance(name, str)}
-    targets = sorted(planned | signed | {path.name for path in bundle_dir.glob("*.asc")})
+    actual_names = {path.name for path in bundle_dir.glob("*.asc")}
+    required = {f"{name}.asc" for name in SIGN_TARGETS}
+    execution_claimed = (
+        bool(signed or actual_names)
+        or signing.get("status") == "signed"
+        or signing.get("execute") is True
+    )
+    if execution_claimed:
+        skipped = signing.get("skipped")
+        if (
+            signing.get("status") != "signed"
+            or signing.get("execute") is not True
+            or signed != required
+            or planned
+            or skipped != []
+            or actual_names != required
+        ):
+            items.append(
+                ReleaseVerifyItem(
+                    "signature-contract",
+                    "blocked",
+                    "Executed signing must contain exactly the detached signatures "
+                    "for SHA256SUMS, RELEASE-GATE.json and RELEASE-MANIFEST.json, "
+                    "with no skipped or merely planned target.",
+                )
+            )
+        targets = sorted(planned | signed | actual_names | required)
+    else:
+        targets = sorted(planned)
     if not targets:
         items.append(ReleaseVerifyItem("signatures", "review", "No detached signatures are recorded."))
         return
-    gpg_available = CommandRunner.has_binary("gpg")
+    unsafe = [
+        name
+        for name in targets
+        if Path(name).name != name or not name.endswith(".asc")
+    ]
+    if unsafe:
+        items.append(
+            ReleaseVerifyItem(
+                "signature-path",
+                "blocked",
+                "Unsafe detached signature paths: " + ", ".join(unsafe),
+            )
+        )
+        return
+    symlinked = [name for name in targets if (bundle_dir / name).is_symlink()]
+    if symlinked:
+        items.append(
+            ReleaseVerifyItem(
+                "signature-path",
+                "blocked",
+                "Detached signatures must not be symlinks: " + ", ".join(symlinked),
+            )
+        )
+        return
+    actual = [name for name in targets if (bundle_dir / name).is_file()]
+    if not actual:
+        for asc_name in targets:
+            status = "blocked" if asc_name in signed else "review"
+            detail = (
+                f"{asc_name} is recorded as signed but is missing."
+                if status == "blocked"
+                else f"{asc_name} is planned but not present."
+            )
+            items.append(ReleaseVerifyItem("signature", status, detail))
+        return
+
+    expected = full_fingerprint(expected_signer_fingerprint)
+    if expected is None:
+        items.append(
+            ReleaseVerifyItem(
+                "signature-fingerprint",
+                "blocked",
+                "Detached signature verification requires a trusted external "
+                "complete OpenPGP fingerprint.",
+            )
+        )
+        return
+    recorded_value = signing.get("signer_fingerprint")
+    recorded = full_fingerprint(recorded_value if isinstance(recorded_value, str) else None)
+    if recorded != expected:
+        items.append(
+            ReleaseVerifyItem(
+                "signature-fingerprint",
+                "blocked",
+                "SIGNING-REPORT.json does not record the externally pinned signer "
+                f"{expected}.",
+            )
+        )
+        return
+    keyring_value = signing.get("verification_keyring")
+    keyring_digest = signing.get("verification_keyring_sha256")
+    if keyring_value != SIGNING_KEYRING or not isinstance(keyring_digest, str):
+        items.append(
+            ReleaseVerifyItem(
+                "signature-keyring",
+                "blocked",
+                "SIGNING-REPORT.json has no explicit verification keyring identity.",
+            )
+        )
+        return
+    keyring = bundle_dir / SIGNING_KEYRING
+    if (
+        keyring.is_symlink()
+        or not keyring.is_file()
+        or sha256_file(keyring) != keyring_digest
+    ):
+        items.append(
+            ReleaseVerifyItem(
+                "signature-keyring",
+                "blocked",
+                "The explicit verification keyring is missing, unsafe, or has a "
+                "different SHA256.",
+            )
+        )
+        return
+    if not CommandRunner.has_binary("gpg"):
+        items.append(
+            ReleaseVerifyItem(
+                "signatures",
+                "blocked",
+                "Detached signatures exist but gpg is not available.",
+            )
+        )
+        return
+
+    items.append(
+        ReleaseVerifyItem(
+            "signature-fingerprint",
+            "ready",
+            f"Externally pinned complete signer fingerprint: {expected}.",
+        )
+    )
+    items.append(
+        ReleaseVerifyItem(
+            "signature-keyring",
+            "ready",
+            f"{SIGNING_KEYRING} matches SHA256 {keyring_digest}.",
+        )
+    )
     runner = CommandRunner(dry_run=False)
     for asc_name in targets:
         asc = bundle_dir / asc_name
         signed_file = bundle_dir / asc_name.removesuffix(".asc")
         if not asc.exists():
-            items.append(ReleaseVerifyItem("signature", "review", f"{asc_name} is planned but not present."))
+            status = "blocked" if asc_name in signed else "review"
+            detail = (
+                f"{asc_name} is recorded as signed but is missing."
+                if status == "blocked"
+                else f"{asc_name} is planned but not present."
+            )
+            items.append(ReleaseVerifyItem("signature", status, detail))
+        elif asc.is_symlink():
+            items.append(
+                ReleaseVerifyItem(
+                    "signature",
+                    "blocked",
+                    f"{asc_name} is an unsafe symlink.",
+                )
+            )
         elif not signed_file.exists():
             items.append(ReleaseVerifyItem("signature", "blocked", f"{asc_name} has no matching signed file."))
-        elif not gpg_available:
-            items.append(ReleaseVerifyItem("signature", "review", f"{asc_name} exists but gpg is not available."))
+        elif signed_file.is_symlink():
+            items.append(
+                ReleaseVerifyItem(
+                    "signature",
+                    "blocked",
+                    f"{signed_file.name} is an unsafe symlink.",
+                )
+            )
         else:
-            result = runner.run(CommandSpec(argv=("gpg", "--verify", str(asc), str(signed_file)), description=f"Verify {asc_name}"), check=False)
-            status = "ready" if result.returncode == 0 else "blocked"
-            detail = f"{asc_name} verified." if result.returncode == 0 else f"{asc_name} failed GPG verification."
-            items.append(ReleaseVerifyItem("signature", status, detail))
+            try:
+                verify_detached_signature(
+                    runner,
+                    asc,
+                    signed_file,
+                    keyring,
+                    expected,
+                )
+            except (OSError, ValueError) as exc:
+                items.append(
+                    ReleaseVerifyItem(
+                        "signature",
+                        "blocked",
+                        f"{asc_name} failed pinned GPG verification: {exc}",
+                    )
+                )
+            else:
+                items.append(
+                    ReleaseVerifyItem(
+                        "signature",
+                        "ready",
+                        f"{asc_name} has VALIDSIG from {expected}.",
+                    )
+                )

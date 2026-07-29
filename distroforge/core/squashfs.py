@@ -99,6 +99,8 @@ class SquashfsService:
     # Pinned only for pack(): unpack() reads an image someone else made and writes a
     # working tree, so clamping its timestamps would change nothing that ships.
     source_date_epoch: int | None = None
+    # A sealed derivative must not bless files left in a previous unpack tree.
+    require_fresh_unpack: bool = False
 
     def unpack(
         self,
@@ -108,12 +110,17 @@ class SquashfsService:
         on_progress: Callable[[float], None] | None = None,
     ) -> None:
         if not self.runner.dry_run:
+            if self.require_fresh_unpack and (
+                destination.exists() or destination.is_symlink()
+            ):
+                raise ValueError(
+                    f"SquashFS extraction destination is not fresh: {destination}"
+                )
             destination.parent.mkdir(parents=True, exist_ok=True)
         spec = CommandSpec(
             argv=sudo(
                 (
                     "unsquashfs",
-                    "-f",
                     "-d",
                     str(destination),
                     str(squashfs_image),

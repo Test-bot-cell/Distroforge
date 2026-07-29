@@ -223,12 +223,13 @@ def test_the_two_entry_points_that_build_keep_separate_logs(tmp_path) -> None:
 
 
 def test_the_gui_uses_the_same_default_as_the_cli() -> None:
-    """A blank field means "where you normally put it", not "nowhere".
+    """A blank field delegates to iso-build's immutable per-run log.
 
     Asserted against the source the way test_ui_responsive.py does, because the branch is
     one line inside a Qt slot and the fact worth pinning is which default it reaches for.
     """
     source = (ROOT / "distroforge/ui/build_controller.py").read_text(encoding="utf-8")
 
-    assert "log_path = Path(text) if text else None" not in source
-    assert 'default_command_log(project, "build")' in source
+    assert "log_path = Path(text) if text else None" in source
+    assert "run_iso_build(" in source
+    assert "log_path=log_path" in source

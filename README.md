@@ -56,8 +56,10 @@ flowchart LR
   evidence, and block incomplete releases through an explicit release gate.
 - **Stay local-first** — ForgeAdvisor explains logs and findings with local
   evidence; optional local model adapters never gain build authority.
-- **Extend without hiding work** — use project hooks, Pluggy integrations,
-  reusable profiles, and YAML or JSON definitions.
+- **Extend without hiding work** — use project hooks, executable phase plugins,
+  reusable profiles, and YAML or JSON definitions. Sealed ISO builds refuse
+  in-process `plugin.py` loading so extension executables remain inside the recorded
+  command boundary.
 
 ## Install
 
@@ -199,6 +201,17 @@ DistroForge treats safety as a product feature:
 - optional rollback snapshots protect risky phases;
 - build history, reports, checksums, and provenance remain reviewable;
 - ForgeAdvisor is advisory only and cannot execute a build on its own.
+
+The open `0.3.5-17` audit keeps a deliberately narrower truth boundary. Source-ISO
+execution is fail-closed on a regular source file, an external SHA-256, a detached
+signature and one full signer fingerprint, but publication remains `review` until those
+verification inputs can be replayed from sealed evidence. Package evidence closes
+per-source signed metadata, freshness policy, command ledger and exact `.deb` inputs, but
+does not yet prove the causal mapping from each `.deb` payload to every final rootfs path;
+the release gate therefore blocks publication. The semantic rootfs manifest, SquashFS
+round-trip and authoritative final-ISO replay are implemented and tested, not promoted to
+an executed build claim. No new real ISO or boot was produced by this hardening work; see
+the [ISO build proof ledger](docs/iso-build-proof-ledger.md).
 
 ## Supported sources
 

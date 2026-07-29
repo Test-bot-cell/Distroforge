@@ -20,6 +20,60 @@
 # and the reason no source ISO is needed (core/iso_doctor.py:90).
 source_mode: bootstrap
 
+# External trust policy for transaction zero. The keyring bytes are copied into the
+# immutable build run before mmdebstrap is dispatched; the build then replays
+# InRelease -> Packages -> every consumed .deb offline against only these full
+# fingerprints. A key rotation must therefore be reviewed here rather than silently
+# inherited from a runner image update.
+bootstrap:
+  archive_keyring: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+  archive_keyring_sha256: 80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31
+  archive_signer_fingerprints:
+    - F6ECB3762474EDA9D21B7022871920D1991BC93C
+  # Each namespace owns its URI, suite, key bytes and freshness window.  Keeping
+  # these separate prevents a valid signature for one Ubuntu pocket from
+  # authorising an index captured from another.
+  source_policies:
+    - policy_id: ubuntu-release-resolute
+      base_uri: https://archive.ubuntu.com/ubuntu
+      suites: [resolute]
+      codenames: [resolute]
+      components: [main, restricted, universe, multiverse]
+      architectures: [amd64]
+      signer_fingerprints:
+        - F6ECB3762474EDA9D21B7022871920D1991BC93C
+      keyring_sha256:
+        - 80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31
+      max_release_age_seconds: 15552000
+      max_future_skew_seconds: 300
+      require_valid_until: false
+    - policy_id: ubuntu-updates-resolute
+      base_uri: https://archive.ubuntu.com/ubuntu
+      suites: [resolute-updates, resolute-backports]
+      codenames: [resolute]
+      components: [main, restricted, universe, multiverse]
+      architectures: [amd64]
+      signer_fingerprints:
+        - F6ECB3762474EDA9D21B7022871920D1991BC93C
+      keyring_sha256:
+        - 80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31
+      max_release_age_seconds: 1209600
+      max_future_skew_seconds: 300
+      require_valid_until: false
+    - policy_id: ubuntu-security-resolute
+      base_uri: https://security.ubuntu.com/ubuntu
+      suites: [resolute-security]
+      codenames: [resolute]
+      components: [main, restricted, universe, multiverse]
+      architectures: [amd64]
+      signer_fingerprints:
+        - F6ECB3762474EDA9D21B7022871920D1991BC93C
+      keyring_sha256:
+        - 80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31
+      max_release_age_seconds: 604800
+      max_future_skew_seconds: 300
+      require_valid_until: false
+
 # Non-empty on purpose. An empty list leaves APPLY_PACKAGES with nothing to do, and
 # that step is where apt runs inside the chroot -- a whole leg of the chain that a
 # package-less definition never exercises. Two small ones: the binding constraint on a

@@ -1,5 +1,60 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Closed the executing source-ISO boundary without calling it a release
+    proof. An ISO remaster now requires stable regular source and detached
+    signature files, an externally supplied full SHA256 and one exclusive full
+    signer fingerprint reported by GPG's VALIDSIG status. Extraction consumes
+    the source through a held descriptor tied to the trusted opening digest,
+    and preflight rejects symlinks, missing inputs and short fingerprints before
+    mutation. The release gate deliberately leaves this item at review: the
+    signature, verification status and exact keyring bytes are not yet sealed
+    for an independent offline replay.
+  * Partitioned archive trust by external per-source policy instead of treating
+    every configured signer as authority for every repository. URI,
+    suite/codename, component, architecture, signer and keyring ownership are
+    checked together; Release Date, optional Valid-Until, maximum age and future
+    skew are evaluated at the provenance run instant. The complete final command
+    log independently supplies the APT-affecting argv ledger, so a later package
+    command or trust/date override cannot hide behind an earlier aggregate. The
+    reference definition retains only Ubuntu signer
+    F6ECB3762474EDA9D21B7022871920D1991BC93C.
+  * Confined every target-root APT capture to descriptor-relative openat
+    traversal with O_NOFOLLOW. Source/config/keyring, lists, archives, hook
+    journal, CAS and local .deb paths reject symlink ancestors, special files
+    and mount/bind-mount escapes; enumeration, hashing and copying consume the
+    already confined descriptor. The only external exception is the bootstrap
+    keyring copy already sealed under its pinned content digest. lz4 is now an
+    explicit runtime/preflight dependency for replaying the index format Ubuntu
+    and Debian commonly retain.
+  * Kept the package proof honest at its current boundary. Signed Release
+    metadata, Packages indices, exact .deb bytes and final dpkg identities can
+    validate, but no ledger yet proves which payload object caused every final
+    rootfs path. Package evidence therefore records filesystem_causality as
+    unverified and the release gate blocks publication instead of promoting a
+    valid input closure into a complete filesystem claim.
+  * Made standalone release verification preserve that refusal. A blocked
+    RELEASE-GATE now yields a blocked VERIFY-REPORT; its aggregate status,
+    blocked flag, manifest gate status and individual item verdicts must agree,
+    so verification cannot demote a blocking package/rootfs debt to review.
+  * Added a semantic ROOTFS-MANIFEST and host packing guard, rescanned the tree
+    around mksquashfs, unpacked the descriptor-held SquashFS into a fresh tree
+    and bound those bytes to the exact filesystem.squashfs member in the final
+    ISO. The authoritative provenance gate independently extracts that member
+    from the descriptor-held published ISO, unpacks it through another held
+    descriptor and compares the replayed semantic tree field for field.
+    Round-trip and forged-evidence tests exercise the path on synthetic trees;
+    this audit did not execute a new product build or boot.
+  * Made the Golden path authenticate the exact checked-out builder commit in a
+    fresh GNUPGHOME. The committed public key is pinned by SHA256
+    a1b6ee870e2708571bc43cf42d12a0c315c58dd1dad7760a27f660db3162e0ab
+    and primary fingerprint 93D942241BECDD422606C36C4C0D75219B5506CF
+    before git verify-commit HEAD. Python bytecode is disabled and editable
+    install caches are removed before the builder worktree identity is
+    measured. This is a configured refusal rule, not a claim that a new Golden
+    path run passed. Recognized executable entrypoints are descriptor-bound;
+    their ELF interpreter, dynamic libraries, loader configuration, kernel and
+    firmware remain outside the closed toolchain graph.
+
   * Replaced presence-based ISO evidence with an append-only, digest-linked
     application run contract. Every iso-build now reserves a unique
     runs/<run-id> or
@@ -561,7 +616,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     label must be the release debian/changelog targets -- and both fail if a
     single job is set back to ubuntu-latest.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Mon, 27 Jul 2026 23:03:33 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Wed, 29 Jul 2026 20:58:17 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

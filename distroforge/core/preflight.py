@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,6 +11,12 @@ from typing import TYPE_CHECKING
 from .artifact_paths import default_output_iso
 from .command import CommandRunner, CommandSpec, privilege_backend, sudo_askpass_program
 from .customize import desktop_conflicting_packages
+from .gpg import normalize_fingerprint
+from .hashing import sha256_file
+from .package_evidence import (
+    default_archive_keyring,
+    normalise_package_source_policies,
+)
 from .project import Project
 from .validate import ValidationIssue, validate_username
 
@@ -29,6 +38,15 @@ def validate_build_options(
     issues.extend(_validate_customization(project))
     issues.extend(_validate_package_intent(project, options))
     issues.extend(_validate_kernel_policy(options))
+    issues.extend(_validate_source_iso_trust(project, options, execute))
+    issues.extend(
+        _validate_package_evidence_trust(
+            project,
+            options,
+            runner,
+            execute,
+        )
+    )
     issues.extend(_validate_host_privilege(options, runner, execute=execute))
     return issues
 
@@ -122,6 +140,262 @@ def _validate_kernel_policy(options: BuildOptions) -> list[ValidationIssue]:
             "Kernel mode should prune obsolete kernels to avoid shipping multiple kernels",
         )
     ]
+
+
+_FULL_FINGERPRINT = re.compile(r"^(?:[0-9A-F]{40}|[0-9A-F]{64})$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_source_iso_trust(
+    project: Project,
+    options: BuildOptions,
+    execute: bool,
+) -> list[ValidationIssue]:
+    """Reject an unauthenticated ISO before any executing remaster starts."""
+    if project.source_mode != "iso" or not execute:
+        return []
+    issues: list[ValidationIssue] = []
+    source = project.source_iso
+    if source is None:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "source-trust-file",
+                "Executing ISO remasters require a local source ISO regular file.",
+            )
+        )
+    else:
+        issue = _sealed_regular_file_issue(
+            source,
+            code="source-trust-file",
+            description="Source ISO",
+        )
+        if issue:
+            issues.append(issue)
+
+    expected = (options.trust.source_sha256 or "").strip().lower()
+    if not _SHA256.fullmatch(expected):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "source-trust-sha256",
+                "Executing ISO remasters require an externally supplied full SHA256.",
+            )
+        )
+
+    signature = options.trust.source_signature
+    if signature is None:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "source-trust-signature",
+                "Executing ISO remasters require a detached signature file.",
+            )
+        )
+    else:
+        issue = _sealed_regular_file_issue(
+            signature,
+            code="source-trust-signature",
+            description="Detached source signature",
+        )
+        if issue:
+            issues.append(issue)
+
+    fingerprint = normalize_fingerprint(options.trust.source_gpg_fingerprint or "")
+    if not _FULL_FINGERPRINT.fullmatch(fingerprint):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "source-trust-fingerprint",
+                "Executing ISO remasters require one unique full 40- or 64-hex signer fingerprint.",
+            )
+        )
+    return issues
+
+
+def _sealed_regular_file_issue(
+    path: Path,
+    *,
+    code: str,
+    description: str,
+) -> ValidationIssue | None:
+    symlink = _first_symlink_component(path)
+    if symlink is not None:
+        return ValidationIssue(
+            "error",
+            code,
+            f"{description} path must not contain symlinks ({symlink}): {path}",
+        )
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        return ValidationIssue(
+            "error",
+            code,
+            f"{description} is unavailable: {path}: {exc}",
+        )
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return ValidationIssue(
+            "error",
+            code,
+            f"{description} must be a non-symlink regular file: {path}",
+        )
+    if metadata.st_size <= 0:
+        return ValidationIssue(
+            "error",
+            code,
+            f"{description} must not be empty: {path}",
+        )
+    return None
+
+
+def _first_symlink_component(path: Path) -> Path | None:
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(metadata.st_mode):
+            return current
+    return None
+
+
+def _validate_package_evidence_trust(
+    project: Project,
+    options: BuildOptions,
+    runner: CommandRunner,
+    execute: bool,
+) -> list[ValidationIssue]:
+    """Require externally supplied trust pins before an executing sealed build."""
+    severity = "error" if execute else "warning"
+    issues: list[ValidationIssue] = []
+    fingerprints = [
+        normalize_fingerprint(value)
+        for value in options.bootstrap.archive_signer_fingerprints
+    ]
+    if not fingerprints:
+        issues.append(
+            ValidationIssue(
+                severity,
+                "archive-signer-pin",
+                "Executing ISO builds require at least one full archive signer fingerprint.",
+            )
+        )
+    elif (
+        any(not _FULL_FINGERPRINT.fullmatch(value) for value in fingerprints)
+        or len(set(fingerprints)) != len(fingerprints)
+    ):
+        issues.append(
+            ValidationIssue(
+                severity,
+                "archive-signer-pin",
+                "Archive signer fingerprints must be unique full 40- or 64-hex fingerprints.",
+            )
+        )
+
+    for ppa in options.ppa.ppas:
+        fingerprint = normalize_fingerprint(ppa.fingerprint or "")
+        if not _FULL_FINGERPRINT.fullmatch(fingerprint):
+            issues.append(
+                ValidationIssue(
+                    severity,
+                    "ppa-signer-pin",
+                    f"PPA ppa:{ppa.owner}/{ppa.name} needs an explicit full signer fingerprint for sealed evidence.",
+                )
+            )
+
+    try:
+        source_policies = normalise_package_source_policies(
+            options.bootstrap.source_policies
+        )
+    except ValueError as exc:
+        issues.append(
+            ValidationIssue(
+                severity,
+                "package-source-policy",
+                f"Sealed package evidence needs valid external per-source policy: {exc}",
+            )
+        )
+        source_policies = ()
+    if source_policies:
+        policy_signers = {
+            fingerprint
+            for policy in source_policies
+            for fingerprint in policy.signer_fingerprints
+        }
+        expected_signers = {
+            *fingerprints,
+            *(
+                normalize_fingerprint(ppa.fingerprint or "")
+                for ppa in options.ppa.ppas
+            ),
+        }
+        if policy_signers != expected_signers:
+            issues.append(
+                ValidationIssue(
+                    severity,
+                    "package-source-policy-signers",
+                    "Per-source signer ownership differs from the global archive/PPA pins.",
+                )
+            )
+
+    if execute and not runner.has_binary("lz4"):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "package-index-lz4",
+                "Executing sealed builds require lz4 for offline Ubuntu/Debian Packages replay.",
+            )
+        )
+
+    if project.source_mode != "bootstrap":
+        return issues
+    expected = (options.bootstrap.archive_keyring_sha256 or "").strip().lower()
+    if not _SHA256.fullmatch(expected):
+        issues.append(
+            ValidationIssue(
+                severity,
+                "archive-keyring-pin",
+                "Fresh bootstrap builds require the archive keyring's full SHA256.",
+            )
+        )
+        return issues
+    if source_policies and expected not in {
+        digest
+        for policy in source_policies
+        for digest in policy.keyring_sha256
+    }:
+        issues.append(
+            ValidationIssue(
+                severity,
+                "package-source-policy-keyring",
+                "The bootstrap keyring SHA256 is not owned by any per-source policy.",
+            )
+        )
+    keyring = options.bootstrap.archive_keyring or default_archive_keyring(
+        project.release.family
+    )
+    if execute:
+        if keyring.is_symlink() or not keyring.is_file():
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "archive-keyring-file",
+                    f"Bootstrap archive keyring is missing, non-regular or symlinked: {keyring}",
+                )
+            )
+        elif sha256_file(keyring) != expected:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "archive-keyring-pin",
+                    f"Bootstrap archive keyring SHA256 differs from its configured pin: {keyring}",
+                )
+            )
+    return issues
 
 
 def _sudo_authenticates_without_a_prompt(runner: CommandRunner) -> bool:

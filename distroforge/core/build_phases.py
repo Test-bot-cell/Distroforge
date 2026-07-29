@@ -38,12 +38,16 @@ class BuildPhase(StrEnum):
     REPRODUCIBLE = "reproducible"
     SNAPSHOT = "snapshot"
     RUN_HOOKS = "run_hooks"
+    FINALIZE_PACKAGES = "finalize_packages"
+    PACKAGE_EVIDENCE = "package_evidence"
     SANITIZE_TARGET = "sanitize_target"
     HEALTH = "health"
     AUTOINSTALL = "autoinstall"
     SEEDS = "seeds"
     UPDATE_METADATA = "update_metadata"
+    ROOTFS_EVIDENCE_CAPTURE = "rootfs_evidence_capture"
     REPACK_FILESYSTEM = "repack_filesystem"
+    ROOTFS_EVIDENCE_VERIFY = "rootfs_evidence_verify"
     UPDATE_CHECKSUMS = "update_checksums"
     REBUILD_ISO = "rebuild_iso"
     PREBUILD_VM = "prebuild_vm"
@@ -103,12 +107,16 @@ PIPELINE_PHASES: tuple[BuildPhaseSpec, ...] = (
     BuildPhaseSpec(BuildPhase.REPRODUCIBLE, "Pin reproducible build inputs"),
     BuildPhaseSpec(BuildPhase.SNAPSHOT, "Create rollback snapshots"),
     BuildPhaseSpec(BuildPhase.RUN_HOOKS, "Run customization hooks"),
+    BuildPhaseSpec(BuildPhase.FINALIZE_PACKAGES, "Finalize package set"),
+    BuildPhaseSpec(BuildPhase.PACKAGE_EVIDENCE, "Seal package inputs"),
     BuildPhaseSpec(BuildPhase.SANITIZE_TARGET, "Sanitize target"),
     BuildPhaseSpec(BuildPhase.HEALTH, "Beginner-safe health report"),
     BuildPhaseSpec(BuildPhase.AUTOINSTALL, "Generate autoinstall"),
     BuildPhaseSpec(BuildPhase.SEEDS, "Write seeds and requested manifests"),
     BuildPhaseSpec(BuildPhase.UPDATE_METADATA, "Update ISO metadata"),
+    BuildPhaseSpec(BuildPhase.ROOTFS_EVIDENCE_CAPTURE, "Seal final rootfs identity"),
     BuildPhaseSpec(BuildPhase.REPACK_FILESYSTEM, "Repack live filesystem"),
+    BuildPhaseSpec(BuildPhase.ROOTFS_EVIDENCE_VERIFY, "Verify packed rootfs identity"),
     BuildPhaseSpec(BuildPhase.UPDATE_CHECKSUMS, "Update ISO checksums"),
     BuildPhaseSpec(BuildPhase.REBUILD_ISO, "Rebuild ISO"),
     BuildPhaseSpec(BuildPhase.PREBUILD_VM, "Run prebuild VM lab"),

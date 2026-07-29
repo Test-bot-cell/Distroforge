@@ -191,6 +191,7 @@ def run_iso_build(
     options._evidence_context = None
     options._evidence_reserved = False
     options._evidence_injected = False
+    options._sealed_run = execute
     evidence_context = make_run_context(
         project,
         options,

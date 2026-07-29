@@ -94,6 +94,35 @@ def test_a_preset_carries_the_compressor_it_was_exported_with(tmp_path) -> None:
     assert apply_definition(project, exported).squashfs.compression == "zstd"
 
 
+def test_a_preset_roundtrip_preserves_external_package_source_policy(
+    tmp_path,
+) -> None:
+    project = Project.create("PresetPolicy", tmp_path / "preset-policy", "26.04")
+    options = BuildOptions()
+    options.bootstrap.source_policies = [
+        {
+            "policy_id": "archive-proof",
+            "base_uri": "https://repo.invalid/archive",
+            "suites": ["proof"],
+            "codenames": ["proof"],
+            "components": ["main"],
+            "architectures": ["amd64"],
+            "signer_fingerprints": [
+                "F6ECB3762474EDA9D21B7022871920D1991BC93C"
+            ],
+            "keyring_sha256": ["a" * 64],
+            "max_release_age_seconds": 86400,
+            "max_future_skew_seconds": 300,
+            "require_valid_until": True,
+        }
+    ]
+
+    exported = definition_from_project(project, options)
+    imported = apply_definition(project, exported)
+
+    assert imported.bootstrap.source_policies == options.bootstrap.source_policies
+
+
 @pytest.mark.parametrize("group", DEFINITION_GROUPS)
 def test_unknown_key_in_any_option_group_is_a_friendly_error(tmp_path, group: str) -> None:
     project = Project.create("GroupGuard", tmp_path / f"group-{group}", "26.04")

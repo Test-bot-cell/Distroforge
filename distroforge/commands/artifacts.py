@@ -36,23 +36,70 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
     if args.command == "release-gate":
         return render_release_gate(args.root, args.definition, args.iso, args.output_dir, args.json)
     if args.command == "publish-bundle":
-        return render_publish_bundle(args.root, args.definition, args.iso, args.output_dir, args.bundle_dir, args.json), False
+        return render_publish_bundle(
+            args.root,
+            args.definition,
+            args.iso,
+            args.output_dir,
+            args.bundle_dir,
+            args.json,
+        )
     if args.command == "sign-release":
-        return render_sign_release(args.root, args.bundle_dir, args.gpg_key, args.execute, args.json), False
+        return render_sign_release(
+            args.root,
+            args.bundle_dir,
+            args.gpg_key,
+            execute=args.execute,
+            json_output=args.json,
+            gpg_keyring=args.gpg_keyring,
+        )
     if args.command == "release-notes":
-        return render_release_notes(args.root, args.bundle_dir, args.json), False
+        return render_release_notes(args.root, args.bundle_dir, args.json)
     if args.command == "verify-release":
-        return render_verify_release(args.root, args.bundle_dir, args.json), False
+        return render_verify_release(
+            args.root,
+            args.bundle_dir,
+            json_output=args.json,
+            gpg_fingerprint=args.gpg_fingerprint,
+        )
     if args.command == "explain-release":
         return render_explain_release(args.root, args.iso, args.bundle_dir, args.json), False
     if args.command == "publish-drill":
-        return render_publish_drill(args.root, args.definition, args.iso, args.bundle_dir, args.gpg_key, args.execute_signing, args.boot_backend, args.json), False
+        return render_publish_drill(
+            args.root,
+            args.definition,
+            args.iso,
+            args.bundle_dir,
+            args.gpg_key,
+            execute_signing=args.execute_signing,
+            boot_backend=args.boot_backend,
+            json_output=args.json,
+            gpg_keyring=args.gpg_keyring,
+        )
     if args.command == "publish-drill-diff":
         return render_publish_drill_diff(args.old, args.new, args.json), False
     if args.command == "publish-drill-baseline":
-        return render_publish_drill_baseline(args.root, args.bundle_dir, args.allow_blocked, args.json), False
+        return render_publish_drill_baseline(
+            args.root,
+            args.bundle_dir,
+            args.allow_blocked,
+            args.json,
+        )
     if args.command == "release-pipeline":
-        return render_release_pipeline(args.root, args.definition, args.iso, args.output_dir, args.bundle_dir, args.gpg_key, args.execute_signing, args.run_boot_proof, args.boot_proof_dry_run, args.boot_backend, args.json), False
+        return render_release_pipeline(
+            args.root,
+            args.definition,
+            args.iso,
+            args.output_dir,
+            args.bundle_dir,
+            args.gpg_key,
+            execute_signing=args.execute_signing,
+            run_boot=args.run_boot_proof,
+            boot_dry=args.boot_proof_dry_run,
+            boot_backend=args.boot_backend,
+            json_output=args.json,
+            gpg_keyring=args.gpg_keyring,
+        )
     if args.command == "boot-proof":
         rendered, blocked = render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.firmware, args.secure_boot, args.dry_run, args.json)
         return rendered, blocked
@@ -99,6 +146,7 @@ def register_sign_release_parser(subparsers) -> None:
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--gpg-key")
+    parser.add_argument("--gpg-keyring", type=Path)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--json", action="store_true")
 
@@ -114,6 +162,7 @@ def register_verify_release_parser(subparsers) -> None:
     parser = subparsers.add_parser("verify-release", help="Verify a maintainer publish bundle")
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--gpg-fingerprint")
     parser.add_argument("--json", action="store_true")
 
 
@@ -132,6 +181,7 @@ def register_publish_drill_parser(subparsers) -> None:
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--gpg-key")
+    parser.add_argument("--gpg-keyring", type=Path)
     parser.add_argument("--execute-signing", action="store_true")
     parser.add_argument("--boot-backend", default="auto", choices=["auto", "qemu", "iso-scan"])
     parser.add_argument("--json", action="store_true")
@@ -160,6 +210,7 @@ def register_release_pipeline_parser(subparsers) -> None:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--gpg-key")
+    parser.add_argument("--gpg-keyring", type=Path)
     parser.add_argument("--execute-signing", action="store_true")
     parser.add_argument("--run-boot-proof", action="store_true")
     parser.add_argument("--boot-backend", default="auto", choices=["auto", "qemu", "iso-scan"])
@@ -231,29 +282,74 @@ def render_release_gate(root: Path, definition: Path | None, iso: Path | None, o
     return (report.render_json() if json_output else report.render_text(), report.blocked)
 
 
-def render_publish_bundle(root: Path, definition: Path | None, iso: Path | None, output_dir: Path | None, bundle_dir: Path | None, json_output: bool = False) -> str:
+def render_publish_bundle(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    output_dir: Path | None,
+    bundle_dir: Path | None,
+    json_output: bool = False,
+) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
     report = create_publish_bundle(project, options, iso=iso, output_dir=output_dir, bundle_dir=bundle_dir)
-    return report.render_json() if json_output else report.render_text()
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.blocked,
+    )
 
 
-def render_sign_release(root: Path, bundle_dir: Path | None, gpg_key: str | None, execute: bool = False, json_output: bool = False) -> str:
-    report = sign_release_bundle(Project.load(root), bundle_dir=bundle_dir, execute=execute, gpg_key=gpg_key)
-    return report.render_json() if json_output else report.render_text()
+def render_sign_release(
+    root: Path,
+    bundle_dir: Path | None,
+    gpg_key: str | None,
+    execute: bool = False,
+    json_output: bool = False,
+    gpg_keyring: Path | None = None,
+) -> tuple[str, bool]:
+    report = sign_release_bundle(
+        Project.load(root),
+        bundle_dir=bundle_dir,
+        execute=execute,
+        gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
+    )
+    return (
+        report.render_json() if json_output else report.render_text(),
+        execute and report.status == "blocked",
+    )
 
 
-def render_release_notes(root: Path, bundle_dir: Path | None, json_output: bool = False) -> str:
+def render_release_notes(
+    root: Path,
+    bundle_dir: Path | None,
+    json_output: bool = False,
+) -> tuple[str, bool]:
     report = write_release_notes(Project.load(root), bundle_dir=bundle_dir)
-    return report.render_json() if json_output else report.render_text()
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.status == "blocked",
+    )
 
 
-def render_verify_release(root: Path, bundle_dir: Path | None, json_output: bool = False) -> str:
-    report = verify_release_bundle(Project.load(root), bundle_dir=bundle_dir)
-    return report.render_json() if json_output else report.render_text()
+def render_verify_release(
+    root: Path,
+    bundle_dir: Path | None,
+    json_output: bool = False,
+    gpg_fingerprint: str | None = None,
+) -> tuple[str, bool]:
+    report = verify_release_bundle(
+        Project.load(root),
+        bundle_dir=bundle_dir,
+        expected_signer_fingerprint=gpg_fingerprint,
+    )
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.blocked,
+    )
 
 
 def render_explain_release(root: Path, iso: Path | None, bundle_dir: Path | None, json_output: bool = False) -> str:
@@ -261,14 +357,36 @@ def render_explain_release(root: Path, iso: Path | None, bundle_dir: Path | None
     return report.render_json() if json_output else report.render_text()
 
 
-def render_publish_drill(root: Path, definition: Path | None, iso: Path | None, bundle_dir: Path | None, gpg_key: str | None, execute_signing: bool = False, boot_backend: str = "auto", json_output: bool = False) -> str:
+def render_publish_drill(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    bundle_dir: Path | None,
+    gpg_key: str | None,
+    execute_signing: bool = False,
+    boot_backend: str = "auto",
+    json_output: bool = False,
+    gpg_keyring: Path | None = None,
+) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    report = run_publish_drill(project, options, iso=iso, bundle_dir=bundle_dir, execute_signing=execute_signing, gpg_key=gpg_key, boot_backend=boot_backend)
-    return report.render_json() if json_output else report.render_text()
+    report = run_publish_drill(
+        project,
+        options,
+        iso=iso,
+        bundle_dir=bundle_dir,
+        execute_signing=execute_signing,
+        gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
+        boot_backend=boot_backend,
+    )
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.blocked,
+    )
 
 
 def render_publish_drill_diff(old: Path, new: Path, json_output: bool = False) -> str:
@@ -276,19 +394,59 @@ def render_publish_drill_diff(old: Path, new: Path, json_output: bool = False) -
     return report.render_json() if json_output else report.render_text()
 
 
-def render_publish_drill_baseline(root: Path, bundle_dir: Path | None, allow_blocked: bool = False, json_output: bool = False) -> str:
-    report = promote_publish_drill_baseline(Project.load(root), bundle_dir=bundle_dir, allow_blocked=allow_blocked)
-    return report.render_json() if json_output else report.render_text()
+def render_publish_drill_baseline(
+    root: Path,
+    bundle_dir: Path | None,
+    allow_blocked: bool = False,
+    json_output: bool = False,
+) -> tuple[str, bool]:
+    report = promote_publish_drill_baseline(
+        Project.load(root),
+        bundle_dir=bundle_dir,
+        allow_blocked=allow_blocked,
+    )
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.blocked,
+    )
 
 
-def render_release_pipeline(root: Path, definition: Path | None, iso: Path | None, output_dir: Path | None, bundle_dir: Path | None, gpg_key: str | None, execute_signing: bool = False, run_boot: bool = False, boot_dry: bool = False, boot_backend: str = "auto", json_output: bool = False) -> str:
+def render_release_pipeline(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    output_dir: Path | None,
+    bundle_dir: Path | None,
+    gpg_key: str | None,
+    execute_signing: bool = False,
+    run_boot: bool = False,
+    boot_dry: bool = False,
+    boot_backend: str = "auto",
+    json_output: bool = False,
+    gpg_keyring: Path | None = None,
+) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    report = run_release_pipeline(project, options, iso=iso, output_dir=output_dir, bundle_dir=bundle_dir, gpg_key=gpg_key, execute_signing=execute_signing, run_boot_proof=run_boot, boot_proof_execute=not boot_dry, boot_proof_backend=boot_backend)
-    return report.render_json() if json_output else report.render_text()
+    report = run_release_pipeline(
+        project,
+        options,
+        iso=iso,
+        output_dir=output_dir,
+        bundle_dir=bundle_dir,
+        gpg_key=gpg_key,
+        gpg_keyring=gpg_keyring,
+        execute_signing=execute_signing,
+        run_boot_proof=run_boot,
+        boot_proof_execute=not boot_dry,
+        boot_proof_backend=boot_backend,
+    )
+    return (
+        report.render_json() if json_output else report.render_text(),
+        report.status == "blocked",
+    )
 
 
 def render_boot_proof(

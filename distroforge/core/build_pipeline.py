@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .apt import AptService, parse_repository_lines
@@ -20,16 +20,25 @@ from .customize import CustomizationService
 from .debrand import DebrandService
 from .desktop_source import DesktopSourceService
 from .drivers import DriverService
+from .evidence_run import close_run_identity, evidence_run_path
+from .fsops import FileSystemOps
 from .health import HealthService
 from .hooks import HookRunner
 from .html_report import HtmlReportService
 from .importer import ImportService
 from .iso import IsoService
+from .iso_evidence import (
+    ISO_ASSEMBLY_FILENAME,
+    iso_extract_member_command,
+    iso_extract_member_path_command,
+    write_iso_assembly_evidence,
+)
 from .kernel import KernelModuleService
 from .kiosk import KioskService
 from .mirrors import MirrorService
 from .network import NetworkService
 from .oem import OemService
+from .package_evidence import PackageEvidenceService
 from .plugins import PluginOptions, PluginService
 from .policy import CompatibilityService, PolicyService
 from .ppa import PpaService
@@ -43,6 +52,14 @@ from .redistribution import RedistributionAttestationService
 from .release_artifacts import ReleaseArtifactService
 from .release_track import ReleaseTrackService
 from .reproducible import ReproducibleService
+from .rootfs_evidence import (
+    PackedImageWitness,
+    RootfsEvidenceService,
+    StableFileWitness,
+    rootfs_capture_command,
+    rootfs_unpack_command,
+    rootfs_verify_command,
+)
 from .sanitize import SanitizeService
 from .secureboot import SecureBootService
 from .seeds import SeedService
@@ -77,6 +94,8 @@ class BuildServices:
     snapshots: SnapshotService
     plugins: PluginService
     release_track: ReleaseTrackService
+    package_evidence: PackageEvidenceService
+    rootfs_evidence: RootfsEvidenceService
 
 
 def run_preflight(orch: BuildOrchestrator) -> None:
@@ -85,9 +104,7 @@ def run_preflight(orch: BuildOrchestrator) -> None:
         "Validate project",
         "project and host preflight",
     )
-    issues = validate_for_build(
-        orch.project, orch.runner, execute=orch.context.execute
-    )
+    issues = validate_for_build(orch.project, orch.runner, execute=orch.context.execute)
     issues.extend(
         validate_build_options(
             orch.project,
@@ -101,7 +118,10 @@ def run_preflight(orch: BuildOrchestrator) -> None:
         raise ValueError(format_issues(issues))
     if orch.project.source_mode == "iso":
         TrustService().enforce_source_iso(
-            orch.project.source_iso, orch.options.trust, orch.runner, strict=orch.options.policy.strict
+            orch.project.source_iso,
+            orch.options.trust,
+            orch.runner,
+            strict=orch.options.policy.strict,
         )
 
     orch._step(
@@ -136,7 +156,9 @@ def run_preflight(orch: BuildOrchestrator) -> None:
         )
         if orch.options.policy.strict:
             raise ValueError(PolicyService().summary(policy_violations))
-    clearance_mode = "redistributable" if orch.options.policy.strict else orch.options.policy.branding_mode
+    clearance_mode = (
+        "redistributable" if orch.options.policy.strict else orch.options.policy.branding_mode
+    )
     if orch.runner.dry_run:
         orch.runner.run(
             CommandSpec(
@@ -197,9 +219,17 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
         use_sudo=orch.options.use_sudo,
         source_date_epoch=epoch,
         arch=orch.options.bootstrap.arch,
+        require_fresh_extract=(
+            orch.options._sealed_run and orch.project.source_mode == "iso"
+        ),
     )
     squashfs = SquashfsService(
-        orch.runner, use_sudo=orch.options.use_sudo, source_date_epoch=epoch
+        orch.runner,
+        use_sudo=orch.options.use_sudo,
+        source_date_epoch=epoch,
+        require_fresh_unpack=(
+            orch.options._sealed_run and orch.project.source_mode == "iso"
+        ),
     )
     apt = AptService(
         orch.runner,
@@ -209,9 +239,7 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
         arch=orch.options.bootstrap.arch,
         snapshot=orch.options.reproducible.effective_apt_snapshot,
     )
-    chroot = ChrootService(
-        orch.runner, orch.project.squashfs_root, use_sudo=orch.options.use_sudo
-    )
+    chroot = ChrootService(orch.runner, orch.project.squashfs_root, use_sudo=orch.options.use_sudo)
     hooks = HookRunner(orch.runner)
     casper = CasperMetadataService(
         orch.runner,
@@ -241,6 +269,33 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
         use_sudo=orch.options.use_sudo,
         snapshot=orch.options.reproducible.effective_apt_snapshot,
     )
+    allowed_archive_signers = [
+        *orch.options.bootstrap.archive_signer_fingerprints,
+        *[ppa.fingerprint for ppa in orch.options.ppa.ppas if ppa.fingerprint],
+    ]
+    evidence_context = getattr(orch.options, "_evidence_context", None)
+    package_evidence = PackageEvidenceService(
+        orch.runner,
+        orch.project,
+        orch.project.squashfs_root,
+        getattr(orch.options, "_evidence_context", None),
+        use_sudo=orch.options.use_sudo,
+        archive_keyring=orch.options.bootstrap.archive_keyring,
+        archive_keyring_sha256=orch.options.bootstrap.archive_keyring_sha256,
+        allowed_signer_fingerprints=allowed_archive_signers,
+        source_policies=orch.options.bootstrap.source_policies,
+        verification_time=(
+            evidence_context.get("created_at")
+            if isinstance(evidence_context, dict)
+            else None
+        ),
+        fresh_rootfs=(orch.project.source_mode == "bootstrap" and orch.options._sealed_run),
+    )
+    run_id = str(evidence_context.get("run_id", "")) if isinstance(evidence_context, dict) else ""
+    rootfs_evidence = RootfsEvidenceService(
+        orch.project.squashfs_root,
+        run_id=run_id or None,
+    )
 
     return BuildServices(
         iso=iso,
@@ -252,6 +307,8 @@ def build_services(orch: BuildOrchestrator) -> BuildServices:
         snapshots=snapshots,
         plugins=plugins,
         release_track=release_track,
+        package_evidence=package_evidence,
+        rootfs_evidence=rootfs_evidence,
     )
 
 
@@ -265,17 +322,49 @@ def acquire_source(orch: BuildOrchestrator, services: BuildServices) -> None:
             "Bootstrap from scratch",
             orch.project.release.codename,
         )
-        BootstrapService(
+        sealed_keyring = services.package_evidence.seal_bootstrap_keyring()
+        bootstrap = BootstrapService(
             orch.runner,
             orch.project.release,
             orch.project.squashfs_root,
             orch.project.iso_root,
-            orch.options.bootstrap,
+            replace(orch.options.bootstrap, archive_keyring=sealed_keyring),
             use_sudo=orch.options.use_sudo,
-        ).prepare()
+            require_fresh=orch.options._sealed_run,
+        )
+        bootstrap.create_rootfs()
+        services.package_evidence.capture_bootstrap()
+        services.package_evidence.install_capture_hook()
+        bootstrap.install_live_base()
+        bootstrap.create_iso_tree()
     else:
         orch._step(BuildPhase.EXTRACT_ISO, "Extract ISO", orch._source_iso_text())
-        iso.extract(orch._require_source_iso(), orch.project.iso_root, on_progress=orch._phase_progress)
+        source_iso = orch._require_source_iso()
+        if orch.context.execute:
+            context = getattr(orch.options, "_evidence_context", None)
+            source_identity = context.get("source_iso") if isinstance(context, dict) else None
+            opening_sha = (
+                source_identity.get("sha256")
+                if isinstance(source_identity, dict)
+                else None
+            )
+            expected_sha = orch.options.trust.source_sha256 or opening_sha
+            if not isinstance(expected_sha, str) or not expected_sha:
+                raise ValueError(
+                    "Sealed source extraction requires a trusted opening SHA256"
+                )
+            iso.extract_witnessed(
+                source_iso,
+                orch.project.iso_root,
+                expected_sha256=expected_sha,
+                on_progress=orch._phase_progress,
+            )
+        else:
+            iso.extract(
+                source_iso,
+                orch.project.iso_root,
+                on_progress=orch._phase_progress,
+            )
 
         orch._step(
             BuildPhase.UNPACK_FILESYSTEM,
@@ -285,6 +374,8 @@ def acquire_source(orch: BuildOrchestrator, services: BuildServices) -> None:
         squashfs.unpack(
             orch._filesystem_image(), orch.project.squashfs_root, on_progress=orch._phase_progress
         )
+        services.package_evidence.capture_source_baseline()
+        services.package_evidence.install_capture_hook()
 
 
 def configure_repositories(orch: BuildOrchestrator, services: BuildServices) -> None:
@@ -441,9 +532,7 @@ def customize_target(orch: BuildOrchestrator, services: BuildServices) -> None:
             if orch.options.vuln_scan.enabled
             else "disabled",
         )
-        VulnScanService(orch.options.vuln_scan).enforce(
-            orch._planned_packages(), orch.runner
-        )
+        VulnScanService(orch.options.vuln_scan).enforce(orch._planned_packages(), orch.runner)
         orch._step(
             BuildPhase.SNAPSHOT,
             "Create rollback snapshot",
@@ -589,17 +678,30 @@ def customize_target(orch: BuildOrchestrator, services: BuildServices) -> None:
             finally:
                 orch._unstage_chroot_hooks()
 
+        sanitize = SanitizeService(
+            orch.runner,
+            orch.project.squashfs_root,
+            orch.options.sanitize,
+            use_sudo=orch.options.use_sudo,
+        )
+        orch._step(
+            BuildPhase.FINALIZE_PACKAGES,
+            "Finalize package set",
+            "guarded autoremove" if orch.options.sanitize.package_autoremove else "no autoremove",
+        )
+        sanitize.finalize_packages()
+        orch._step(
+            BuildPhase.PACKAGE_EVIDENCE,
+            "Seal package inputs",
+            "Release/Packages/keyrings/.deb bytes",
+        )
+        services.package_evidence.seal_before_cleanup()
         orch._step(
             BuildPhase.SANITIZE_TARGET,
             "Sanitize target",
             orch.options.sanitize.summary(),
         )
-        SanitizeService(
-            orch.runner,
-            orch.project.squashfs_root,
-            orch.options.sanitize,
-            use_sudo=orch.options.use_sudo,
-        ).run()
+        sanitize.clean_target()
         orch._step(
             BuildPhase.SNAPSHOT,
             "Create rollback snapshot",
@@ -646,6 +748,12 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         use_sudo=orch.options.use_sudo,
     ).write()
 
+    # Host hooks are the final authorized producers of either working tree.  Running
+    # them after xorriso allowed a hook to replace the ISO or its staged SquashFS
+    # after both had supposedly been sealed.
+    hooks.run_phase(orch.project.root / "hooks", "post-host")
+    plugins.run_phase("post-host")
+
     orch._step(
         BuildPhase.UPDATE_METADATA,
         "Update ISO metadata",
@@ -657,6 +765,47 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
     compression = resolve_compression(
         orch.options.squashfs.compression, orch.project.release.compression
     )
+    run_id = services.rootfs_evidence.run_id
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("Final rootfs evidence requires a sealed build run_id")
+    rootfs_manifest = evidence_run_path(
+        orch.project.output_dir,
+        run_id,
+        "ROOTFS-MANIFEST.json",
+        executed=orch.context.execute,
+    )
+    rootfs_verification = evidence_run_path(
+        orch.project.output_dir,
+        run_id,
+        "ROOTFS-PACKING-VERIFICATION.json",
+        executed=orch.context.execute,
+    )
+    iso_assembly_report = evidence_run_path(
+        orch.project.output_dir,
+        run_id,
+        ISO_ASSEMBLY_FILENAME,
+        executed=orch.context.execute,
+    )
+    unpacked_verification_root = orch.project.workdir / f".rootfs-packed-verification-{run_id}"
+    iso_verification_root = orch.project.workdir / f".iso-assembly-verification-{run_id}"
+    embedded_squashfs = iso_verification_root / "filesystem.squashfs"
+    iso_member = f"/{orch.project.release.livefs.strip('/')}/filesystem.squashfs"
+    staged_squashfs_identity: dict[str, object] | None = None
+
+    orch._step(
+        BuildPhase.ROOTFS_EVIDENCE_CAPTURE,
+        "Seal final rootfs identity",
+        "pre-packing manifest" if orch.context.execute else "planned only",
+    )
+    orch.runner.run(
+        rootfs_capture_command(
+            orch.project.squashfs_root,
+            rootfs_manifest,
+            run_id=run_id,
+            use_sudo=orch.options.use_sudo,
+        )
+    )
+
     orch._step(BuildPhase.REPACK_FILESYSTEM, "Repack live filesystem", compression)
     squashfs.pack(
         orch.project.squashfs_root,
@@ -665,13 +814,141 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         on_progress=orch._phase_progress,
     )
 
+    orch._step(
+        BuildPhase.ROOTFS_EVIDENCE_VERIFY,
+        "Verify packed rootfs identity",
+        "FD-witnessed SquashFS round-trip" if orch.context.execute else "planned only",
+    )
+    cleanup = FileSystemOps(orch.runner, orch.options.use_sudo)
+    if not orch.context.execute:
+        orch.runner.run(
+            CommandSpec(
+                argv=(
+                    "unsquashfs",
+                    "-no-progress",
+                    "-d",
+                    str(unpacked_verification_root),
+                    str(orch._filesystem_image()),
+                ),
+                needs_root=orch.options.use_sudo,
+                description="Plan packed rootfs verification extraction",
+            )
+        )
+        orch.runner.run(
+            CommandSpec(
+                argv=("write-file", str(rootfs_verification)),
+                description="Plan packed rootfs verification evidence",
+            )
+        )
+        cleanup.remove_tree(
+            unpacked_verification_root,
+            "Plan cleanup of packed rootfs verification tree",
+        )
+    else:
+        if unpacked_verification_root.exists() or unpacked_verification_root.is_symlink():
+            raise ValueError(
+                f"Packed rootfs verification destination is not fresh: {unpacked_verification_root}"
+            )
+        try:
+            image_witness = PackedImageWitness(orch._filesystem_image())
+            with image_witness:
+                orch.runner.run(
+                    rootfs_unpack_command(
+                        image_witness,
+                        unpacked_verification_root,
+                        use_sudo=orch.options.use_sudo,
+                    )
+                )
+            staged_squashfs_identity = image_witness.sealed_identity
+            orch.runner.run(
+                rootfs_verify_command(
+                    orch.project.squashfs_root,
+                    rootfs_manifest,
+                    orch._filesystem_image(),
+                    unpacked_verification_root,
+                    staged_squashfs_identity,
+                    rootfs_verification,
+                    run_id=run_id,
+                    use_sudo=orch.options.use_sudo,
+                )
+            )
+        finally:
+            cleanup.remove_tree(
+                unpacked_verification_root,
+                "Remove packed rootfs verification tree",
+            )
+
     orch._step(BuildPhase.UPDATE_CHECKSUMS, "Update ISO checksums", "md5sum.txt")
     casper.update_md5sums()
 
     orch._step(BuildPhase.REBUILD_ISO, "Rebuild ISO", str(orch._output_iso()))
-    iso.rebuild(orch.project, orch._output_iso(), on_progress=orch._phase_progress)
-    hooks.run_phase(orch.project.root / "hooks", "post-host")
-    plugins.run_phase("post-host")
+    output_iso = orch._output_iso()
+    staging_iso = output_iso.with_name(f".{output_iso.name}.building-{run_id}")
+    rebuilt_iso_identity = iso.rebuild(
+        orch.project,
+        output_iso,
+        staging_output=staging_iso,
+        on_progress=orch._phase_progress,
+    )
+    if not orch.context.execute:
+        orch.runner.run(
+            iso_extract_member_path_command(
+                output_iso,
+                iso_member,
+                embedded_squashfs,
+                use_sudo=orch.options.use_sudo,
+            )
+        )
+        orch.runner.run(
+            CommandSpec(
+                argv=("write-file", str(iso_assembly_report)),
+                description="Plan final ISO assembly identity evidence",
+            )
+        )
+        cleanup.remove_tree(
+            iso_verification_root,
+            "Plan cleanup of final ISO assembly verification tree",
+        )
+    else:
+        if staged_squashfs_identity is None:
+            raise ValueError("Final ISO assembly lacks the staged SquashFS witness")
+        if iso_verification_root.exists() or iso_verification_root.is_symlink():
+            raise ValueError(
+                f"Final ISO verification destination is not fresh: {iso_verification_root}"
+            )
+        iso_verification_root.mkdir(parents=False)
+        try:
+            final_iso_witness = StableFileWitness(output_iso)
+            with final_iso_witness:
+                orch.runner.run(
+                    iso_extract_member_command(
+                        final_iso_witness,
+                        iso_member,
+                        embedded_squashfs,
+                        use_sudo=orch.options.use_sudo,
+                    )
+                )
+            final_iso_identity = final_iso_witness.sealed_identity
+            if rebuilt_iso_identity != final_iso_identity:
+                raise ValueError(
+                    "Final ISO changed between atomic publication and member extraction"
+                )
+            embedded_witness = StableFileWitness(embedded_squashfs)
+            with embedded_witness:
+                pass
+            write_iso_assembly_evidence(
+                iso_assembly_report,
+                run_id=run_id,
+                iso_member=iso_member,
+                output_iso=final_iso_identity,
+                staged_squashfs=staged_squashfs_identity,
+                embedded_squashfs=embedded_witness.sealed_identity,
+            )
+        finally:
+            cleanup.remove_tree(
+                iso_verification_root,
+                "Remove final ISO assembly verification tree",
+            )
 
     orch._step(
         BuildPhase.PREBUILD_VM,
@@ -747,6 +1024,11 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
             QemuPreviewOptions(),
         ).run()
 
+    close_run_identity(
+        orch.project,
+        orch.options,
+        getattr(orch.options, "_evidence_context", None),
+    )
     orch._step(BuildPhase.PROVENANCE, "Write SBOM/provenance", "json")
     ProvenanceService(
         orch.runner,

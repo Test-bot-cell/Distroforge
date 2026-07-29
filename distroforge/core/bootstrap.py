@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import platform
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .apt import APT_UPDATE_ARGV, PackagePlan
@@ -79,6 +79,15 @@ def host_dpkg_arch() -> str:
     return _HOST_ARCH_BY_MACHINE.get(machine, machine)
 
 
+def _default_archive_keyring(family: str) -> Path:
+    filename = (
+        "debian-archive-keyring.gpg"
+        if family.lower() == "debian"
+        else "ubuntu-archive-keyring.gpg"
+    )
+    return Path("/usr/share/keyrings") / filename
+
+
 def planned_boot_images(arch: str) -> tuple[str | None, str | None]:
     """``(BIOS El Torito image, ESP)`` this bootstrap will stage for ``arch``, as tree paths.
 
@@ -127,15 +136,31 @@ class BootstrapOptions:
     variant: str = "minbase"
     mirror: str | None = None
     base_packages: list[str] | None = None
+    archive_keyring: Path | None = None
+    archive_keyring_sha256: str | None = None
+    archive_signer_fingerprints: list[str] = field(default_factory=list)
+    # External, definition-owned repository namespaces.  The package evidence
+    # validator normalises these mappings and refuses an executing sealed build
+    # when an index cannot be bound to exactly one URI/suite/key/freshness policy.
+    source_policies: list[dict[str, object]] = field(default_factory=list)
 
 
 # Bumped when the recorded fields change meaning. A record from another version is
 # treated as no record at all rather than compared field by field, because a
 # comparison against a schema this code does not know is not a comparison.
-_BOOTSTRAP_STAMP_VERSION = 1
+_BOOTSTRAP_STAMP_VERSION = 2
 # The inputs that decide what a bootstrapped tree *is*, in the order they are worth
 # reporting a difference in.
-_IDENTITY_FIELDS = ("codename", "family", "arch", "variant", "mirror")
+_IDENTITY_FIELDS = (
+    "codename",
+    "family",
+    "arch",
+    "variant",
+    "mirror",
+    "archive_keyring",
+    "archive_keyring_sha256",
+    "archive_signer_fingerprints",
+)
 
 
 # What the phase *after* the bootstrap needs to find in the tree, and therefore what
@@ -212,6 +237,17 @@ def bootstrap_identity(release: UbuntuRelease, options: BootstrapOptions) -> dic
         "arch": options.arch,
         "variant": options.variant,
         "mirror": options.mirror or release.archive_url,
+        "archive_keyring": str(
+            options.archive_keyring or _default_archive_keyring(release.family)
+        ),
+        "archive_keyring_sha256": options.archive_keyring_sha256,
+        "archive_signer_fingerprints": sorted(
+            {
+                "".join(value.split()).removeprefix("0x").upper()
+                for value in options.archive_signer_fingerprints
+                if value.strip()
+            }
+        ),
     }
 
 
@@ -321,6 +357,7 @@ class BootstrapService:
         iso_root: Path,
         options: BootstrapOptions | None = None,
         use_sudo: bool = True,
+        require_fresh: bool = False,
     ) -> None:
         self.runner = runner
         self.release = release
@@ -328,11 +365,19 @@ class BootstrapService:
         self.iso_root = iso_root
         self.options = options or BootstrapOptions()
         self.use_sudo = use_sudo
+        self.require_fresh = require_fresh
         self.fs = FileSystemOps(runner, use_sudo)
 
     def create_rootfs(self) -> None:
         verdict = rootfs_verdict(self.root, self.release, self.options)
         if verdict.state == "reusable":
+            if self.require_fresh:
+                raise ValueError(
+                    f"Sealed bootstrap requires a fresh rootfs, but {self.root} is "
+                    "already reusable. Choose a new work directory or explicitly "
+                    "clean this target before retrying; a previous tree cannot prove "
+                    "this run's minbase-to-ISO chain."
+                )
             self.runner.run(
                 CommandSpec(
                     argv=("bootstrap-rootfs-reuse", str(self.root)),
@@ -370,6 +415,14 @@ class BootstrapService:
             )
         mirror = self.options.mirror or self.release.archive_url
         tool = "mmdebstrap" if self.runner.has_binary("mmdebstrap") else "debootstrap"
+        archive_keyring = (
+            self.options.archive_keyring
+            or _default_archive_keyring(self.release.family)
+        )
+        if not self.runner.dry_run and not archive_keyring.resolve().is_file():
+            raise ValueError(
+                f"Bootstrap archive keyring is missing: {archive_keyring}"
+            )
         # Both of these are asked for by name because --variant=minbase does not promise
         # either one, and the next phase runs apt-get inside this tree.
         #
@@ -401,6 +454,10 @@ class BootstrapService:
                 f"--variant={self.options.variant}",
                 f"--architectures={self.options.arch}",
                 include,
+                f"--keyring={archive_keyring}",
+                "--skip=essential/unlink",
+                "--skip=cleanup/apt/lists",
+                "--skip=cleanup/apt/cache",
                 self.release.codename,
                 str(self.root),
                 mirror,
@@ -410,6 +467,8 @@ class BootstrapService:
                 "debootstrap",
                 f"--variant={self.options.variant}",
                 include,
+                "--force-check-sig",
+                f"--keyring={archive_keyring}",
                 "--arch",
                 self.options.arch,
                 self.release.codename,

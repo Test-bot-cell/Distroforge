@@ -85,6 +85,45 @@ and screenshot digests recorded in the run manifest and no terminal refusal anyw
 the final log. A structural scan never satisfies this runtime publication gate. The gate
 returns `blocked`, `review`, or `ready`.
 
+For `source_mode: iso`, an executing remaster has already required the source and detached
+signature to be stable regular files, the source bytes to match an external SHA-256, and
+GPG's `VALIDSIG` output to name one externally supplied full fingerprint exclusively.
+That strict live check is still only `review` at publication: the current run evidence does
+not seal the detached signature, verification status and exact keyring bytes in a form the
+gate can replay offline. A locally successful ambient-keyring verification must not be
+rewritten as an authenticated release claim.
+
+The same run must contain `PACKAGE-INPUTS.json`. On an authoritative gate refresh, the
+validator does not trust that file's recorded verdict: it re-hashes its transaction and
+CAS files, verifies the captured `InRelease`/`Release.gpg` using captured explicit
+keyrings, binds each `Packages` index to the signed Release checksums, binds each `.deb`
+digest, size and internal identity to a package stanza, and reconciles the final dpkg
+inventory. Repository authority is per-source, not global: the effective definition pins
+each namespace's base URI, suites/codenames, components, architectures, full signer
+fingerprints, keyring digests and Release freshness window. `Date`, optional
+`Valid-Until`, maximum age and future skew are evaluated at the provenance run instant.
+The validator also re-derives the APT-affecting argv digest from the complete final command
+ledger, including commands after the aggregate was first written.
+
+Those policies, the expected source mode and bootstrap keyring SHA-256 come from the
+effective definition passed to the gate, so package evidence cannot self-authorize a
+different trust policy. A locally built `.deb` with no independent producer attestation
+blocks the input closure. Even a valid input closure is not publication-ready today:
+`.deb` payload bytes are not yet causally mapped to every final rootfs file, so
+`filesystem_causality` is `unverified` and `package-inputs` is `blocked`.
+
+That package-input path is implemented and covered by real cryptographic fixture bytes,
+but no new live-archive ISO build has exercised it in the 2026-07-29 hardening lot. A
+fixture pass is not an archive or ISO proof.
+
+The same distinction applies to the product bytes. The code now captures a semantic
+`ROOTFS-MANIFEST.json`, proves no source-tree drift across `mksquashfs`, unpacks the
+descriptor-held SquashFS into a fresh tree, and binds those bytes to the SquashFS member
+extracted from the final ISO. The authoritative provenance gate repeats that path from the
+published ISO itself and compares the replayed semantic tree with the manifest. Round-trip
+and forged-evidence tests exercise this path on synthetic trees, but the hardening lot did
+not execute a new product rootfs, SquashFS or ISO build.
+
 “Append-only” is an application rule, not a cryptographic filesystem property: the
 application refuses a reused run ID, but a local writer can still alter or delete the
 directory and recompute unsigned digests. The local checks detect ordinary drift against
@@ -94,14 +133,21 @@ trusted WORM/content-addressed storage.
 
 `publish-bundle` creates `dist/publish/` for maintainer review. It copies the ISO,
 `SHA256SUMS`, `BUILDINFO`, provenance, HTML report, executed boot proof when present, plus
+the referenced run evidence (including package-input transactions),
 `RELEASE-GATE.json` and `README-PUBLISH.txt`. A blocked release gate still produces an
-inspection bundle, but the README marks it `BLOCKED` and lists the blocking items.
+inspection bundle, but the README marks it `BLOCKED` and lists the blocking items; the
+top-level CLI exits 2 for that blocked result.
 
 `sign-release` adds maintainer signing evidence to the bundle. It always writes
 `RELEASE-MANIFEST.json` with file sizes and SHA-256 digests, then writes
 `SIGNING-REPORT.json`. By default it is a plan: GPG commands are recorded but no signature
 is made. Passing `--execute` signs `SHA256SUMS`, `RELEASE-GATE.json`, and
-`RELEASE-MANIFEST.json` when `gpg` is available.
+`RELEASE-MANIFEST.json` when `gpg` is available. Execution requires a complete 40- or
+64-hex OpenPGP signer fingerprint and an explicit filtered public keyring. The keyring is
+copied into the bundle as `RELEASE-SIGNING-KEYRING.gpg`, its SHA-256 is recorded, and each
+new signature is verified against that keyring and exact fingerprint before it is
+reported as signed. A signing plan remains non-failing; a blocked `--execute` signing
+attempt exits 2.
 
 `release-notes` writes the human review layer: `RELEASE-NOTES.md` and `CHANGELOG.txt`.
 The notes summarize status, ISO digest, included artifacts, boot proof, signing evidence,
@@ -111,7 +157,23 @@ blocking gate items and verification commands.
 `RELEASE-MANIFEST.json`, checks sizes and SHA-256 digests, verifies `SHA256SUMS` against
 the ISO, compares the manifest and release-gate status, and attempts GPG verification for
 present detached signatures when `gpg` is available. Missing planned signatures remain
-review items; corrupted files block the bundle.
+review items; corrupted files block the bundle. A `blocked` release gate remains
+`blocked` under standalone verification: its aggregate status, `blocked` boolean,
+manifest status and individual item verdicts must be mutually consistent.
+
+Once signing execution is claimed, the contract is exact rather than best-effort:
+`status` must be `signed`, `execute` must be true, `planned` and `skipped` must be empty,
+and both the recorded signed set and the actual `.asc` files must equal these three and
+only these three:
+
+- `SHA256SUMS.asc`;
+- `RELEASE-GATE.json.asc`;
+- `RELEASE-MANIFEST.json.asc`.
+
+A partial set is blocked even when each present signature verifies. Verification also
+requires the externally supplied expected full signer fingerprint and the recorded
+explicit keyring bytes to match their SHA-256. A blocked verification report is propagated
+as CLI exit status 2.
 
 `explain-release` writes `RELEASE-EXPLAIN.md`. It reads the gate, boot proof, manifest and
 verification reports, separates ready, review and blocked evidence, names the boot proof

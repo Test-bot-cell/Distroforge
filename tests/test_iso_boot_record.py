@@ -40,6 +40,9 @@ class _FakeRunner:
 
     def run(self, spec: CommandSpec, check: bool = True) -> CommandResult:
         self.history.append(spec)
+        if "mkisofs" in spec.argv:
+            output = Path(spec.argv[spec.argv.index("-o") + 1])
+            output.write_bytes(b"fresh fixture ISO")
         stdout = self._report_text if "-report_el_torito" in spec.argv else ""
         return CommandResult(spec=spec, returncode=0, stdout=stdout, stderr="")
 
@@ -116,7 +119,10 @@ def test_rebuild_replays_source_boot_record_in_execute_mode(tmp_path) -> None:
     rebuild = next(s for s in runner.history if "mkisofs" in s.argv)
     argv = list(rebuild.argv)
     assert argv[argv.index("-V") + 1] == "Remix"
-    assert argv[argv.index("-o") + 1] == str(tmp_path / "out.iso")
+    assert argv[argv.index("-o") + 1] == str(
+        tmp_path / ".out.iso.distroforge-building"
+    )
+    assert (tmp_path / "out.iso").read_bytes() == b"fresh fixture ISO"
     assert "-b" in argv and "/boot/grub/i386-pc/eltorito.img" in argv
     assert "-boot-info-table" in argv
     assert argv[-1] == str(project.iso_root)
@@ -136,11 +142,12 @@ def test_rebuild_is_byte_identical_to_detection_in_dry_run(tmp_path) -> None:
     prefix = [
         "xorriso", "-as", "mkisofs", "-r",
         "-V", "Remix",
-        "-o", str(tmp_path / "out.iso"),
+        "-o", str(tmp_path / ".out.iso.distroforge-building"),
         "-J", "-joliet-long", "-l", "-cache-inodes",
     ]
-    # Byte-identical to the pre-delegation behavior: fixed prefix + detector args + root.
+    # The mkisofs shape is unchanged except that it writes a fresh staging path.
     assert list(rebuild.argv) == prefix + expected_boot + [str(project.iso_root)]
+    assert any(spec.argv[:2] == ("mv", "-T") for spec in runner.history)
 
 
 # The tests below cover the other half: a tree with no source ISO to interrogate, which

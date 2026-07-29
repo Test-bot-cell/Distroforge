@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from distroforge.cli import main
 from distroforge.core.beginner_iso import prepare_beginner_iso_path
@@ -117,14 +118,16 @@ def test_beginner_iso_execute_records_a_completed_attempt(tmp_path: Path, monkey
     project = Project.create("BeginnerMem", tmp_path / "beginner-mem", "26.04")
     memory = BuildMemory(tmp_path / "corpus.jsonl")
 
-    class SuccessfulOrchestrator:
-        def __init__(self, project, runner, options, progress=None) -> None:
-            self.options = options
-
-        def run(self) -> None:
-            return None
-
-    monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", SuccessfulOrchestrator)
+    monkeypatch.setattr(
+        "distroforge.core.beginner_iso.run_iso_build",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="built",
+            failure=None,
+            command_log=kwargs["log_path"],
+            report=tmp_path / "ISO-BUILD.json",
+            run_manifest=tmp_path / "RUN-MANIFEST.json",
+        ),
+    )
 
     report = prepare_beginner_iso_path(
         project, apply_safe_defaults=True, dry_run=True, execute=True, memory=memory
@@ -144,18 +147,20 @@ def test_beginner_iso_failure_records_canonical_category(tmp_path: Path, monkeyp
     memory = BuildMemory(tmp_path / "corpus.jsonl")
     log = tmp_path / "build-commands.jsonl"
 
-    class FailingOrchestrator:
-        def __init__(self, project, runner, options, progress=None) -> None:
-            self.options = options
+    def failed_build(*args, **kwargs):
+        log.write_text(
+            '{"event":"finish","command":"mksquashfs root filesystem.squashfs","returncode":1}\n',
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            status="failed",
+            failure=SimpleNamespace(output="mksquashfs failed"),
+            command_log=log,
+            report=tmp_path / "ISO-BUILD.json",
+            run_manifest=tmp_path / "RUN-MANIFEST.json",
+        )
 
-        def run(self) -> None:
-            log.write_text(
-                '{"event":"finish","command":"mksquashfs root filesystem.squashfs","returncode":1}\n',
-                encoding="utf-8",
-            )
-            raise RuntimeError("mksquashfs failed")
-
-    monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", FailingOrchestrator)
+    monkeypatch.setattr("distroforge.core.beginner_iso.run_iso_build", failed_build)
 
     report = prepare_beginner_iso_path(
         project,
@@ -180,14 +185,16 @@ def test_beginner_iso_without_injected_memory_records_nothing(tmp_path: Path, mo
     project = Project.create("BeginnerNone", tmp_path / "beginner-none", "26.04")
     untouched = BuildMemory(tmp_path / "untouched.jsonl")
 
-    class SuccessfulOrchestrator:
-        def __init__(self, project, runner, options, progress=None) -> None:
-            pass
-
-        def run(self) -> None:
-            return None
-
-    monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", SuccessfulOrchestrator)
+    monkeypatch.setattr(
+        "distroforge.core.beginner_iso.run_iso_build",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="built",
+            failure=None,
+            command_log=kwargs["log_path"],
+            report=tmp_path / "ISO-BUILD.json",
+            run_manifest=tmp_path / "RUN-MANIFEST.json",
+        ),
+    )
 
     report = prepare_beginner_iso_path(project, apply_safe_defaults=True, dry_run=True, execute=True)
 
@@ -217,14 +224,16 @@ def test_cli_beginner_iso_execute_appends_to_corpus(tmp_path: Path, monkeypatch)
     corpus = tmp_path / "corpus.jsonl"
     project = Project.create("CliMem", tmp_path / "cli-mem", "26.04")
 
-    class SuccessfulOrchestrator:
-        def __init__(self, project, runner, options, progress=None) -> None:
-            pass
-
-        def run(self) -> None:
-            return None
-
-    monkeypatch.setattr("distroforge.core.beginner_iso.BuildOrchestrator", SuccessfulOrchestrator)
+    monkeypatch.setattr(
+        "distroforge.core.beginner_iso.run_iso_build",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="built",
+            failure=None,
+            command_log=kwargs["log_path"],
+            report=tmp_path / "ISO-BUILD.json",
+            run_manifest=tmp_path / "RUN-MANIFEST.json",
+        ),
+    )
     monkeypatch.setattr("distroforge.commands.beginner_iso.default_corpus_path", lambda: corpus)
 
     main(["beginner-iso", str(project.root), "--apply-safe-defaults", "--dry-run", "--execute"])

@@ -4,7 +4,12 @@ import json
 import pathlib
 
 import pytest
-from conftest import make_rootfs, write_valid_boot_proof, write_valid_build_evidence
+from conftest import (
+    make_rootfs,
+    package_fixture_options,
+    write_valid_boot_proof,
+    write_valid_build_evidence,
+)
 
 from distroforge.core import squashfs as squashfs_module
 from distroforge.core.apt import AptService, PackagePlan, parse_repository_line
@@ -206,7 +211,7 @@ def test_iso_accept_blocks_missing_iso(tmp_path) -> None:
     assert (project.output_dir / "ISO-ACCEPTANCE.json").exists()
 
 
-def test_iso_accept_accepts_built_iso_with_evidence(tmp_path) -> None:
+def test_iso_accept_blocks_until_packages_are_bound_to_final_rootfs(tmp_path) -> None:
     project = Project.create("AcceptIso", tmp_path / "accept-iso", "26.04")
     project.source_mode = "bootstrap"
     iso = default_output_iso(project)
@@ -215,10 +220,14 @@ def test_iso_accept_accepts_built_iso_with_evidence(tmp_path) -> None:
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
 
-    report = accept_iso(project, BuildOptions())
+    report = accept_iso(project, package_fixture_options())
 
-    assert report.status == "accepted"
-    assert report.next_command.startswith("distroforge publish-bundle")
+    assert report.status == "blocked"
+    package_inputs = next(
+        item for item in report.items if item.code == "gate-package-inputs"
+    )
+    assert "installed-file causality" in package_inputs.detail
+    assert report.next_command.startswith("distroforge release-gate")
 
 
 def test_demo_iso_creates_minimal_bootstrap_project(monkeypatch, tmp_path) -> None:
@@ -449,7 +458,8 @@ def test_squashfs_dry_run_is_pure_and_records_commands(tmp_path) -> None:
     assert commands[0][0] == "mksquashfs"
     assert commands[0][2] == str(squashfs_image)
     assert commands[1][0] == "unsquashfs"
-    assert commands[1][3] == str(destination)
+    assert commands[1][2] == str(destination)
+    assert "-f" not in commands[1]
 
 
 def test_bootstrap_reuses_existing_valid_rootfs(tmp_path) -> None:

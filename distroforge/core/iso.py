@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import shlex
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .bootstrap import planned_boot_images
 from .command import CommandRunner, CommandSpec, sudo
+from .fsops import FileSystemOps
 from .progress_parsers import xorriso_progress
 from .project import Project
 from .reproducible import source_date_epoch_argv
+from .rootfs_evidence import StableFileWitness
 
 # Options the rebuild command line sets itself; drop them (and the value of the
 # value-taking ones) from a replayed report so nothing is specified twice.
@@ -75,6 +80,9 @@ class IsoService:
     # is the arch BuildOptions itself defaults to rather than a sentinel: an unset arch
     # here would silently plan a BIOS-less ISO on the one arch that needs BIOS most.
     arch: str = "amd64"
+    # A sealed derivative must never merge a new source ISO into an old work tree.
+    # Kept opt-in for callers that use this low-level service outside a sealed build.
+    require_fresh_extract: bool = False
 
     def extract(
         self,
@@ -84,7 +92,19 @@ class IsoService:
         on_progress: Callable[[float], None] | None = None,
     ) -> None:
         if not self.runner.dry_run:
-            destination.mkdir(parents=True, exist_ok=True)
+            if self.require_fresh_extract and (
+                destination.exists() or destination.is_symlink()
+            ):
+                raise ValueError(
+                    f"ISO extraction destination is not fresh: {destination}"
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if self.require_fresh_extract:
+                # Claim the checked path ourselves.  xorriso is then handed a newly
+                # created empty directory rather than a path another run populated.
+                destination.mkdir()
+            else:
+                destination.mkdir(parents=True, exist_ok=True)
         spec = CommandSpec(
             argv=sudo(
                 (
@@ -104,15 +124,59 @@ class IsoService:
         )
         self._run(spec, on_progress)
 
+    def extract_witnessed(
+        self,
+        iso_path: Path,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        on_progress: Callable[[float], None] | None = None,
+    ) -> dict[str, object]:
+        """Extract exact source bytes through an FD and close the source path."""
+        expected = expected_sha256.strip().lower()
+        if (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+        ):
+            raise ValueError("Witnessed source ISO requires a valid expected SHA256")
+        witness = StableFileWitness(iso_path)
+        if witness.initial_identity["sha256"] != expected:
+            witness.close()
+            raise ValueError(
+                "Witnessed source ISO SHA256 differs from the trusted opening identity"
+            )
+        with witness:
+            self.extract(
+                witness.proc_fd_path,
+                destination,
+                on_progress=on_progress,
+            )
+        identity = witness.sealed_identity
+        if identity["sha256"] != expected:
+            raise ValueError(
+                "Witnessed source ISO changed during extraction"
+            )
+        return identity
+
     def rebuild(
         self,
         project: Project,
         output_iso: Path,
         *,
+        staging_output: Path | None = None,
         on_progress: Callable[[float], None] | None = None,
-    ) -> None:
+    ) -> dict[str, object] | None:
+        staging = staging_output or output_iso.with_name(
+            f".{output_iso.name}.distroforge-building"
+        )
+        if staging == output_iso:
+            raise ValueError("ISO staging output must differ from the published output")
+        if staging.parent.resolve(strict=False) != output_iso.parent.resolve(strict=False):
+            raise ValueError("ISO staging output must share the published output directory")
         if not self.runner.dry_run:
             output_iso.parent.mkdir(parents=True, exist_ok=True)
+            if staging.exists() or staging.is_symlink():
+                raise ValueError(f"ISO staging output is not fresh: {staging}")
         iso_root = project.iso_root
         boot_args, boot_label = self._boot_args(project, iso_root)
         argv = [
@@ -124,7 +188,7 @@ class IsoService:
             "-V",
             project.name[:32],
             "-o",
-            str(output_iso),
+            str(staging),
             "-J",
             "-joliet-long",
             "-l",
@@ -138,6 +202,20 @@ class IsoService:
             description=f"Rebuild bootable ISO tree ({boot_label})",
         )
         self._run(spec, on_progress)
+        fs = FileSystemOps(self.runner, self.use_sudo)
+        if self.runner.dry_run:
+            fs.rename(staging, output_iso, "Atomically publish freshly rebuilt ISO")
+            return None
+
+        staged_identity = _stable_nonempty_regular_file_identity(staging)
+        fs.rename(staging, output_iso, "Atomically publish freshly rebuilt ISO")
+        published_identity = _stable_nonempty_regular_file_identity(output_iso)
+        if (
+            staged_identity["size"] != published_identity["size"]
+            or staged_identity["sha256"] != published_identity["sha256"]
+        ):
+            raise ValueError("Published ISO differs from the validated staging output")
+        return published_identity
 
     def _boot_args(self, project: Project, iso_root: Path) -> tuple[list[str], str]:
         """Prefer the source ISO's own El Torito record; fall back to generic detection.
@@ -198,6 +276,53 @@ class IsoService:
                 on_progress(fraction)
 
         self.runner.run_streaming(spec, on_line)
+
+
+def _stable_nonempty_regular_file_identity(path: Path) -> dict[str, object]:
+    """Hash a path through one no-follow descriptor and reject unstable output."""
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"Fresh ISO output was not produced at {path}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            raise ValueError(f"Fresh ISO output is not a non-empty regular file: {path}")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        if identity != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ValueError(f"Fresh ISO output changed while it was hashed: {path}")
+    finally:
+        os.close(descriptor)
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError(f"Fresh ISO output disappeared after hashing: {path}") from exc
+    if current.st_dev != before.st_dev or current.st_ino != before.st_ino:
+        raise ValueError(f"Fresh ISO output path changed after hashing: {path}")
+    return {
+        "name": path.name,
+        "size": before.st_size,
+        "sha256": digest.hexdigest(),
+    }
 
 
 @dataclass(frozen=True)

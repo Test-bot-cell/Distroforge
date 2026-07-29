@@ -15,10 +15,61 @@ authoritative milestone table is
 [iso-build-proof-ledger.md](iso-build-proof-ledger.md).
 
 Everything else in this project is level 0 or level 1 — unit tests and offline
-plan/dry-run tests, deliberately, so the suite stays offline, rootless and sub-second.
-That boundary has not moved. What changed is that the level-2 question now has a place to
-be asked on a cadence, outside the suite, instead of only when a maintainer happens to
-run a build by hand.
+plan/dry-run tests over bounded fixtures, deliberately, so the suite stays offline and
+rootless. Even tests that invoke real `mksquashfs`, `unsquashfs` and `xorriso` operate on
+tiny synthetic trees; they are not product builds. That boundary has not moved. What
+changed is that the level-2 question now has a place to be asked on a cadence, outside the
+suite, instead of only when a maintainer happens to run a build by hand.
+
+## Current hardening status
+
+The 2026-07-29 source lot changes what the next Golden path run will demand; it does not
+claim that run has happened. No new product ISO, live-archive transaction, product
+SquashFS or QEMU boot was produced while making these changes.
+
+- Every external action currently used by `ci.yml` and `golden-path.yml` is referenced by
+  a full 40-hex commit SHA. The adjacent version comment is explanatory; it is not what
+  Actions resolves. This closes mutable `@v4`, `@v5` or branch references in the workflow
+  source, but only a later run can bind those workflow bytes to its output.
+- The reference derivative supplies an external Ubuntu archive trust policy:
+  `/usr/share/keyrings/ubuntu-archive-keyring.gpg`, SHA-256
+  `80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31`,
+  and the complete signer fingerprint
+  `F6ECB3762474EDA9D21B7022871920D1991BC93C`. Separate policies own the release,
+  updates/backports and security URI/suite namespaces and their freshness windows. A
+  runner keyring update or archive key rotation therefore blocks until this definition is
+  reviewed rather than silently redefining trust.
+- Before any Golden-path build, the workflow verifies the exact checked-out commit in an
+  ephemeral `GNUPGHOME`. The repository-pinned public key must hash to
+  `a1b6ee870e2708571bc43cf42d12a0c315c58dd1dad7760a27f660db3162e0ab`, expose primary
+  fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`, and make
+  `git verify-commit HEAD` succeed. `PYTHONDONTWRITEBYTECODE=1` prevents imports from
+  manufacturing ignored bytecode, and a targeted cleanup removes caches an editable
+  install may have compiled before the opening builder identity is measured. This is a
+  configured refusal rule; no post-change Golden-path run has yet exercised it.
+  Because the key, its SHA and its fingerprint are all source-controlled, review and
+  branch governance remain the external trust anchor for that policy.
+- Executing source-ISO remasters now require stable regular ISO/signature files, an
+  external SHA-256 and one exclusive full `VALIDSIG` signer, and extraction consumes the
+  witnessed source descriptor. Publication still reports that source boundary as
+  `review`, because the detached signature, verification status and keyring bytes are not
+  yet sealed for offline replay. The reference derivative itself uses bootstrap mode.
+- The evidence-assembly step now runs `release-gate` with that exact definition and
+  requires its publication items to be `ready` before `publish-bundle`. The package item
+  replays per-source signed `InRelease`/`Release` → `Packages` → `.deb`, freshness and the
+  final APT command ledger offline; it is not satisfied by a field that merely says
+  validation passed. It deliberately remains `blocked` while `.deb` payload bytes are not
+  causally bound to every final rootfs path. The rootfs/ISO path now performs a semantic
+  manifest check, descriptor-held SquashFS round-trip and authoritative replay from the
+  final ISO, but only code and falsification tests have exercised that path.
+
+A push to `develop` does run the ordinary `CI` workflow because `ci.yml` listens to
+`push`. It does **not** execute `golden-path.yml`: that file deliberately has only
+`schedule` and `workflow_dispatch`, and both use the workflow on the default branch.
+While `main` is left unchanged, a scheduled run still builds `main`, and a version of the
+workflow that exists only on `develop` cannot be manually dispatched through GitHub's
+`workflow_dispatch` event. A green per-push CI on `develop` is therefore source/test
+evidence, not a Golden path ISO result.
 
 ## Why a schedule, and not every push
 
@@ -125,6 +176,13 @@ The build's report is asserted field by field — `status`, `execute`, `output_e
 blocked report, but an exit status proves the command agreed with itself, not that a file
 exists.
 
+Each recognized executable entrypoint is also opened, hashed and dispatched through its
+held `/proc/<pid>/fd/<fd>` descriptor, including recognized wrapper-selected targets.
+The release gate requires that descriptor binding and the matching post-dispatch identity.
+This closes an entrypoint path-swap race; it does not prove the transitive ELF interpreter
+and shared-library graph. The next run must preserve the identity records, and the loader
+and library closure remains a stated toolchain limit rather than an implied success.
+
 **The boot proof** uses `--backend qemu`, never `--backend auto`. `auto` falls back to
 `iso-scan` when QEMU is missing or refuses, and `iso-scan` reads the ISO's structure
 without booting it — a green report about a file, from the one step whose subject is a
@@ -181,7 +239,8 @@ same suite as an unprivileged builder, which is where those tests are covered.
 ## The evidence
 
 Both jobs upload an evidence bundle. The ISO leg publishes the reports and append-only run
-directory: `SHA256SUMS`, `BUILDINFO`, provenance, `ISO-BUILD.json`,
+directory: `SHA256SUMS`, `BUILDINFO`, provenance, `PACKAGE-INPUTS.json` and its
+content-addressed APT transactions, `ISO-BUILD.json`,
 `boot-proof.json`, `qemu-lab-report.json`, serial output, command log and run manifest.
 The ISO itself has historically been excluded because of its size. That means the bundle
 can compare available ISO bytes with the recorded digest, but cannot reproduce or recover

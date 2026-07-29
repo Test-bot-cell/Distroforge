@@ -7,7 +7,7 @@ from html import escape
 from pathlib import Path
 
 from .artifact_paths import default_artifact_paths
-from .build import BuildOptions, BuildOrchestrator, ProgressCallback
+from .build import BuildOptions, ProgressCallback
 from .build_diagnosis import classify_log
 from .build_journey import apply_journey_step, check_journey_step
 from .build_memory import BuildAttempt, BuildMemory, options_signature
@@ -15,6 +15,7 @@ from .command import CommandRunner
 from .definition import definition_from_project, write_definition
 from .dry_run_report import generate_dry_run_report
 from .hashing import sha256_file
+from .iso_build import run_iso_build
 from .prebuild_vm import QemuLabService
 from .project import Project
 from .release_gate import ReleaseGateService
@@ -26,6 +27,8 @@ class BeginnerIsoPathReport:
     definition: Path
     dry_run: Path | None
     command_log: Path | None
+    build_evidence: Path | None
+    run_manifest: Path | None
     executed: bool
     build_status: str
     gate_status: str
@@ -38,6 +41,8 @@ class BeginnerIsoPathReport:
             "definition": str(self.definition),
             "dry_run": str(self.dry_run) if self.dry_run else None,
             "command_log": str(self.command_log) if self.command_log else None,
+            "build_evidence": str(self.build_evidence) if self.build_evidence else None,
+            "run_manifest": str(self.run_manifest) if self.run_manifest else None,
             "executed": self.executed,
             "build_status": self.build_status,
             "gate_status": self.gate_status,
@@ -52,6 +57,8 @@ class BeginnerIsoPathReport:
             f"Definition: {self.definition}",
             f"Dry-run: {self.dry_run or 'not written'}",
             f"Command log: {self.command_log or 'not written'}",
+            f"ISO-BUILD evidence: {self.build_evidence or 'not written'}",
+            f"Run manifest: {self.run_manifest or 'not written'}",
             f"Build: {self.build_status}",
             f"Release gate: {self.gate_status.upper()}",
             "",
@@ -221,24 +228,44 @@ def prepare_beginner_iso_path(
         check = check_journey_step(project, options, step_id)
         if check.findings:
             notes.append(f"{step_id}: {check.status} - {check.findings[0]}")
-    command_log_path = command_log_path or project.root / "beginner-iso-build-commands.jsonl"
     build_status = "not-run"
+    build_evidence: Path | None = None
+    run_manifest: Path | None = None
     if execute:
-        try:
-            BuildOrchestrator(
-                project,
-                CommandRunner(dry_run=False, log_path=command_log_path),
-                options,
-                progress=progress,
-            ).run()
+        # run_iso_build owns the evidence reservation, command log, immutable report
+        # and manifest. The beginner path must not be a friendlier-looking bypass
+        # around the publication-grade entry point.
+        iso_report = run_iso_build(
+            project,
+            options,
+            execute=True,
+            definition=definition_path,
+            log_path=command_log_path,
+        )
+        build_evidence = iso_report.report
+        run_manifest = iso_report.run_manifest
+        if iso_report.status == "built":
             build_status = "completed"
-            notes.append("Executed the beginner ISO build workflow.")
-        except Exception as exc:  # keep the beginner workflow inspectable after failures
+            notes.append(
+                "Executed the beginner ISO build workflow and sealed ISO-BUILD/RUN-MANIFEST evidence."
+            )
+        elif iso_report.status == "failed":
             build_status = "failed"
-            notes.append(f"Build failed: {exc}")
+            detail = iso_report.failure.output if iso_report.failure else "See ISO-BUILD evidence."
+            notes.append(f"Build failed; failure evidence was sealed: {detail}")
+        else:
+            build_status = "blocked"
+            notes.append(
+                "Build was blocked and produced no ISO; the blocked ISO-BUILD/RUN-MANIFEST evidence was sealed."
+            )
+        command_log_path = iso_report.command_log
         if memory is not None:
             category = title = ""
-            if build_status == "failed" and command_log_path.exists():
+            if (
+                build_status == "failed"
+                and command_log_path is not None
+                and command_log_path.exists()
+            ):
                 rule = classify_log(command_log_path.read_text(encoding="utf-8", errors="replace")[-12000:])
                 category, title = rule.code, rule.title
             memory.record(
@@ -252,16 +279,27 @@ def prepare_beginner_iso_path(
                 )
             )
     gate = ReleaseGateService().check(project, options)
-    next_command = (
-        f"distroforge release-gate {project.root} --definition {definition_path}"
-        if execute
-        else f"distroforge beginner-iso {project.root} --apply-safe-defaults --dry-run --execute"
-    )
+    if execute and build_status == "completed":
+        next_command = (
+            f"distroforge release-gate {project.root} --definition {definition_path}"
+        )
+    elif execute:
+        next_command = (
+            f"Review the sealed failure evidence at {build_evidence}, fix the cause, "
+            "then rerun beginner-iso --execute."
+        )
+    else:
+        next_command = (
+            f"distroforge beginner-iso {project.root} "
+            "--apply-safe-defaults --dry-run --execute"
+        )
     return BeginnerIsoPathReport(
         project.root,
         definition_path,
         dry_run_path if dry_run or execute else None,
         command_log_path if execute else None,
+        build_evidence,
+        run_manifest,
         execute,
         build_status,
         gate.status,
@@ -271,7 +309,7 @@ def prepare_beginner_iso_path(
 
 
 def explain_beginner_iso_failure(project: Project, command_log_path: Path | None = None) -> BeginnerIsoFailureReport:
-    command_log = command_log_path or project.root / "beginner-iso-build-commands.jsonl"
+    command_log = command_log_path or _latest_beginner_command_log(project)
     detail = "No command log was found for the last beginner ISO build."
     category = "missing-log"
     title = "No beginner ISO build log"
@@ -287,6 +325,30 @@ def explain_beginner_iso_failure(project: Project, command_log_path: Path | None
             title = f"Release gate blocked at {blocked.code}"
             next_action = blocked.detail
     return BeginnerIsoFailureReport(project.root, command_log, category, title, detail.strip()[:500], next_action, gate.status)
+
+
+def _latest_beginner_command_log(project: Project) -> Path:
+    """Resolve the last sealed build log, with the old mutable path as fallback."""
+
+    build_alias = project.output_dir / "ISO-BUILD.json"
+    if build_alias.is_file():
+        try:
+            payload = json.loads(build_alias.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        selected = payload.get("command_log") if isinstance(payload, dict) else None
+        if isinstance(selected, str):
+            candidate = Path(selected)
+            if not candidate.is_absolute():
+                candidate = project.root / candidate
+            try:
+                candidate.resolve().relative_to(project.root.resolve())
+            except (OSError, ValueError):
+                pass
+            else:
+                if candidate.is_file():
+                    return candidate
+    return project.root / "beginner-iso-build-commands.jsonl"
 
 
 def repair_beginner_iso_release_artifacts(project: Project, options: BuildOptions | None = None) -> BeginnerIsoRepairReport:

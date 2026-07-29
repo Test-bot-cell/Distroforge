@@ -4,8 +4,7 @@ import os
 from pathlib import Path
 from typing import Protocol
 
-from distroforge.core.artifact_paths import default_command_log
-from distroforge.core.build import BuildOrchestrator, BuildProgress
+from distroforge.core.build import BuildOrchestrator
 from distroforge.core.command import CommandRunner
 from distroforge.core.doctor import (
     apt_install_command,
@@ -13,8 +12,8 @@ from distroforge.core.doctor import (
     missing_required,
     run_doctor,
 )
+from distroforge.core.iso_build import run_iso_build
 from distroforge.core.project import Project
-from distroforge.core.snapshots import SnapshotService
 from distroforge.ui.jobs import GuiJob
 from distroforge.ui.qt import QCheckBox, QLineEdit, QMessageBox, QProgressBar, QTimer
 
@@ -101,50 +100,47 @@ class BuildController:
         assert window.project
         project = window.project
         options = window._build_options()
-        # An empty field means "wherever you normally put it", not "nowhere". It used to
-        # mean nowhere: log_path=None makes _write_event return without writing
-        # (core/command.py:224), so the default GUI build kept no record of the commands it
-        # ran, while `distroforge build` with no --log-file kept one. Same default now, so
-        # cli_equivalent's omission of --log-file for a blank field stays truthful.
+        # An empty field delegates to run_iso_build's per-run evidence log. An explicit
+        # path remains an override, but no executing GUI build may omit its command log.
         text = window.log_file_edit.text().strip()
-        log_path = Path(text) if text else default_command_log(project, "build")
+        log_path = Path(text) if text else None
         plan_steps = BuildOrchestrator(project, CommandRunner(dry_run=True), options).plan()
         window._populate_plan_steps(plan_steps)
         window._job_step_total = len(plan_steps)
         window._job_step_done = 0
 
         def target(emit) -> None:
-            runner = CommandRunner(dry_run=not execute, log_path=log_path)
-
-            def progress(update: BuildProgress) -> None:
-                step = update.step
+            report = run_iso_build(
+                project,
+                options,
+                execute=execute,
+                log_path=log_path,
+            )
+            completed = len(report.build_steps)
+            if completed:
                 emit.progress(
-                    update.index,
-                    update.total,
-                    step.phase.value,
-                    step.title,
-                    step.detail,
-                    update.fraction,
+                    completed,
+                    completed,
+                    "evidence",
+                    "Seal ISO build evidence",
+                    f"{report.status}: {report.report}",
+                    1.0,
                 )
-
-            orchestrator = BuildOrchestrator(project, runner, options, progress=progress)
-            try:
-                orchestrator.run()
-            except Exception:
-                if options.snapshots.enabled and options.snapshots.auto_restore_on_failure:
-                    emit("Restoring latest rollback snapshot after failure.")
-                    SnapshotService(
-                        runner,
-                        project.squashfs_root,
-                        project.workdir / "snapshots",
-                        options.snapshots,
-                        use_sudo=options.use_sudo,
-                    ).restore_latest()
-                raise
-            if runner.dry_run:
-                emit("Dry-run commands:")
-                for spec in runner.history:
-                    emit(f"- {spec.display()}")
+            emit(f"ISO-BUILD ({report.status}): {report.report}")
+            emit(f"RUN-MANIFEST: {report.run_manifest}")
+            if not execute and report.status == "planned":
+                emit("Dry-run complete; no ISO was produced.")
+            elif not execute and report.blocked:
+                emit("Dry-run blocked before command planning; no ISO was produced.")
+            if report.failed or (execute and report.blocked):
+                detail = (
+                    report.failure.output
+                    if report.failure and report.failure.output
+                    else report.doctor.next_command
+                )
+                raise RuntimeError(
+                    f"ISO build {report.status}; sealed evidence: {report.report}\n{detail}"
+                )
 
         window.build_job = GuiJob(target)
         window.progress.setRange(0, max(window._job_step_total, 1))

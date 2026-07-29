@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .command import CommandRunner, CommandSpec
 from .evidence_run import (
+    artifact_identity,
     canonical_sha256,
     critical_artifact_identity,
     evidence_run_path,
@@ -17,6 +18,10 @@ from .evidence_run import (
 )
 from .hashing import sha256_file
 from .host_artifacts import HostArtifactWriter
+from .iso_evidence import (
+    ISO_ASSEMBLY_FILENAME,
+    validate_iso_assembly_evidence,
+)
 from .project import Project
 
 SBOM_FORMATS: tuple[str, ...] = ("native", "spdx", "cyclonedx")
@@ -52,11 +57,15 @@ class ProvenanceService:
         targets: list[tuple[Path, object]] = [
             (self.project.output_dir / "distroforge-provenance.json", self.payload(output_iso))
         ]
-        sbom_format = self.options.sbom_format if self.options.sbom_format in SBOM_FORMATS else "native"
+        sbom_format = (
+            self.options.sbom_format if self.options.sbom_format in SBOM_FORMATS else "native"
+        )
         if sbom_format == "spdx":
             targets.append((self.project.output_dir / SPDX_FILENAME, self.spdx_document(pkgset)))
         elif sbom_format == "cyclonedx":
-            targets.append((self.project.output_dir / CYCLONEDX_FILENAME, self.cyclonedx_document(pkgset)))
+            targets.append(
+                (self.project.output_dir / CYCLONEDX_FILENAME, self.cyclonedx_document(pkgset))
+            )
         for target, document in targets:
             self._write_document(target, document)
 
@@ -76,6 +85,91 @@ class ProvenanceService:
         if self.evidence_context:
             data["run"] = self.evidence_context
             data["run_id"] = self.evidence_context.get("run_id")
+            run_id = str(self.evidence_context.get("run_id", ""))
+            executed_mode = (
+                self.evidence_context.get("mode") == "execute" and not self.runner.dry_run
+            )
+            package_inputs = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                "PACKAGE-INPUTS.json",
+                executed=executed_mode,
+            )
+            if package_inputs.is_file():
+                data["package_inputs"] = artifact_identity(
+                    package_inputs,
+                    role="package-input-closure",
+                )
+            rootfs_manifest = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                "ROOTFS-MANIFEST.json",
+                executed=executed_mode,
+            )
+            rootfs_verification = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                "ROOTFS-PACKING-VERIFICATION.json",
+                executed=executed_mode,
+            )
+            iso_assembly = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                ISO_ASSEMBLY_FILENAME,
+                executed=executed_mode,
+            )
+            if rootfs_manifest.is_file():
+                data["rootfs_manifest"] = artifact_identity(
+                    rootfs_manifest,
+                    role="rootfs-manifest",
+                )
+            if rootfs_verification.is_file():
+                data["rootfs_packing_verification"] = artifact_identity(
+                    rootfs_verification,
+                    role="rootfs-packing-verification",
+                )
+            if iso_assembly.is_file():
+                validation = validate_iso_assembly_evidence(
+                    iso_assembly.parent,
+                    expected_run_id=run_id,
+                    output_iso_path=output_iso if executed_mode else None,
+                    staged_squashfs_path=(
+                        self.project.iso_root
+                        / self.project.release.livefs
+                        / "filesystem.squashfs"
+                        if executed_mode
+                        else None
+                    ),
+                )
+                if not validation.ok:
+                    raise ValueError(validation.detail)
+                try:
+                    assembly_payload = json.loads(
+                        iso_assembly.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"ISO assembly evidence is unreadable: {exc}") from exc
+                data["iso_assembly"] = artifact_identity(
+                    iso_assembly,
+                    role="iso-assembly",
+                )
+                data["assembled_output_iso"] = assembly_payload["output_iso"]
+                data["staged_filesystem_squashfs"] = assembly_payload[
+                    "staged_squashfs"
+                ]
+                data["staged_filesystem_squashfs_artifact"] = artifact_identity(
+                    self.project.iso_root
+                    / self.project.release.livefs
+                    / "filesystem.squashfs",
+                    role="staged-filesystem-squashfs",
+                )
+                data["embedded_filesystem_squashfs"] = assembly_payload[
+                    "embedded_squashfs"
+                ]
+            elif executed_mode and output_iso and output_iso.is_file():
+                raise ValueError(
+                    "Executed provenance requires final ISO assembly evidence"
+                )
         if self.options.include_commands:
             command_records = [
                 {

@@ -151,12 +151,15 @@ blocked instead of being treated as publishable.
 `sign-release PROJECT` maps to **Plan Sign Release** on Artifacts. It writes
 `RELEASE-MANIFEST.json` and `SIGNING-REPORT.json`; without `--execute` it only plans GPG
 detached signatures for `SHA256SUMS`, `RELEASE-GATE.json`, and `RELEASE-MANIFEST.json`.
+An executed signing result is all-or-nothing: those three `.asc` files must be the exact
+signed and on-disk set, with no planned or skipped target, and verification requires the
+externally pinned full fingerprint plus the sealed verification-keyring SHA-256.
 `release-notes PROJECT` maps to **Release Notes** on Artifacts. It reads the publish
 bundle manifest, gate and signing report, then writes `RELEASE-NOTES.md` and
 `CHANGELOG.txt` for maintainer review.
 `verify-release PROJECT` maps to **Verify Release** on Artifacts. It checks the manifest,
 file sizes, SHA-256 digests, `SHA256SUMS`, release gate status and detached signatures when
-they are present and `gpg` is available.
+they are present and `gpg` is available; an executed partial signature set is blocked.
 `iso-toolchain` maps to **ISO Toolchain** on Build & Release. It checks the host tools
 needed to produce an ISO and prints the explicit apt install command.
 `iso-doctor PROJECT` maps to **ISO Doctor** on Build & Release. It diagnoses why the

@@ -30,6 +30,7 @@ valid workflow, so the shape of what may name a context is now checked too.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -47,6 +48,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github/workflows/golden-path.yml"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 DEFINITION = REPO_ROOT / ".github/golden-path/reference-derivative.yaml"
+MAINTAINER_KEY = REPO_ROOT / ".github/golden-path/maintainer-signing-key.asc"
+MAINTAINER_KEY_SHA256 = (
+    "a1b6ee870e2708571bc43cf42d12a0c315c58dd1dad7760a27f660db3162e0ab"
+)
+MAINTAINER_FINGERPRINT = "93D942241BECDD422606C36C4C0D75219B5506CF"
 
 # Quoted from GitHub's context-availability table, the row for jobs.<job_id>.env:
 # "github, needs, strategy, matrix, vars, secrets, inputs". The row one level down,
@@ -54,6 +60,8 @@ DEFINITION = REPO_ROOT / ".github/golden-path/reference-derivative.yaml"
 # describe a step already running. Naming one of those above a step does not degrade to
 # an empty string at run time; Actions refuses the file, and refuses it whole.
 JOB_LEVEL_CONTEXTS = frozenset({"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"})
+FULL_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+FULL_FINGERPRINT = re.compile(r"[0-9A-F]{40}|[0-9A-F]{64}")
 
 
 def _load(path: Path) -> dict:
@@ -77,6 +85,62 @@ def _scripts(document: dict) -> str:
         for step in job["steps"]
         if "run" in step
     )
+
+
+def _uses_values(node: object) -> list[object]:
+    """Every GitHub Actions ``uses`` value nested below ``node``."""
+    if isinstance(node, dict):
+        found = [value for key, value in node.items() if key == "uses"]
+        return found + [
+            reference
+            for value in node.values()
+            for reference in _uses_values(value)
+        ]
+    if isinstance(node, list):
+        return [reference for item in node for reference in _uses_values(item)]
+    return []
+
+
+def _mutable_action_reference(reference: object) -> bool:
+    """Whether a remote action or reusable workflow can move without a source change."""
+    if not isinstance(reference, str):
+        return True
+    if reference.startswith(("./", "docker://")):
+        return False
+    _repository, separator, revision = reference.rpartition("@")
+    return not separator or FULL_COMMIT_SHA.fullmatch(revision) is None
+
+
+def test_every_remote_action_is_pinned_to_a_full_commit_sha() -> None:
+    offenders = {
+        path.name: [
+            reference
+            for reference in _uses_values(_load(path))
+            if _mutable_action_reference(reference)
+        ]
+        for path in sorted(
+            path
+            for path in (REPO_ROOT / ".github/workflows").iterdir()
+            if path.suffix in {".yml", ".yaml"}
+        )
+    }
+    offenders = {path: references for path, references in offenders.items() if references}
+
+    assert offenders == {}, (
+        "remote actions and reusable workflows must use an immutable 40-character "
+        f"commit SHA, never a movable tag, branch, or abbreviated SHA: {offenders}"
+    )
+
+
+def test_the_action_reference_guard_rejects_movable_and_abbreviated_refs() -> None:
+    assert _mutable_action_reference("actions/checkout@v4")
+    assert _mutable_action_reference("actions/checkout@main")
+    assert _mutable_action_reference("actions/checkout@11d5960")
+    assert _mutable_action_reference({"actions/checkout": "v4"})
+    assert not _mutable_action_reference(
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+    )
+    assert not _mutable_action_reference("./.github/actions/local")
 
 
 def test_golden_path_runs_on_a_schedule_and_never_on_push() -> None:
@@ -192,11 +256,113 @@ def test_the_reference_derivative_exists_and_cannot_hang() -> None:
     assert DEFINITION.is_file()
     definition = _load(DEFINITION)
     assert definition["source_mode"] == "bootstrap", "the point is to build, not remaster"
+    bootstrap = definition.get("bootstrap", {})
+    assert bootstrap.get("archive_keyring") == (
+        "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+    )
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        str(bootstrap.get("archive_keyring_sha256", "")),
+    )
+    fingerprints = bootstrap.get("archive_signer_fingerprints", [])
+    assert fingerprints and len(fingerprints) == len(set(fingerprints))
+    assert all(FULL_FINGERPRINT.fullmatch(str(value)) for value in fingerprints)
     # QaMatrixService builds its QemuInvocation with no timeout_seconds (core/qa.py:52),
     # so CommandRunner.run gets no timeout (core/command.py:118) and a guest that never
     # reaches a login prompt runs until the job's six-hour ceiling. Both shipped examples
     # set it, which is why this definition is not one of them.
     assert "qa" not in definition
+
+
+def test_golden_path_verifies_the_builder_with_the_pinned_public_key(
+    tmp_path: Path,
+) -> None:
+    scripts = _scripts(_load(WORKFLOW))
+    workflow = _load(WORKFLOW)
+    job_env = workflow["jobs"]["reference-derivative"]["env"]
+
+    assert job_env.get("PYTHONDONTWRITEBYTECODE") == "1"
+    assert "pip install --no-compile -e ." in scripts
+    assert "find distroforge" in scripts and "__pycache__" in scripts
+    assert f"{MAINTAINER_KEY_SHA256}  $KEY" in scripts
+    assert f'test "$FINGERPRINT" = "{MAINTAINER_FINGERPRINT}"' in scripts
+    assert "git verify-commit HEAD" in scripts
+    assert 'echo "GNUPGHOME=$GIT_GNUPGHOME" >> "$GITHUB_ENV"' in scripts
+
+    key_bytes = MAINTAINER_KEY.read_bytes()
+    assert hashlib.sha256(key_bytes).hexdigest() == MAINTAINER_KEY_SHA256
+    assert b"BEGIN PGP PUBLIC KEY BLOCK" in key_bytes
+    assert b"PRIVATE KEY" not in key_bytes
+
+    gnupg_home = tmp_path / "gnupg"
+    gnupg_home.mkdir(mode=0o700)
+    result = subprocess.run(
+        (
+            "gpg",
+            "--batch",
+            "--homedir",
+            str(gnupg_home),
+            "--with-colons",
+            "--import-options",
+            "show-only",
+            "--import",
+            str(MAINTAINER_KEY),
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    fingerprints = [
+        fields[9]
+        for line in result.stdout.splitlines()
+        if (fields := line.split(":"))[0] == "fpr"
+    ]
+    assert fingerprints[0] == MAINTAINER_FINGERPRINT
+
+
+def test_reference_derivative_declares_disjoint_external_source_policies() -> None:
+    bootstrap = _load(DEFINITION)["bootstrap"]
+    policies = bootstrap.get("source_policies", [])
+
+    assert len(policies) == 3
+    assert len({policy["policy_id"] for policy in policies}) == len(policies)
+    assert all(policy["base_uri"].startswith("https://") for policy in policies)
+    suites = [suite for policy in policies for suite in policy["suites"]]
+    assert len(suites) == len(set(suites))
+    assert set(suites) == {
+        "resolute",
+        "resolute-updates",
+        "resolute-backports",
+        "resolute-security",
+    }
+    expected_signers = set(bootstrap["archive_signer_fingerprints"])
+    expected_keyring = bootstrap["archive_keyring_sha256"]
+    for policy in policies:
+        assert set(policy["signer_fingerprints"]) == expected_signers
+        assert policy["keyring_sha256"] == [expected_keyring]
+        assert policy["max_release_age_seconds"] > 0
+
+
+def test_golden_path_asserts_the_offline_package_and_run_closure() -> None:
+    scripts = _scripts(_load(WORKFLOW))
+
+    assert "release-gate" in scripts
+    assert "--definition .github/golden-path/reference-derivative.yaml" in scripts
+    for code in (
+        "package-inputs",
+        "provenance",
+        "source-trust",
+        "iso",
+        "sha256",
+        "boot-proof",
+    ):
+        assert f'"{code}"' in scripts
+    publish_line = next(
+        line
+        for line in scripts.splitlines()
+        if "python -m distroforge publish-bundle" in line
+    )
+    assert "|| true" not in publish_line
 
 
 def test_the_shipped_examples_are_still_the_reason_this_definition_exists() -> None:

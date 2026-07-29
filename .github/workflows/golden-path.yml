@@ -71,11 +71,35 @@ jobs:
     timeout-minutes: 90
     env:
       QT_QPA_PLATFORM: offscreen
+      # The publication identity gate measures ignored runtime bytes below the
+      # source package as part of the builder worktree.  Importing the editable
+      # checkout must therefore not manufacture untracked bytecode after the
+      # opening identity was measured.
+      PYTHONDONTWRITEBYTECODE: "1"
       # One literal for the suite, read by the guard below and by `distroforge new`, so the
       # release this job builds and the release it checks itself against cannot drift apart.
       DERIVATIVE_RELEASE: "26.04"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Verify the exact signed builder commit
+        # The build-run publication gate rejects an unsigned or dirty Git builder,
+        # but `git log --format=%G?` only becomes meaningful when the verifier owns
+        # the intended public key.  Import exactly the repository-pinned public
+        # bytes into a fresh keyring and carry that keyring through every later
+        # DistroForge invocation.
+        run: |
+          KEY=.github/golden-path/maintainer-signing-key.asc
+          echo "a1b6ee870e2708571bc43cf42d12a0c315c58dd1dad7760a27f660db3162e0ab  $KEY" \
+            | sha256sum -c -
+          FINGERPRINT=$(gpg --batch --with-colons --import-options show-only \
+            --import "$KEY" | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$FINGERPRINT" = "93D942241BECDD422606C36C4C0D75219B5506CF"
+          GIT_GNUPGHOME="$RUNNER_TEMP/distroforge-git-signature-gnupg"
+          install -d -m 700 "$GIT_GNUPGHOME"
+          GNUPGHOME="$GIT_GNUPGHOME" gpg --batch --import "$KEY"
+          echo "GNUPGHOME=$GIT_GNUPGHOME" >> "$GITHUB_ENV"
+          GNUPGHOME="$GIT_GNUPGHOME" git verify-commit HEAD
 
       - name: The runner has to be the suite this derivative bootstraps
         # Reports first, then refuses. Two independent facts were assumed equal for the
@@ -175,11 +199,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mmdebstrap debootstrap squashfs-tools xorriso mtools zstd jq \
+            mmdebstrap debootstrap squashfs-tools xorriso mtools lz4 zstd jq \
             grub-common grub-pc-bin grub-efi-amd64-bin \
             qemu-system-x86 ovmf
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -197,7 +221,13 @@ jobs:
         # inherited and is not true of the one it names: resolute has python3-pydantic
         # 2.12.5-2, measured, which satisfies debian/control's (>= 2.7). The archive is not
         # the obstacle here any more; the pin is a choice about what this job is testing.
-        run: python -m pip install -e .
+        run: |
+          python -m pip install --no-compile -e .
+          # pip's editable build backend may still import or compile the source
+          # package.  Remove only interpreter caches inside the package before
+          # the first evidence run measures the builder worktree.
+          find distroforge -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          find distroforge -depth -type d -name '__pycache__' -empty -delete
 
       - name: Create the project
         # core/project.py:76 raises without project.json, and core/boot_proof.py:176 writes
@@ -312,12 +342,28 @@ jobs:
         # measured cost rather than a guess. evidence-status is given --output-dir
         # explicitly because its default is <root>/dist/reports (core/evidence.py:193)
         # while the build writes <root>/dist, so the default reports a successful build's
-        # own artifacts as missing. Neither command may fail the job: a review verdict
-        # about an alpha bundle is information, not a broken golden path.
+        # own artifacts as missing. The authoritative release gate is asserted before
+        # anything is copied: package-inputs must replay the signed APT chain offline,
+        # provenance must bind the immutable run, and the boot proof must bind this ISO.
+        # evidence-status may still report review for deliberately unsigned alpha
+        # material, but publish-bundle itself may not hide a blocked gate.
         run: |
           ISO=$(jq -r '.output_iso' "$DERIVATIVE_ROOT/dist/ISO-BUILD.json")
-          python -m distroforge publish-bundle "$DERIVATIVE_ROOT" --iso "$ISO" --json \
-            > "$RUNNER_TEMP/publish-bundle.json" || true
+          python -m distroforge release-gate "$DERIVATIVE_ROOT" \
+            --definition .github/golden-path/reference-derivative.yaml \
+            --iso "$ISO" --output-dir "$DERIVATIVE_ROOT/dist" --json \
+            > "$RUNNER_TEMP/release-gate.json"
+          jq -r '.items[] | "\(.code): \(.status) — \(.detail)"' \
+            "$RUNNER_TEMP/release-gate.json"
+          jq -e '.blocked == false' "$RUNNER_TEMP/release-gate.json"
+          jq -e '
+            ["package-inputs", "provenance", "source-trust", "iso", "sha256", "boot-proof"]
+            - ([.items[] | select(.status == "ready") | .code]) | length == 0
+          ' "$RUNNER_TEMP/release-gate.json"
+          python -m distroforge publish-bundle "$DERIVATIVE_ROOT" \
+            --definition .github/golden-path/reference-derivative.yaml \
+            --iso "$ISO" --json > "$RUNNER_TEMP/publish-bundle.json"
+          jq -e '.blocked == false' "$RUNNER_TEMP/publish-bundle.json"
           python -m distroforge evidence-status "$DERIVATIVE_ROOT" \
             --output-dir "$DERIVATIVE_ROOT/dist" --profile publish --json \
             > "$RUNNER_TEMP/evidence-status.json" || true
@@ -365,7 +411,7 @@ jobs:
 
       - name: Publish the evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: reference-derivative-evidence
           if-no-files-found: error
@@ -402,7 +448,7 @@ jobs:
     container: ubuntu:26.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Install the toolchain
         # mk-build-deps reads debian/control, so the Build-Depends of this build cannot
@@ -514,7 +560,7 @@ jobs:
 
       - name: Publish the package
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: debian-package-evidence
           if-no-files-found: error

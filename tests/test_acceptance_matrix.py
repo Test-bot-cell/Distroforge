@@ -138,12 +138,24 @@ def test_cli_acceptance_matrix_runs_source_workflows_offline(
     assert gate["status"] == "blocked"
     assert any(item["code"] == "iso" for item in gate["items"])
 
-    drill = json.loads(_run_cli(capsys, ["publish-drill", str(project_root), "--json"]))
+    drill = json.loads(
+        _run_cli(
+            capsys,
+            ["publish-drill", str(project_root), "--json"],
+            expected_code=2,
+        )
+    )
     assert drill["execute_signing"] is False
     assert drill["pipeline"]["status"] == "blocked"
     assert (project.output_dir / "publish" / "PUBLISH-DRILL.json").exists()
 
-    pipeline = json.loads(_run_cli(capsys, ["release-pipeline", str(project_root), "--json"]))
+    pipeline = json.loads(
+        _run_cli(
+            capsys,
+            ["release-pipeline", str(project_root), "--json"],
+            expected_code=2,
+        )
+    )
     assert pipeline["status"] == "blocked"
     assert [stage["name"] for stage in pipeline["stages"]][-1] == "publish-bundle"
     assert "not empty" in pipeline["stages"][-1]["detail"]

@@ -181,7 +181,8 @@ def test_main_window_delegates_build_execution() -> None:
     assert "BuildController(self).run_build(execute)" in main
     assert "class BuildController" in controller
     assert "BuildOrchestrator" in controller
-    assert "SnapshotService" in controller
+    assert "run_iso_build" in controller
+    assert "RUN-MANIFEST" in controller
     assert "run_doctor" in controller
 
 

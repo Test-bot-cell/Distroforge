@@ -121,6 +121,12 @@ class BuildOptions:
         repr=False,
         compare=False,
     )
+    _sealed_run: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
@@ -172,6 +178,10 @@ class BuildOrchestrator:
         self.project = project
         self.runner = runner
         self.options = options or BuildOptions()
+        # A real orchestrator is always a sealed run, including internal callers that
+        # bypass run_iso_build.  Security requirements must not depend on which public
+        # frontend happened to construct us.
+        self.options._sealed_run = not runner.dry_run
         evidence_context = (
             self.options._evidence_context if self.options._evidence_injected else None
         )
@@ -210,10 +220,20 @@ class BuildOrchestrator:
     def run(self) -> BuildReport:
         run_preflight(self)
         services = build_services(self)
-        acquire_source(self, services)
-        configure_repositories(self, services)
-        customize_target(self, services)
-        assemble_iso(self, services)
+        try:
+            acquire_source(self, services)
+            configure_repositories(self, services)
+            customize_target(self, services)
+            assemble_iso(self, services)
+        except BaseException:
+            # Preserve the build's real failure.  Cleanup is best effort on the
+            # already-failed path, but mandatory on success.
+            try:
+                services.package_evidence.cleanup_target_capture()
+            except BaseException:
+                pass
+            raise
+        services.package_evidence.cleanup_target_capture()
         return self.report
 
     def _stage_chroot_hooks(self) -> bool:

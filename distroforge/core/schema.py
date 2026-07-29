@@ -107,6 +107,36 @@ class TrustDefinition(BaseModel):
     require_source_signature: bool = False
 
 
+class PackageSourcePolicyDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_id: str
+    base_uri: str
+    suites: list[str]
+    codenames: list[str]
+    components: list[str]
+    architectures: list[str]
+    signer_fingerprints: list[str]
+    keyring_sha256: str | list[str]
+    snapshot_at: str | None = None
+    max_release_age_seconds: int = 31 * 24 * 60 * 60
+    max_future_skew_seconds: int = 5 * 60
+    require_valid_until: bool = False
+
+
+class BootstrapDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    arch: str = "amd64"
+    variant: str = "minbase"
+    mirror: str | None = None
+    base_packages: list[str] | None = None
+    archive_keyring: str | None = None
+    archive_keyring_sha256: str | None = None
+    archive_signer_fingerprints: list[str] = Field(default_factory=list)
+    source_policies: list[PackageSourcePolicyDefinition] = Field(default_factory=list)
+
+
 class PrebuildVmDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -199,6 +229,7 @@ class ImageDefinition(BaseModel):
     extra_remove: list[str] = Field(default_factory=list)
     customization: CustomizationDefinition | None = None
     branding: BrandingDefinition | None = None
+    bootstrap: BootstrapDefinition | None = None
     ppa: PpaDefinition | list[str] | None = None
     kernel: KernelDefinition | None = None
     desktop_source: DesktopSourceDefinition | None = None
