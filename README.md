@@ -206,12 +206,39 @@ The open `0.3.5-17` audit keeps a deliberately narrower truth boundary. Source-I
 execution is fail-closed on a regular source file, an external SHA-256, a detached
 signature and one full signer fingerprint, but publication remains `review` until those
 verification inputs can be replayed from sealed evidence. Package evidence closes
-per-source signed metadata, freshness policy, command ledger and exact `.deb` inputs, but
-does not yet prove the causal mapping from each `.deb` payload to every final rootfs path;
-the release gate therefore blocks publication. The semantic rootfs manifest, SquashFS
-round-trip and authoritative final-ISO replay are implemented and tested, not promoted to
-an executed build claim. No new real ISO or boot was produced by this hardening work; see
-the [ISO build proof ledger](docs/iso-build-proof-ledger.md).
+per-source signed metadata, freshness policy, command ledger and exact `.deb` inputs.
+M3.1 adds `PACKAGE-FILESYSTEM-CAUSALITY.json`, schema
+`distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
+refresh re-extracts those exact sealed package payloads and compares their objects with
+`ROOTFS-MANIFEST.json` as `exact`, `modified`, `missing`, `unattributed`, `ambiguous`,
+`structural`, `excluded` or `unsupported`. `payload_identity` is `verified` only when that
+bootstrap map accounts for every supported in-scope member of the sealed
+`PACKAGE-INPUTS.final_inventory` snapshot. That inventory is captured before arbitrary
+post-host hooks; M3.1 does not re-snapshot dpkg state after them. M3.1
+does not yet inspect payload blobs in ISO-remaster mode: without a semantic source-ISO
+baseline it conservatively classifies the whole final manifest `unsupported` and records
+`payload_identity: partial`. Unsupported objects and excluded payload paths also make a
+bootstrap result `partial`. Either value is static identity, not evidence that APT, dpkg,
+maintainer scripts, triggers, conffiles or another producer caused the final object.
+The map's own scope is therefore `sealed-recorded-deb`, not self-authenticated input:
+the release gate must first replay the separate signed package-input and external-policy
+proof. Every M3.1 read and its one-time output creation is anchored below one
+non-symlinked run-directory descriptor. JSON, package counts, tar bytes, physical
+headers, extension chains, PAX metadata and both `dpkg-deb` streams have explicit
+incremental refusal bounds, while evidence paths are byte/depth bounded before parsing
+and must already be canonical; compressed or malformed filesystem tar streams are
+rejected.
+Those budgets are proved by hostile fixtures, not yet sized by a real desktop run; a
+product build that exceeds one must stop and justify a measured schema/budget change.
+Schema v1's `payload_identity` is enumeration coverage: `modified`, `missing` and
+`ambiguous` remain separate comparison counts rather than silently changing that status.
+`filesystem_causality` therefore remains `unverified`, `release_ready` remains false and
+the release gate still blocks publication. M3.2 must bind APT hook protocol v3 actions and
+observed producer deltas, including package scripts and dpkg transformations. The semantic
+rootfs manifest, SquashFS round-trip, final-ISO replay and this new map are implemented and
+tested with offline, rootless fixtures, not promoted to an executed build claim. No new
+real ISO or boot was produced by this hardening work; see the
+[ISO build proof ledger](docs/iso-build-proof-ledger.md).
 
 ## Supported sources
 
@@ -256,10 +283,11 @@ does not run:
 ```
 
 The suite is offline and rootless by design, and never executes a product package or ISO
-build. A bounded fixture subset does run installed `gpg`, `xorriso`, `mksquashfs`,
-`unsquashfs` and `tar --zstd` processes on synthetic or repository-pinned inputs; their
-test dependencies are declared explicitly. It never runs `debootstrap`, `qemu`, `apt` or
-`sbuild`, so a green suite proves the plans and contracts, not that a real ISO boots.
+build. A bounded fixture subset does run installed `dpkg-deb`, `gpg`, `xorriso`,
+`mksquashfs`, `unsquashfs` and `tar --zstd` processes on synthetic or repository-pinned
+inputs. Non-Essential test dependencies are declared explicitly; `dpkg-deb` comes from
+Essential package `dpkg`. It never runs `debootstrap`, `qemu`, `apt` or `sbuild`, so a
+green suite proves the plans and contracts, not that a real ISO boots.
 Line coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
 
 The [golden path](docs/golden-path.md) is the authorized weekly execution harness

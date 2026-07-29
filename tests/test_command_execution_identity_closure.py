@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from conftest import (
 
 from distroforge.core import command as command_module
 from distroforge.core.command import (
+    CommandError,
     CommandRunner,
     CommandSpec,
     ExecutionIdentityError,
@@ -228,6 +230,76 @@ def test_streaming_command_keeps_the_same_post_dispatch_proof(
     post = post_chain[0]
     assert isinstance(post, dict)
     assert post["stable_across_dispatch"] is True
+
+
+def test_binary_command_captures_exact_bytes_under_the_dispatch_proof(
+    tmp_path: Path,
+) -> None:
+    tool = _executable(
+        tmp_path / "binary-tool",
+        "#!/bin/sh\nprintf '\\000\\377'\n",
+    )
+    runner = CommandRunner(dry_run=False)
+    output = tmp_path / "payload.tar"
+
+    with output.open("w+b") as handle:
+        result = runner.run_binary_to_file(
+            CommandSpec((str(tool),)),
+            handle,
+            max_output_bytes=16,
+        )
+
+    assert output.read_bytes() == b"\x00\xff"
+    assert result.stdout == "<2 binary bytes captured>\n"
+    identity = runner.execution_identities[0]
+    assert identity["post_dispatch_verified"] is True
+    assert identity["stable_across_dispatch"] is True
+
+
+def test_binary_command_refuses_output_beyond_the_explicit_bound(
+    tmp_path: Path,
+) -> None:
+    tool = _executable(
+        tmp_path / "oversized-binary-tool",
+        "#!/bin/sh\nprintf '12345'\n",
+    )
+    runner = CommandRunner(dry_run=False)
+
+    with (tmp_path / "bounded-output").open("w+b") as handle:
+        with pytest.raises(CommandError, match="exceeded the 4-byte capture limit"):
+            runner.run_binary_to_file(
+                CommandSpec((str(tool),)),
+                handle,
+                max_output_bytes=4,
+            )
+
+
+def test_binary_command_refuses_unbounded_stderr_without_spooling_it(
+    tmp_path: Path,
+) -> None:
+    runner = CommandRunner(dry_run=False)
+
+    with (tmp_path / "bounded-stderr-output").open("w+b") as handle:
+        with pytest.raises(
+            CommandError,
+            match="binary stderr exceeded the 1048576-byte capture limit",
+        ) as failure:
+            runner.run_binary_to_file(
+                CommandSpec(
+                    (
+                        sys.executable,
+                        "-c",
+                        (
+                            "import sys; "
+                            "sys.stderr.buffer.write(b'x' * (1024 * 1024 + 1))"
+                        ),
+                    )
+                ),
+                handle,
+                max_output_bytes=16,
+            )
+
+    assert len(failure.value.result.stderr) < 5000
 
 
 def test_atomic_swap_cannot_select_different_dispatched_bytes(

@@ -38,6 +38,10 @@ from .kiosk import KioskService
 from .mirrors import MirrorService
 from .network import NetworkService
 from .oem import OemService
+from .package_causality import (
+    PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
+    write_package_filesystem_causality,
+)
 from .package_evidence import PackageEvidenceService
 from .plugins import PluginOptions, PluginService
 from .policy import CompatibilityService, PolicyService
@@ -774,6 +778,12 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         "ROOTFS-MANIFEST.json",
         executed=orch.context.execute,
     )
+    package_filesystem_causality = evidence_run_path(
+        orch.project.output_dir,
+        run_id,
+        PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
+        executed=orch.context.execute,
+    )
     rootfs_verification = evidence_run_path(
         orch.project.output_dir,
         run_id,
@@ -795,7 +805,13 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
     orch._step(
         BuildPhase.ROOTFS_EVIDENCE_CAPTURE,
         "Seal final rootfs identity",
-        "pre-packing manifest" if orch.context.execute else "planned only",
+        (
+            "pre-packing manifest and static bootstrap payload map"
+            if orch.project.source_mode == "bootstrap"
+            else "pre-packing manifest; ISO payload map remains unsupported"
+        )
+        if orch.context.execute
+        else "planned only",
     )
     orch.runner.run(
         rootfs_capture_command(
@@ -804,6 +820,11 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
             run_id=run_id,
             use_sudo=orch.options.use_sudo,
         )
+    )
+    write_package_filesystem_causality(
+        package_filesystem_causality.parent,
+        expected_run_id=run_id,
+        runner=orch.runner,
     )
 
     orch._step(BuildPhase.REPACK_FILESYSTEM, "Repack live filesystem", compression)

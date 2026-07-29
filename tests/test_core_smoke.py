@@ -109,6 +109,45 @@ def test_iso_toolchain_reports_single_install_command(monkeypatch) -> None:
     assert report.install_command.startswith("sudo apt update")
 
 
+def test_iso_doctor_requires_dpkg_deb_for_payload_causality(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        "distroforge.core.iso_doctor.CommandRunner.has_binary",
+        staticmethod(lambda name: name != "dpkg-deb"),
+    )
+    project = Project.create("NeedDebPayload", tmp_path / "need-deb-payload", "26.04")
+    project.source_mode = "bootstrap"
+
+    report = diagnose_iso_build(project, BuildOptions())
+
+    missing = next(item for item in report.findings if item.code == "host-tools-missing")
+    assert "dpkg-deb" in missing.message
+    assert "dpkg" in missing.fix
+    assert report.next_command == "distroforge iso-toolchain --install"
+
+
+def test_iso_doctor_does_not_require_unused_dpkg_deb_for_remaster(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        "distroforge.core.iso_doctor.CommandRunner.has_binary",
+        staticmethod(lambda name: name != "dpkg-deb"),
+    )
+    project = Project.create("IsoWithoutDebPayload", tmp_path / "iso-no-deb", "26.04")
+    project.source_mode = "iso"
+    source = tmp_path / "source.iso"
+    source.write_bytes(b"fixture")
+    project.source_iso = source
+
+    report = diagnose_iso_build(project, BuildOptions())
+
+    missing = [item for item in report.findings if item.code == "host-tools-missing"]
+    assert missing == []
+
+
 def test_iso_build_dry_run_writes_iso_build_report(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("distroforge.core.iso_doctor.CommandRunner.has_binary", lambda *args: True)
     project = Project.create("IsoPath", tmp_path / "iso-path", "26.04")

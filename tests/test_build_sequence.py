@@ -86,6 +86,24 @@ def test_sequence_is_independent_of_optional_features(tmp_path, mode: str) -> No
     assert extract(plain) == extract(rich)
 
 
+def test_rootfs_identity_detail_matches_the_source_mode() -> None:
+    bootstrap = next(
+        step
+        for step in build_phase_sequence(source_mode="bootstrap", run_preview=False)
+        if step.phase is BuildPhase.ROOTFS_EVIDENCE_CAPTURE
+    )
+    iso = next(
+        step
+        for step in build_phase_sequence(source_mode="iso", run_preview=False)
+        if step.phase is BuildPhase.ROOTFS_EVIDENCE_CAPTURE
+    )
+
+    assert "bootstrap" in bootstrap.detail
+    assert ".deb" in bootstrap.detail
+    assert "unsupported" in iso.detail
+    assert "source baseline" in iso.detail
+
+
 def test_guard_raises_on_phase_title_drift(tmp_path) -> None:
     orch = BuildOrchestrator(_project(tmp_path, "bootstrap", False), CommandRunner(dry_run=True))
     with pytest.raises(AssertionError, match="build sequence drift"):

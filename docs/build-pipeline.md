@@ -309,13 +309,68 @@ QEMU online/offline install smoke matrix.
 
    Source mode, allowed signer fingerprints and bootstrap keyring SHA-256 are external
    verifier inputs. Copying different values into the evidence payload cannot redefine
-   trust. The release gate replays this chain from the provenance run ID. The implemented
-   ledger closes signed repository metadata to exact `.deb` bytes and installed dpkg
-   identities, but it does not yet prove that each package payload caused every
-   corresponding file in the final rootfs. `filesystem_causality` therefore remains
-   `unverified` and publication is blocked even when the package-input validation itself
-   succeeds. This is currently a code/test contract: no new real ISO build in the
-   2026-07-29 hardening lot has yet produced it from the live distribution archive.
+   trust. The release gate replays this chain from the provenance run ID.
+
+   M3.1 writes `PACKAGE-FILESYSTEM-CAUSALITY.json`, schema
+   `distroforge.package-filesystem-causality.v1`, before the rootfs is repacked. Its
+   authoritative bootstrap validator does not trust the recorded result: it re-hashes and
+   re-extracts the exact `.deb` files named by the sealed
+   `PACKAGE-INPUTS.final_inventory` snapshot, reloads `ROOTFS-MANIFEST.json` and recomputes
+   one static classification map. The closed vocabulary is:
+
+   - `exact`: one package payload object and the final manifest object are identical;
+   - `modified`: a package payload path remains, but its final object differs;
+   - `missing`: a package payload path is absent from the final manifest;
+   - `unattributed`: a final manifest object has no candidate package payload;
+   - `ambiguous`: more than one package payload claims the same path;
+   - `structural`: a mergeable directory cannot be attributed to one package uniquely;
+   - `excluded`: the payload path is outside the manifest scope, including descendants of
+     `dev`, `proc`, `run` and `sys`; a captured package absent from the inventory is instead
+     recorded once at package level as `excluded-not-final-inventory`, without invented
+     path classifications;
+   - `unsupported`: an ISO baseline or tar/rootfs object type has no safe M3.1
+     representation.
+
+   In ISO-remaster mode M3.1 stops earlier. It binds the package aggregate and final
+   manifest but, without a semantic source-ISO baseline, does not inspect the remaster
+   payload blobs; every manifest entry is `unsupported` and `payload_identity` is
+   `partial`. The package-input validator separately keeps those captured `.deb` bytes
+   fail-closed.
+
+   The map is not an authentication oracle. Its recorded scope is
+   `sealed-recorded-deb-direct-payload-to-final-rootfs-m3.1`, with an explicit assurance
+   dependency on the independently replayed `PACKAGE-INPUTS` signature, freshness and
+   source-policy proof. The release gate evaluates that proof first. M3.1 then anchors one
+   descriptor to the physical run directory, descends every artifact path component with
+   no-follow descriptor-relative opens, rechecks every leaf at the closing boundary and
+   creates the report exactly once through the held descriptor. Run, transaction and
+   rootfs paths are byte/depth bounded before parsing and must already be canonical. The
+   parser enforces incremental JSON, package-summary, classification, member, logical
+   payload, raw-tar, physical-header, extension-chain, PAX and command-output limits; the
+   remaining aggregate allowance is applied before each next extraction or parse.
+   `dpkg-deb --fsys-tarfile` must yield its documented uncompressed tar contract;
+   compressed, over-nested, malformed or concurrently replaced inputs are refusals.
+
+   Those aggregate byte/cardinality budgets are fixture-proved but not yet product-sized.
+   A real desktop run that reaches one is a measured stop, not permission to raise it
+   blindly. Schema v1 uses `payload_identity` for enumeration coverage while comparison
+   outcomes remain the separate `modified`, `missing` and `ambiguous` counts; a future
+   schema may name both axes independently.
+
+   `payload_identity: verified` means only that a bootstrap map enumerated, canonicalized
+   and bound every supported, in-scope direct payload member of that inventory snapshot.
+   The snapshot is sealed before arbitrary post-host hooks; M3.1 does not re-snapshot dpkg
+   state after them, so later package mutations remain unattributed M3.2 debt.
+   ISO-remaster mode, an excluded path or an unsupported object makes it `partial`. Even an
+   all-`exact`, `verified` result is only static identity: equality of bytes and metadata
+   is not evidence that a recorded APT/dpkg action or package producer caused the final
+   object. M3.1 therefore keeps `filesystem_causality: unverified`,
+   `release_ready: false` and the package publication item blocked. M3.2 must add the
+   missing dynamic boundary: exact APT `DPkg::Pre-Install-Pkgs` protocol v3 actions,
+   before/after filesystem deltas tied to producers, and explicit treatment of maintainer
+   scripts, triggers, conffiles, alternatives, diversions, removals, customizers and other
+   transformations. This is a code/fixture closure tested offline and rootless; no new
+   real ISO or live-archive build was executed by the 2026-07-29 hardening lot.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after

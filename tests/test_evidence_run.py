@@ -15,6 +15,7 @@ from conftest import (
     write_valid_build_evidence,
 )
 
+import distroforge.core.release_gate as release_gate_module
 from distroforge.core.beginner_iso import repair_beginner_iso_release_artifacts
 from distroforge.core.build import BuildOptions
 from distroforge.core.command import CommandRunner, CommandSpec, _execution_chain
@@ -35,7 +36,23 @@ from distroforge.core.release_gate import (
     ReleaseGateService,
     _git_builder_publication_problem,
     _identity_closure_problem,
+    _provenance_is_bootstrap,
 )
+
+
+def test_iso_starter_does_not_invent_bootstrap_tool_roles() -> None:
+    assert _provenance_is_bootstrap(
+        {
+            "source_mode": "bootstrap",
+            "source_starter": {"kind": "skeleton"},
+        }
+    )
+    assert not _provenance_is_bootstrap(
+        {
+            "source_mode": "iso",
+            "source_starter": {"kind": "official-iso"},
+        }
+    )
 
 
 def test_a_plan_cannot_replace_the_last_executed_build_report(
@@ -751,6 +768,40 @@ def test_release_gate_detects_provenance_alias_and_manifest_tampering(tmp_path: 
     item = next(item for item in tampered.items if item.code == "provenance")
     assert item.status == "blocked"
     assert "differs from immutable" in item.detail
+
+
+def test_release_gate_recomputes_the_package_map_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = Project.create("SingleMapPass", tmp_path / "single-map-pass", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "SingleMapPass.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    validate = release_gate_module.validate_package_filesystem_causality
+    calls = 0
+
+    def counted_validation(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        release_gate_module,
+        "validate_package_filesystem_causality",
+        counted_validation,
+    )
+
+    ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+    )
+
+    assert calls == 1
 
 
 @pytest.mark.parametrize(

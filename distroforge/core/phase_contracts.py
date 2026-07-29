@@ -344,8 +344,8 @@ _CONTRACT_DATA: tuple[
     (
         BuildPhase.ROOTFS_EVIDENCE_CAPTURE,
         "assemble_iso",
-        ("sanitized squashfs root",),
-        ("ROOTFS-MANIFEST.json",),
+        ("sanitized squashfs root", "PACKAGE-INPUTS.json"),
+        ("ROOTFS-MANIFEST.json", "PACKAGE-FILESYSTEM-CAUSALITY.json"),
         True,
         None,
     ),

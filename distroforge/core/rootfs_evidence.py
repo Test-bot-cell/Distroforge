@@ -32,6 +32,10 @@ from .evidence_run import canonical_sha256, write_immutable_text
 ROOTFS_MANIFEST_SCHEMA = "distroforge.rootfs-manifest.v1"
 ROOTFS_PACKING_VERIFICATION_SCHEMA = "distroforge.rootfs-packing-verification.v1"
 DEFAULT_EXCLUDED_DESCENDANTS = ("dev", "proc", "run", "sys")
+MAX_ROOTFS_MANIFEST_ENTRIES = 500_000
+MAX_ROOTFS_EXCLUSIONS = 64
+MAX_ROOTFS_PATH_BYTES = 4 * 1024
+MAX_ROOTFS_PATH_COMPONENTS = 256
 
 _CHUNK = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -501,6 +505,16 @@ def load_rootfs_manifest(path: Path) -> dict[str, object]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RootfsEvidenceError(f"Rootfs manifest is unreadable: {exc}") from exc
+    return validate_rootfs_manifest_payload(payload)
+
+
+def validate_rootfs_manifest_payload(payload: object) -> dict[str, object]:
+    """Structurally validate already witnessed rootfs-manifest bytes.
+
+    Callers that opened evidence through a descriptor-confined directory can use
+    this entry point without reopening the manifest by pathname.
+    """
+
     if not isinstance(payload, dict) or payload.get("schema") != ROOTFS_MANIFEST_SCHEMA:
         raise RootfsEvidenceError("Rootfs manifest has an unsupported schema")
     if set(payload) != {
@@ -523,10 +537,20 @@ def load_rootfs_manifest(path: Path) -> dict[str, object]:
 
     entries = payload.get("entries")
     exclusions = payload.get("excluded_descendants")
-    if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+    if not isinstance(entries, list):
         raise RootfsEvidenceError("Rootfs manifest entries are malformed")
-    if not isinstance(exclusions, list) or not all(isinstance(item, str) for item in exclusions):
+    if not isinstance(exclusions, list):
         raise RootfsEvidenceError("Rootfs manifest exclusions are malformed")
+    if len(entries) > MAX_ROOTFS_MANIFEST_ENTRIES:
+        raise RootfsEvidenceError("Rootfs manifest exceeds the entry bound")
+    if len(exclusions) > MAX_ROOTFS_EXCLUSIONS:
+        raise RootfsEvidenceError("Rootfs manifest exceeds the exclusion bound")
+    if not all(isinstance(item, dict) for item in entries):
+        raise RootfsEvidenceError("Rootfs manifest entries are malformed")
+    if not all(isinstance(item, str) for item in exclusions):
+        raise RootfsEvidenceError("Rootfs manifest exclusions are malformed")
+    if any(not _bounded_safe_relative_path(item) or item == "." for item in exclusions):
+        raise RootfsEvidenceError("Rootfs manifest exclusions are unsafe or oversized")
     try:
         normalised = _normalise_exclusions(exclusions)
     except ValueError as exc:
@@ -538,12 +562,12 @@ def load_rootfs_manifest(path: Path) -> dict[str, object]:
     if not paths or paths[0] != "." or not all(isinstance(item, str) for item in paths):
         raise RootfsEvidenceError("Rootfs manifest paths are malformed")
     canonical_paths = cast(list[str], paths)
+    if any(not _bounded_safe_relative_path(item) for item in canonical_paths):
+        raise RootfsEvidenceError("Rootfs manifest contains an unsafe path")
     if canonical_paths != sorted(canonical_paths, key=_path_key) or len(canonical_paths) != len(
         set(canonical_paths)
     ):
         raise RootfsEvidenceError("Rootfs manifest paths are not unique and canonical")
-    if any(not _safe_relative_path(item) for item in canonical_paths):
-        raise RootfsEvidenceError("Rootfs manifest contains an unsafe path")
     if payload.get("object_count") != len(entries):
         raise RootfsEvidenceError("Rootfs manifest object count is inconsistent")
     if payload.get("scope") != "mksquashfs-input" or payload.get("digest") != "sha256":
@@ -717,10 +741,7 @@ def validate_replayed_rootfs_manifest(
         replayed = load_rootfs_manifest(replay_manifest_path)
     except RootfsEvidenceError as exc:
         return RootfsEvidenceValidation(False, f"rootfs replay manifest is unreadable: {exc}")
-    if (
-        expected.get("run_id") != expected_run_id
-        or replayed.get("run_id") != expected_run_id
-    ):
+    if expected.get("run_id") != expected_run_id or replayed.get("run_id") != expected_run_id:
         return RootfsEvidenceValidation(False, "rootfs replay belongs to another run")
     semantic_fields = (
         "scope",
@@ -730,9 +751,7 @@ def validate_replayed_rootfs_manifest(
         "tree_sha256",
         "entries",
     )
-    differing = [
-        field for field in semantic_fields if expected.get(field) != replayed.get(field)
-    ]
+    differing = [field for field in semantic_fields if expected.get(field) != replayed.get(field)]
     if differing:
         return RootfsEvidenceValidation(
             False,
@@ -807,13 +826,23 @@ def _walk_directory(
 ) -> None:
     try:
         with os.scandir(directory_fd) as iterator:
-            names = sorted((item.name for item in iterator), key=os.fsencode)
+            names: list[str] = []
+            remaining = MAX_ROOTFS_MANIFEST_ENTRIES - len(entries)
+            for directory_entry in iterator:
+                names.append(directory_entry.name)
+                if len(names) > remaining:
+                    raise RootfsEvidenceError("Rootfs scan exceeds the manifest entry bound")
+            names.sort(key=os.fsencode)
     except OSError as exc:
         raise RootfsEvidenceError(f"Cannot list rootfs path {parent}: {exc}") from exc
 
     for name in names:
         relative = PurePosixPath(name) if parent == PurePosixPath(".") else parent / name
         path_text = relative.as_posix()
+        if not _bounded_safe_relative_path(path_text):
+            raise RootfsEvidenceError(f"Rootfs path is unsafe or exceeds its bound: {path_text!r}")
+        if len(entries) >= MAX_ROOTFS_MANIFEST_ENTRIES:
+            raise RootfsEvidenceError("Rootfs scan exceeds the manifest entry bound")
         try:
             initial = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         except OSError as exc:
@@ -1095,7 +1124,7 @@ def _validate_entry(entry: dict[str, object]) -> None:
             raise RootfsEvidenceError("Rootfs manifest contains an invalid file size")
         if not isinstance(digest, str) or not _is_sha256(digest):
             raise RootfsEvidenceError("Rootfs manifest contains an invalid file digest")
-        if master is not None and not _safe_relative_path(master):
+        if master is not None and not _bounded_safe_relative_path(master):
             raise RootfsEvidenceError("Rootfs manifest contains an invalid hardlink master")
     elif kind == "symlink" and not isinstance(entry.get("target"), str):
         raise RootfsEvidenceError("Rootfs manifest contains an invalid symlink target")
@@ -1375,20 +1404,39 @@ def _unescape_mountinfo(value: str) -> str:
 
 def _normalise_exclusions(values: Iterable[str]) -> tuple[str, ...]:
     normalised: set[str] = set()
-    for value in values:
+    for index, value in enumerate(values, start=1):
+        if index > MAX_ROOTFS_EXCLUSIONS:
+            raise ValueError("Too many rootfs exclusions")
+        if not _bounded_safe_relative_path(value) or value == ".":
+            raise ValueError(f"Unsafe rootfs exclusion: {value!r}")
         path = PurePosixPath(value)
         text = path.as_posix()
-        if not _safe_relative_path(text) or text == ".":
+        if not _bounded_safe_relative_path(text) or text == ".":
             raise ValueError(f"Unsafe rootfs exclusion: {value!r}")
         normalised.add(text)
     return tuple(sorted(normalised, key=_path_key))
 
 
-def _safe_relative_path(value: object) -> bool:
-    if not isinstance(value, str) or not value or value.startswith("/"):
+def _bounded_safe_relative_path(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeError:
+        return False
+    if (
+        not value
+        or value.startswith("/")
+        or len(encoded) > MAX_ROOTFS_PATH_BYTES
+        or value.count("/") >= MAX_ROOTFS_PATH_COMPONENTS
+        or "\x00" in value
+    ):
         return False
     path = PurePosixPath(value)
-    return not any(part in {"", ".."} for part in path.parts)
+    return (
+        value == path.as_posix()
+        and not any(part in {"", ".."} for part in path.parts)
+    )
 
 
 def _excluded(path: str, exclusions: tuple[str, ...]) -> bool:

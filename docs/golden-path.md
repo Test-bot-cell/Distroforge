@@ -58,10 +58,29 @@ SquashFS or QEMU boot was produced while making these changes.
   requires its publication items to be `ready` before `publish-bundle`. The package item
   replays per-source signed `InRelease`/`Release` → `Packages` → `.deb`, freshness and the
   final APT command ledger offline; it is not satisfied by a field that merely says
-  validation passed. It deliberately remains `blocked` while `.deb` payload bytes are not
-  causally bound to every final rootfs path. The rootfs/ISO path now performs a semantic
+  validation passed. M3.1 also makes the gate recompute
+  `PACKAGE-FILESYSTEM-CAUSALITY.json`
+  (`distroforge.package-filesystem-causality.v1`) for a fresh bootstrap from the exact
+  `.deb` payloads named by the sealed pre-post-host `final_inventory` snapshot and
+  `ROOTFS-MANIFEST.json`, using only `exact`,
+  `modified`, `missing`, `unattributed`, `ambiguous`, `structural`, `excluded` and
+  `unsupported`. ISO-remaster mode currently inspects no payload blob and marks every
+  final path `unsupported` until a semantic source baseline can separate inherited and
+  new objects. The map calls its inputs `sealed-recorded-deb` and explicitly depends on
+  the independently replayed signed package-input/policy proof; it cannot authenticate
+  itself. Descriptor-relative no-follow traversal plus bounded JSON, tar/PAX, member and
+  command-output parsing make path swaps, compressed tar and oversized hostile fixtures
+  refusals. That map proves static
+  `payload_identity` only: `verified` accounts for every supported in-scope member of that
+  bootstrap inventory snapshot; it does not re-snapshot dpkg after post-host hooks.
+  ISO-remaster mode, an exclusion or unsupported object makes it `partial`. It
+  deliberately leaves `filesystem_causality` `unverified`,
+  `release_ready` false and the package item `blocked` until M3.2 binds APT protocol v3
+  actions and observed producer deltas, including maintainer scripts, triggers, conffiles,
+  other dpkg transformations and the ISO baseline. The rootfs/ISO path performs a semantic
   manifest check, descriptor-held SquashFS round-trip and authoritative replay from the
-  final ISO, but only code and falsification tests have exercised that path.
+  final ISO, but only offline, rootless fixtures and falsification tests have exercised
+  these paths; no Golden-path or real ISO build was run for M3.1.
 
 A push to `develop` does run the ordinary `CI` workflow because `ci.yml` listens to
 `push`. It does **not** execute `golden-path.yml`: that file deliberately has only

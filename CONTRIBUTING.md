@@ -31,7 +31,7 @@ prove a change works. Package and ISO builds are explicit, deliberate acts: they
 take minutes, they need privilege, and they write outside the tree. Every check in
 this project is designed to be meaningful without one — dry-run plans are compared
 against golden argv, and the few checks that drive a real external tool (`gpg`,
-`sha256sum`, `xorriso`, `mksquashfs`, `unsquashfs` or `tar --zstd`) stay offline,
+`sha256sum`, `dpkg-deb`, `xorriso`, `mksquashfs`, `unsquashfs` or `tar --zstd`) stay offline,
 rootless and operate only on synthetic or repository-pinned fixtures.
 
 If you believe a defect can only be shown by a real build, say so instead of

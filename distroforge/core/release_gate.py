@@ -22,6 +22,11 @@ from .iso_evidence import (
     ISO_ASSEMBLY_SCHEMA,
     validate_iso_assembly_evidence,
 )
+from .package_causality import (
+    PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
+    PACKAGE_FILESYSTEM_CAUSALITY_SCHEMA,
+    validate_package_filesystem_causality,
+)
 from .package_evidence import validate_package_evidence
 from .packaging import packaging_policy_report
 from .prebuild_vm import validate_qemu_report
@@ -236,14 +241,39 @@ def _package_inputs_item(
             "blocked",
             "The current run has no PACKAGE-INPUTS.json closure.",
         )
+    causality_evidence = run_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
+    if not causality_evidence.is_file():
+        return ReleaseGateItem(
+            "package-inputs",
+            "blocked",
+            "The current run has no static package/filesystem identity map.",
+        )
     if not verify:
         try:
             payload = json.loads(evidence.read_text(encoding="utf-8"))
+            causality_payload = json.loads(
+                causality_evidence.read_text(encoding="utf-8")
+            )
         except (OSError, json.JSONDecodeError) as exc:
             return ReleaseGateItem(
                 "package-inputs",
                 "blocked",
                 f"Package-input evidence is unreadable: {exc}",
+            )
+        if (
+            not isinstance(causality_payload, dict)
+            or causality_payload.get("schema")
+            != PACKAGE_FILESYSTEM_CAUSALITY_SCHEMA
+            or causality_payload.get("run_id") != run_id
+            or causality_payload.get("payload_identity")
+            not in {"partial", "verified"}
+            or causality_payload.get("filesystem_causality") != "unverified"
+            or causality_payload.get("release_ready") is not False
+        ):
+            return ReleaseGateItem(
+                "package-inputs",
+                "blocked",
+                "The recorded package/filesystem map does not preserve the M3.1 proof boundary.",
             )
         recorded = payload.get("validation") if isinstance(payload, dict) else None
         if not isinstance(recorded, dict) or recorded.get("ok") is not True:
@@ -258,18 +288,24 @@ def _package_inputs_item(
                 "package-inputs",
                 "blocked",
                 (
-                    str(detail)
+                    (
+                        f"{detail}; static payload identity is "
+                        f"{causality_payload['payload_identity']}, while "
+                        "filesystem causality remains unverified"
+                    )
                     if isinstance(detail, str) and detail
                     else (
                         "Package inputs close, but installed .deb payload bytes are "
-                        "not causally bound to every final rootfs path."
+                        "not causally bound to every final rootfs path; the M3.1 "
+                        "static identity map cannot supply that producer proof."
                     )
                 ),
             )
         return ReleaseGateItem(
             "package-inputs",
-            "review",
-            "Package-input closure exists; authoritative refresh will rehash and reverify it offline.",
+            "blocked",
+            "Package inputs record readiness, but M3.1 explicitly keeps static "
+            "payload identity separate from unverified filesystem causality.",
         )
     try:
         command_argv = _command_argv_ledger(run_dir / "commands.jsonl")
@@ -292,10 +328,30 @@ def _package_inputs_item(
         expected_verification_time=verification_time,
         apt_command_argv=command_argv,
     )
+    if not validation.ok:
+        return ReleaseGateItem(
+            "package-inputs",
+            "blocked",
+            validation.detail,
+        )
+    causality_validation = validate_package_filesystem_causality(
+        run_dir,
+        expected_run_id=run_id,
+    )
+    if not causality_validation.ok:
+        return ReleaseGateItem(
+            "package-inputs",
+            "blocked",
+            causality_validation.detail,
+        )
     return ReleaseGateItem(
         "package-inputs",
-        "ready" if validation.release_ready else "blocked",
-        validation.detail,
+        (
+            "ready"
+            if validation.release_ready and causality_validation.release_ready
+            else "blocked"
+        ),
+        f"{validation.detail}; {causality_validation.detail}",
     )
 
 
@@ -859,11 +915,9 @@ def _validate_build_provenance(
     observed_leafs = {Path(name).name for name in expected_counts}
     required_tools = {"mksquashfs", "unsquashfs", "xorriso"}
     project_data = data.get("project")
-    bootstrap_build = isinstance(project_data, dict) and (
-        project_data.get("source_mode") == "bootstrap" or project_data.get("source_starter")
-    )
+    bootstrap_build = _provenance_is_bootstrap(project_data)
     if bootstrap_build:
-        required_tools.update({"grub-mkimage", "mformat", "mcopy"})
+        required_tools.update({"dpkg-deb", "grub-mkimage", "mformat", "mcopy"})
         if not observed_leafs & {"mmdebstrap", "debootstrap"}:
             return ReleaseGateItem(
                 "provenance",
@@ -1005,6 +1059,9 @@ def _validate_build_provenance(
     immutable = immutable_dir / "distroforge-provenance.json"
     iso_report = immutable_dir / "ISO-BUILD.json"
     package_inputs = immutable_dir / "PACKAGE-INPUTS.json"
+    package_filesystem_causality = (
+        immutable_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
+    )
     rootfs_manifest = immutable_dir / "ROOTFS-MANIFEST.json"
     rootfs_verification = immutable_dir / "ROOTFS-PACKING-VERIFICATION.json"
     iso_assembly = immutable_dir / ISO_ASSEMBLY_FILENAME
@@ -1014,6 +1071,7 @@ def _validate_build_provenance(
         immutable,
         iso_report,
         package_inputs,
+        package_filesystem_causality,
         rootfs_manifest,
         rootfs_verification,
         iso_assembly,
@@ -1043,6 +1101,25 @@ def _validate_build_provenance(
             "provenance",
             "blocked",
             "Provenance does not bind this run's package-input closure.",
+        )
+    package_filesystem_causality_identity = data.get(
+        "package_filesystem_causality"
+    )
+    if (
+        not isinstance(package_filesystem_causality_identity, dict)
+        or package_filesystem_causality_identity.get("path")
+        != str(package_filesystem_causality)
+        or package_filesystem_causality_identity.get("role")
+        != "package-filesystem-causality"
+        or package_filesystem_causality_identity.get("size")
+        != package_filesystem_causality.stat().st_size
+        or package_filesystem_causality_identity.get("sha256")
+        != sha256_file(package_filesystem_causality)
+    ):
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            "Provenance does not bind this run's package/filesystem identity map.",
         )
     for evidence_field, artifact, role in (
         ("rootfs_manifest", rootfs_manifest, "rootfs-manifest"),
@@ -1076,6 +1153,11 @@ def _validate_build_provenance(
             "blocked",
             rootfs_validation.detail,
         )
+    # The authoritative package-input item, evaluated before provenance by
+    # ReleaseGateService.check(), already recomputes this map from every selected
+    # .deb. Provenance independently binds the resulting artifact below; running
+    # dpkg-deb over the complete package set a second time would double a
+    # potentially multi-gigabyte verification without adding another trust input.
     iso_assembly_validation = validate_iso_assembly_evidence(
         immutable_dir,
         expected_run_id=run_id,
@@ -1219,6 +1301,7 @@ def _validate_build_provenance(
         output_dir / "SHA256SUMS",
         output_dir / "BUILDINFO",
         package_inputs,
+        package_filesystem_causality,
         rootfs_manifest,
         rootfs_verification,
         iso_assembly,
@@ -1251,6 +1334,21 @@ def _validate_build_provenance(
         "provenance",
         "ready",
         f"immutable build run {run_id} matches ISO SHA256 {sha256_file(iso)}",
+    )
+
+
+def _provenance_is_bootstrap(project_data: object) -> bool:
+    """Derive tool roles from the effective source mode, not starter presence.
+
+    Both skeleton and official-ISO starters populate ``source_starter``. Treating
+    that field itself as bootstrap made an ISO starter require mmdebstrap,
+    GRUB/mtools assembly and the bootstrap-only M3.1 dpkg-deb inspection even
+    though none of those commands belonged to the executed path.
+    """
+
+    return (
+        isinstance(project_data, dict)
+        and project_data.get("source_mode") == "bootstrap"
     )
 
 

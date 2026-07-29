@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -96,6 +97,7 @@ class CommandResult:
 # the sentence that explains a refusal is at the end. Both streams, because tools disagree
 # about which one a warning belongs on.
 _LOGGED_OUTPUT_TAIL = 4000
+_BINARY_STDERR_LIMIT = 1024 * 1024
 
 
 def _logged_tail(text: str, limit: int = _LOGGED_OUTPUT_TAIL) -> str | None:
@@ -321,6 +323,172 @@ class CommandRunner:
         divergences = self._finalize_execution_identity(
             capture,
             process_returncode=result.returncode,
+        )
+        self._write_event("finish", spec, result)
+        if divergences:
+            raise ExecutionIdentityError(result, divergences)
+        if check and result.returncode != 0:
+            raise CommandError(result)
+        return result
+
+    def run_binary_to_file(
+        self,
+        spec: CommandSpec,
+        output: BinaryIO,
+        *,
+        max_output_bytes: int,
+        check: bool = True,
+    ) -> CommandResult:
+        """Capture binary stdout without leaving the sealed dispatch boundary.
+
+        ``run`` necessarily decodes stdout as text, while package tools such as
+        ``dpkg-deb --fsys-tarfile`` emit an arbitrary tar stream.  Shell pipelines
+        would make the downstream command and the transferred bytes an unaudited
+        side channel, so this method keeps the normal pre/post executable witness
+        and writes the child's stdout directly to a caller-owned binary file.
+
+        The bound is mandatory.  A signed but maliciously compressed package must
+        not be able to expand until the evidence filesystem is exhausted. Stderr
+        is drained concurrently without a spool file, retains only the logged tail
+        and triggers a separate fixed-size refusal.
+        """
+
+        if max_output_bytes <= 0:
+            raise ValueError("binary command output limit must be positive")
+        self.history.append(spec)
+        self._write_event("start", spec, None)
+        if self.dry_run:
+            result = CommandResult(spec=spec, returncode=0, stdout="", stderr="")
+            self._write_event("dry-run", spec, result)
+            return result
+        if spec.argv and spec.argv[0] in VIRTUAL_COMMANDS:
+            result = CommandResult(spec=spec, returncode=0, stdout="", stderr="")
+            self._write_event("virtual", spec, result)
+            return result
+
+        capture = self._capture_execution_identity(spec)
+        self._bind_execution_dispatch(capture, spec)
+        process: subprocess.Popen[bytes] | None = None
+        written = 0
+        stdout_exceeded = False
+        stderr_exceeded = False
+        stderr_size = 0
+        stderr_tail = bytearray()
+        stderr_failure: BaseException | None = None
+        stderr_thread: threading.Thread | None = None
+        stderr_text = ""
+        try:
+            with subprocess.Popen(
+                capture.dispatch_argv,
+                cwd=spec.cwd,
+                env=dict(spec.env) if spec.env else None,
+                stdin=subprocess.PIPE if spec.stdin is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                executable=capture.dispatch_executable,
+            ) as process:
+                assert process.stderr is not None
+                stderr_stream = cast(io.BufferedReader, process.stderr)
+                active_process = process
+
+                def drain_stderr() -> None:
+                    nonlocal stderr_exceeded, stderr_failure, stderr_size
+                    try:
+                        while True:
+                            chunk = stderr_stream.read1(64 * 1024)
+                            if not chunk:
+                                break
+                            stderr_size += len(chunk)
+                            stderr_tail.extend(chunk)
+                            if len(stderr_tail) > _LOGGED_OUTPUT_TAIL:
+                                del stderr_tail[:-_LOGGED_OUTPUT_TAIL]
+                            if (
+                                stderr_size > _BINARY_STDERR_LIMIT
+                                and not stderr_exceeded
+                            ):
+                                stderr_exceeded = True
+                                if active_process.poll() is None:
+                                    active_process.kill()
+                    except BaseException as exc:
+                        stderr_failure = exc
+                        if active_process.poll() is None:
+                            active_process.kill()
+
+                stderr_thread = threading.Thread(
+                    target=drain_stderr,
+                    name="distroforge-binary-stderr",
+                    daemon=True,
+                )
+                stderr_thread.start()
+                if spec.stdin is not None and process.stdin is not None:
+                    process.stdin.write(spec.stdin.encode())
+                    process.stdin.close()
+                assert process.stdout is not None
+                stream = cast(io.BufferedReader, process.stdout)
+                while True:
+                    chunk = stream.read1(1024 * 1024)
+                    if not chunk:
+                        break
+                    remaining = max_output_bytes - written
+                    if len(chunk) > remaining:
+                        if remaining:
+                            output.write(chunk[:remaining])
+                            written += remaining
+                        stdout_exceeded = True
+                        if process.poll() is None:
+                            process.kill()
+                        break
+                    output.write(chunk)
+                    written += len(chunk)
+                process.wait()
+                stderr_thread.join()
+                output.flush()
+            if stderr_failure is not None:
+                raise stderr_failure
+            stderr_text = bytes(stderr_tail).decode("utf-8", errors="replace")
+            if stderr_size > len(stderr_tail):
+                stderr_text = (
+                    f"[{stderr_size - len(stderr_tail)} earlier bytes dropped]\n"
+                    + stderr_text
+                )
+        except BaseException:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+            if stderr_thread is not None and stderr_thread.is_alive():
+                stderr_thread.join()
+            self._finalize_execution_identity(
+                capture,
+                process_returncode=(
+                    process.returncode if process is not None else None
+                ),
+            )
+            raise
+        assert process is not None
+        if stdout_exceeded:
+            if stderr_text and not stderr_text.endswith("\n"):
+                stderr_text += "\n"
+            stderr_text += (
+                "binary stdout exceeded the "
+                f"{max_output_bytes}-byte capture limit\n"
+            )
+        if stderr_exceeded:
+            if stderr_text and not stderr_text.endswith("\n"):
+                stderr_text += "\n"
+            stderr_text += (
+                "binary stderr exceeded the "
+                f"{_BINARY_STDERR_LIMIT}-byte capture limit\n"
+            )
+        exceeded = stdout_exceeded or stderr_exceeded
+        result = CommandResult(
+            spec=spec,
+            returncode=125 if exceeded else process.returncode,
+            stdout=f"<{written} binary bytes captured>\n",
+            stderr=stderr_text,
+        )
+        divergences = self._finalize_execution_identity(
+            capture,
+            process_returncode=process.returncode,
         )
         self._write_event("finish", spec, result)
         if divergences:

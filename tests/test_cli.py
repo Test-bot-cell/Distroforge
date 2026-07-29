@@ -11,6 +11,7 @@ _ISO_PLAN_TOOLCHAIN = frozenset(
     {
         "apt-get",
         "chroot",
+        "dpkg-deb",
         "mformat",
         "mksquashfs",
         "mmdebstrap",

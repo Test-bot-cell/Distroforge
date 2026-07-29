@@ -71,6 +71,7 @@ def _items(runner: CommandRunner) -> list[IsoToolchainItem]:
         ("unsquashfs", "squashfs-tools", "live filesystem extraction"),
         ("chroot", "coreutils", "target filesystem operations"),
         ("apt-get", "apt", "package installation in the target"),
+        ("dpkg-deb", "dpkg", "sealed package payload inspection"),
         ("mformat", "mtools", "UEFI boot image assembly"),
     )
     items = [IsoToolchainItem(binary, runner.has_binary(binary), package, reason) for binary, package, reason in definitions]

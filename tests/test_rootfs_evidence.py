@@ -53,6 +53,76 @@ def _seal_image(path: Path) -> dict[str, object]:
     return witness.sealed_identity
 
 
+def test_manifest_bounds_paths_and_exclusions_before_combinatorial_validation(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(
+        json.dumps(
+            RootfsEvidenceService(
+                _rootfs(tmp_path),
+                excluded_descendants=(),
+            ).snapshot()
+        )
+    )
+    oversized_exclusions = dict(payload)
+    oversized_exclusions["excluded_descendants"] = [
+        f"excluded-{index}" for index in range(rootfs_evidence.MAX_ROOTFS_EXCLUSIONS + 1)
+    ]
+    with pytest.raises(RootfsEvidenceError, match="exclusion bound"):
+        rootfs_evidence.validate_rootfs_manifest_payload(oversized_exclusions)
+
+    oversized_path = json.loads(json.dumps(payload))
+    oversized_path["entries"][1]["path"] = "x" * (rootfs_evidence.MAX_ROOTFS_PATH_BYTES + 1)
+    with pytest.raises(RootfsEvidenceError, match="unsafe path"):
+        rootfs_evidence.validate_rootfs_manifest_payload(oversized_path)
+
+    oversized_depth = json.loads(json.dumps(payload))
+    oversized_depth["entries"][1]["path"] = "/".join(
+        ["x"] * (rootfs_evidence.MAX_ROOTFS_PATH_COMPONENTS + 1)
+    )
+    with pytest.raises(RootfsEvidenceError, match="unsafe path"):
+        rootfs_evidence.validate_rootfs_manifest_payload(oversized_depth)
+
+
+def test_snapshot_refuses_before_crossing_manifest_entry_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rootfs_evidence,
+        "MAX_ROOTFS_MANIFEST_ENTRIES",
+        1,
+    )
+
+    with pytest.raises(RootfsEvidenceError, match="entry bound"):
+        RootfsEvidenceService(
+            _rootfs(tmp_path),
+            excluded_descendants=(),
+        ).snapshot()
+
+
+@pytest.mark.parametrize(
+    "noncanonical_path",
+    ("./etc", "etc//config", "etc/./config"),
+)
+def test_manifest_refuses_normalising_path_aliases(
+    tmp_path: Path,
+    noncanonical_path: str,
+) -> None:
+    payload = json.loads(
+        json.dumps(
+            RootfsEvidenceService(
+                _rootfs(tmp_path),
+                excluded_descendants=(),
+            ).snapshot()
+        )
+    )
+    payload["entries"][1]["path"] = noncanonical_path
+
+    with pytest.raises(RootfsEvidenceError, match="unsafe path"):
+        rootfs_evidence.validate_rootfs_manifest_payload(payload)
+
+
 def test_snapshot_records_filesystem_semantics_and_special_objects(tmp_path: Path) -> None:
     root = _rootfs(tmp_path)
     config = root / "etc" / "config"

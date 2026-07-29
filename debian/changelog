@@ -61,12 +61,49 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     keyring copy already sealed under its pinned content digest. lz4 is now an
     explicit runtime/preflight dependency for replaying the index format Ubuntu
     and Debian commonly retain.
-  * Kept the package proof honest at its current boundary. Signed Release
-    metadata, Packages indices, exact .deb bytes and final dpkg identities can
-    validate, but no ledger yet proves which payload object caused every final
-    rootfs path. Package evidence therefore records filesystem_causality as
-    unverified and the release gate blocks publication instead of promoting a
-    valid input closure into a complete filesystem claim.
+  * Added the M3.1 static package-filesystem identity map without overstating
+    causality. PACKAGE-FILESYSTEM-CAUSALITY.json uses schema
+    distroforge.package-filesystem-causality.v1; its authoritative validator
+    re-hashes and re-extracts the exact .deb payloads named by a fresh
+    bootstrap's sealed PACKAGE-INPUTS final_inventory snapshot, reloads
+    ROOTFS-MANIFEST.json and recomputes the closed exact,
+    modified, missing, unattributed, ambiguous, structural, excluded and
+    unsupported classifications. payload_identity is verified only for complete
+    supported bootstrap scope. ISO-remaster mode does not inspect payload blobs
+    in M3.1: without a semantic source baseline it marks the whole final
+    manifest unsupported and payload_identity partial. Excluded or unsupported
+    bootstrap objects also make it partial. That inventory is captured before
+    arbitrary post-host hooks and M3.1 does not re-snapshot dpkg state after
+    them. Neither value proves which APT/dpkg action or producer caused the
+    final object. The map calls its scope sealed-recorded-deb and declares the
+    independently replayed signed package-input policy as an external assurance
+    dependency; it cannot authenticate itself. A held physical run-directory
+    descriptor, descriptor-relative no-follow traversal and closing leaf checks
+    refuse ancestor, parent and file swaps. Explicit JSON, package/member,
+    physical tar-header, extension/PAX and command-output limits reject
+    compressed, recursive, malformed or oversized inputs. dpkg-deb is required
+    by preflight only for the bootstrap path that executes it. The bounded
+    hardlink resolver is iterative and precomputes groups once.
+    Aggregate transaction, package, tar, logical-payload and serialized
+    member/claim/classification/package-summary budgets now stop cumulative
+    inputs before the next extraction, parse or report allocation. Run,
+    transaction and rootfs paths are byte/depth bounded before parsing and must
+    already be canonical. Those limits are fixture-proved, not yet sized by an
+    executing desktop build; a real
+    budget refusal remains evidence to measure, not a reason to raise it
+    silently. Schema v1 payload_identity records enumeration coverage while
+    modified, missing and ambiguous remain separate comparison counts.
+    filesystem_causality therefore remains unverified, release_ready remains
+    false and publication remains blocked. M3.2 must bind APT
+    DPkg::Pre-Install-Pkgs protocol v3
+    actions to before/after deltas and account for maintainer scripts, triggers,
+    conffiles, alternatives, diversions, removals, customizers, the ISO baseline
+    and other transformations. Offline, rootless fixtures exercise M3.1; no
+    product/distribution Debian package, ISO or Golden-path build was run.
+    The final local source/test gate passed Ruff, mypy over 256 source files,
+    1,343 pytest cases with one environmental skip, ShellCheck and both embedded
+    maintainer-script Python payloads. All eight offline pre-commit ratchets
+    passed. These results do not promote any product-proof ledger row.
   * Made standalone release verification preserve that refusal. A blocked
     RELEASE-GATE now yields a blocked VERIFY-REPORT; its aggregate status,
     blocked flag, manifest gate status and individual item verdicts must agree,

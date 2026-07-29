@@ -23,12 +23,14 @@ import pytest
 from distroforge.core import qemu_invocation
 from distroforge.core.bootstrap import _ROOTFS_REQUIREMENTS
 from distroforge.core.build import BuildOptions
+from distroforge.core.command import CommandRunner
 from distroforge.core.evidence_run import canonical_sha256
 from distroforge.core.iso_evidence import (
     ISO_ASSEMBLY_FILENAME,
     ISO_ASSEMBLY_SCHEMA,
     validate_iso_assembly_evidence,
 )
+from distroforge.core.package_causality import write_package_filesystem_causality
 from distroforge.core.package_evidence import (
     PACKAGE_INPUTS_SCHEMA,
     PACKAGE_TRANSACTION_SCHEMA,
@@ -101,7 +103,7 @@ RGQQq9aJzapdvT3gbv/QHaxiN5/XTQ==
 -----END PGP SIGNATURE-----
 """
 
-_PRODUCT_FIXTURE_TOOLS = ("mksquashfs", "unsquashfs", "xorriso")
+_PRODUCT_FIXTURE_TOOLS = ("dpkg-deb", "mksquashfs", "unsquashfs", "xorriso")
 
 
 def _require_product_fixture_tools() -> None:
@@ -583,18 +585,27 @@ def write_valid_boot_proof(
     return proof
 
 
-def _write_valid_rootfs_evidence(
+def _write_valid_rootfs_manifest(
     run_dir: Path,
     run_id: str,
     rootfs: Path,
-    staged_squashfs: Path,
-) -> tuple[Path, Path]:
+) -> Path:
     (rootfs / "etc").mkdir(parents=True, exist_ok=False)
     (rootfs / "etc" / "os-release").write_bytes(b"NAME=DistroForge fixture\n")
     service = RootfsEvidenceService(rootfs, run_id=run_id)
     manifest = run_dir / "ROOTFS-MANIFEST.json"
     service.capture_before_packing(manifest)
+    return manifest
 
+
+def _write_valid_rootfs_packing_evidence(
+    run_dir: Path,
+    run_id: str,
+    rootfs: Path,
+    staged_squashfs: Path,
+    manifest: Path,
+) -> Path:
+    service = RootfsEvidenceService(rootfs, run_id=run_id)
     staged_squashfs.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         (
@@ -645,7 +656,7 @@ def _write_valid_rootfs_evidence(
     )
     if not validation.ok:
         raise AssertionError(validation.detail)
-    return manifest, verification
+    return verification
 
 
 def _write_fixture_iso(project: Project, iso: Path, run_id: str) -> None:
@@ -721,6 +732,7 @@ def write_valid_build_evidence(
     run_dir.mkdir(parents=True, exist_ok=True)
     tool_commands = (
         ("mmdebstrap", "Bootstrap fixture rootfs"),
+        ("dpkg-deb", "Inspect fixture package payload"),
         ("mksquashfs", "Pack fixture rootfs"),
         ("unsquashfs", "Extract witnessed fixture rootfs"),
         ("grub-mkimage", "Build fixture GRUB image"),
@@ -759,14 +771,29 @@ def write_valid_build_evidence(
         / "filesystem.squashfs"
     )
     fixture_rootfs = project.workdir / f"fixture-rootfs-{run_id}"
-    rootfs_manifest, rootfs_verification = _write_valid_rootfs_evidence(
+    rootfs_manifest = _write_valid_rootfs_manifest(
+        run_dir,
+        run_id,
+        fixture_rootfs,
+    )
+    rootfs_manifest_identity = _artifact(rootfs_manifest)
+    rootfs_manifest_identity["role"] = "rootfs-manifest"
+    package_filesystem_causality = write_package_filesystem_causality(
+        run_dir,
+        expected_run_id=run_id,
+        runner=CommandRunner(dry_run=False),
+    )
+    package_filesystem_causality_identity = _artifact(
+        package_filesystem_causality
+    )
+    package_filesystem_causality_identity["role"] = "package-filesystem-causality"
+    rootfs_verification = _write_valid_rootfs_packing_evidence(
         run_dir,
         run_id,
         fixture_rootfs,
         staged_squashfs,
+        rootfs_manifest,
     )
-    rootfs_manifest_identity = _artifact(rootfs_manifest)
-    rootfs_manifest_identity["role"] = "rootfs-manifest"
     rootfs_verification_identity = _artifact(rootfs_verification)
     rootfs_verification_identity["role"] = "rootfs-packing-verification"
     _write_fixture_iso(project, iso, run_id)
@@ -911,6 +938,7 @@ def write_valid_build_evidence(
         "executed_host_entrypoints": executed_entrypoints,
         "executed_host_entrypoints_sha256": canonical_sha256(executed_entrypoints),
         "package_inputs": package_inputs_identity,
+        "package_filesystem_causality": package_filesystem_causality_identity,
         "rootfs_manifest": rootfs_manifest_identity,
         "rootfs_packing_verification": rootfs_verification_identity,
         "iso_assembly": iso_assembly_identity,

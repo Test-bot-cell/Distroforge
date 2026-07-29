@@ -119,6 +119,14 @@ def build_phase_sequence(*, source_mode: str, run_preview: bool) -> tuple[Planne
                 "Unpack filesystem.squashfs into the squashfs root",
             ),
         ]
+    rootfs_identity_detail = (
+        "Hash every packed rootfs object and map sealed bootstrap .deb payload identities"
+        if source_mode == "bootstrap"
+        else (
+            "Hash every packed rootfs object; record ISO-remaster payload identity "
+            "as unsupported pending a semantic source baseline"
+        )
+    )
 
     steps: list[PlannedStep] = [
         _step(
@@ -315,7 +323,7 @@ def build_phase_sequence(*, source_mode: str, run_preview: bool) -> tuple[Planne
         _step(
             BuildPhase.ROOTFS_EVIDENCE_CAPTURE,
             "Seal final rootfs identity",
-            "Hash every packed rootfs object and write the immutable pre-pack manifest",
+            rootfs_identity_detail,
         ),
         _step(
             BuildPhase.REPACK_FILESYSTEM,

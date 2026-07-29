@@ -22,6 +22,7 @@ from .iso_evidence import (
     ISO_ASSEMBLY_FILENAME,
     validate_iso_assembly_evidence,
 )
+from .package_causality import PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
 from .project import Project
 
 SBOM_FORMATS: tuple[str, ...] = ("native", "spdx", "cyclonedx")
@@ -106,6 +107,12 @@ class ProvenanceService:
                 "ROOTFS-MANIFEST.json",
                 executed=executed_mode,
             )
+            package_filesystem_causality = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
+                executed=executed_mode,
+            )
             rootfs_verification = evidence_run_path(
                 self.project.output_dir,
                 run_id,
@@ -122,6 +129,11 @@ class ProvenanceService:
                 data["rootfs_manifest"] = artifact_identity(
                     rootfs_manifest,
                     role="rootfs-manifest",
+                )
+            if package_filesystem_causality.is_file():
+                data["package_filesystem_causality"] = artifact_identity(
+                    package_filesystem_causality,
+                    role="package-filesystem-causality",
                 )
             if rootfs_verification.is_file():
                 data["rootfs_packing_verification"] = artifact_identity(

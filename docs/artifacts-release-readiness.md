@@ -108,13 +108,59 @@ ledger, including commands after the aggregate was first written.
 Those policies, the expected source mode and bootstrap keyring SHA-256 come from the
 effective definition passed to the gate, so package evidence cannot self-authorize a
 different trust policy. A locally built `.deb` with no independent producer attestation
-blocks the input closure. Even a valid input closure is not publication-ready today:
-`.deb` payload bytes are not yet causally mapped to every final rootfs file, so
-`filesystem_causality` is `unverified` and `package-inputs` is `blocked`.
+blocks the input closure.
 
-That package-input path is implemented and covered by real cryptographic fixture bytes,
-but no new live-archive ISO build has exercised it in the 2026-07-29 hardening lot. A
-fixture pass is not an archive or ISO proof.
+M3.1 adds the run-bound `PACKAGE-FILESYSTEM-CAUSALITY.json` artifact with schema
+`distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
+refresh re-hashes and re-extracts the exact `.deb` files selected by the sealed
+`PACKAGE-INPUTS.final_inventory` snapshot, reloads `ROOTFS-MANIFEST.json` and recomputes every path as `exact`,
+`modified`, `missing`, `unattributed`, `ambiguous`, `structural`, `excluded` or
+`unsupported`. The stored verdict cannot authorize itself, and drift in the artifact or
+either aggregate/manifest input is a refusal.
+
+The report deliberately describes `sealed-recorded-deb` scope and records that
+authenticated package inputs are an external assurance dependency. Only the release
+gate's preceding package-input replay supplies signed `InRelease`/`Packages`, freshness
+and policy authentication. M3.1 itself opens the run directory once without following
+any ancestor symlink, traverses every input with descriptor-relative `openat` semantics,
+rechecks every input leaf at run sealing and creates the report once through that same
+descriptor. Run, transaction and rootfs paths are bounded before parsing and must already
+be canonical. JSON size, package summaries, classifications, selected members, logical
+payload and raw tar bytes, physical headers, extension chains, PAX fields and `dpkg-deb`
+stdout/stderr are incrementally bounded; each remaining aggregate allowance is applied
+before the next extraction or parse. Compressed, over-nested, malformed or drifting
+inputs fail closed rather than becoming a partial success.
+
+These are measured fixture guards, not a claim that a full desktop manifest fits them.
+The first executing product run must stop on a budget refusal and provide measurements
+before any limit or schema is changed. In schema v1, `payload_identity` reports supported
+enumeration coverage; the `modified`, `missing` and `ambiguous` counters are a distinct
+comparison axis. A later schema may split those axes into separate named fields, but v1
+must not reinterpret them retroactively.
+
+ISO-remaster mode is deliberately narrower in M3.1. The report binds the package-input
+aggregate and final manifest but, without a semantic manifest for the authenticated source
+ISO, does not inspect even newly captured remaster payload blobs: every final path is
+`unsupported` and `payload_identity` is `partial`. The preceding package-input validator
+still independently re-hashes those `.deb` records, so the gate as a whole refuses blob
+drift; the static map itself makes no remaster-payload claim.
+
+This closes only static `payload_identity`. It is `verified` only for a bootstrap map that
+accounts for every supported, in-scope direct payload member of that inventory snapshot.
+The snapshot precedes arbitrary post-host hooks, and M3.1 does not re-read dpkg state after
+them; a later package mutation therefore remains M3.2 debt. ISO-remaster mode, an excluded
+path or an unsupported object makes it `partial`. Identical payload
+and final objects do not prove which APT/dpkg action, maintainer script, trigger, conffile
+decision, diversion, alternative, customizer or other producer created the final state.
+Consequently `filesystem_causality` remains `unverified`, `release_ready` remains false
+and `package-inputs` remains `blocked`, even when every comparable object is `exact`.
+M3.2 must bind APT `DPkg::Pre-Install-Pkgs` protocol v3 actions to observed before/after
+producer deltas and account explicitly for those dynamic transformations and the ISO
+baseline.
+
+The package-input and M3.1 payload-identity paths are implemented and covered by offline,
+rootless cryptographic/package fixtures, but no new live-archive ISO build has exercised
+them in the 2026-07-29 hardening lot. A fixture pass is not an archive or ISO proof.
 
 The same distinction applies to the product bytes. The code now captures a semantic
 `ROOTFS-MANIFEST.json`, proves no source-tree drift across `mksquashfs`, unpacks the

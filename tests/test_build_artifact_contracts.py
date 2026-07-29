@@ -54,6 +54,34 @@ def test_staged_chroot_hooks_are_removed_before_the_filesystem_is_repacked(tmp_p
         assert removed < repacked
 
 
+def test_package_payload_identity_is_planned_before_the_filesystem_is_repacked(
+    tmp_path: Path,
+) -> None:
+    project = _bootstrap_project(tmp_path, "PayloadIdentity")
+    runner = CommandRunner(dry_run=True)
+
+    BuildOrchestrator(project, runner, BuildOptions(use_sudo=False)).run()
+
+    argv_list = [spec.argv for spec in runner.history]
+    rootfs_manifest = _index_of(
+        argv_list,
+        lambda argv: any(part.endswith("ROOTFS-MANIFEST.json") for part in argv),
+    )
+    payload_map = _index_of(
+        argv_list,
+        lambda argv: (
+            argv[:1] == ("write-file",)
+            and argv[-1].endswith("PACKAGE-FILESYSTEM-CAUSALITY.json")
+        ),
+    )
+    repacked = _index_of(argv_list, lambda argv: argv[:1] == ("mksquashfs",))
+
+    assert rootfs_manifest is not None
+    assert payload_map is not None
+    assert repacked is not None
+    assert rootfs_manifest < payload_map < repacked
+
+
 def test_staged_hooks_are_removed_even_when_a_hook_fails(tmp_path: Path) -> None:
     project = _bootstrap_project(tmp_path, "HookFail")
     hooks = project.root / "hooks" / "chroot"

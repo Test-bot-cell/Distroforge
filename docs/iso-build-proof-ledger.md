@@ -30,7 +30,8 @@ bootloader, a kernel or a desktop session ran.
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
 | archive and package bytes | planned | the current code writes `PACKAGE-INPUTS.json` and transaction/CAS evidence, and its test fixture replays a real signed `InRelease` → `Packages` → `.deb` chain; repository policies are per-source and freshness plus the final APT argv ledger are bound, but no fresh ISO build has yet produced this closure from the distribution archive |
-| package-to-rootfs causality | blocked | the package ledger closes repository metadata and exact `.deb` bytes to installed dpkg identities, not each payload byte to every final rootfs path; `filesystem_causality` is `unverified`, so publication is blocked even when input validation succeeds |
+| package payload identity | planned | for a fresh bootstrap, M3.1 code and offline, rootless fixtures write and authoritatively replay `PACKAGE-FILESYSTEM-CAUSALITY.json` (`distroforge.package-filesystem-causality.v1`) from the exact `.deb` payloads named by the sealed pre-post-host `final_inventory` snapshot and `ROOTFS-MANIFEST.json`, classifying `exact`, `modified`, `missing`, `unattributed`, `ambiguous`, `structural`, `excluded` and `unsupported`. `payload_identity` is `verified` only for complete supported snapshot scope; M3.1 does not re-snapshot dpkg after post-host hooks. ISO-remaster mode inspects no payload blob and marks the complete manifest `unsupported`/`partial` until a semantic source baseline exists; no executing product run has emitted this map |
+| package-to-rootfs causality | blocked | M3.1 closes static `payload_identity`, not the producer action that caused each final object. APT protocol v3 actions, filesystem deltas, maintainer scripts, triggers, conffiles and other transformations remain M3.2 debt; `filesystem_causality` is `unverified` and `release_ready` is false |
 | archive trust policy | planned | the reference definition retains only signer `F6ECB3762474EDA9D21B7022871920D1991BC93C`, a SHA-256 pin for the explicit archive keyring and separate release, updates/backports and security namespaces/freshness windows; no fresh archive transaction has yet exercised them |
 | APT and live packages | observed | the resulting rootfs contains apt, ca-certificates, casper, kernel, GRUB and shim packages; the staged manifest contains 400 packages |
 | executed tool entrypoints | planned | the command runner hashes and opens each recognized host/wrapper/target executable and dispatches through the held `/proc/<pid>/fd/<fd>` descriptor chain; unit tests cover atomic path replacement, but no new real build log has exercised the closure |
@@ -94,10 +95,43 @@ The current audit implements the following fail-closed contracts:
 - unsafe APT trust/date overrides, incomplete or duplicate transactions, conflicting
   bytes for one package/version/architecture, and locally built `.deb` files without a
   separate producer attestation block the closure;
-- the package-input validator still returns `filesystem_causality: unverified`: it has no
-  causal ledger from each `.deb` payload object to every final rootfs path. The release
-  gate therefore blocks publication rather than promoting a cryptographically valid
-  input closure into a complete filesystem claim;
+- M3.1 writes `PACKAGE-FILESYSTEM-CAUSALITY.json`, schema
+  `distroforge.package-filesystem-causality.v1`, and its authoritative fresh-bootstrap
+  validator re-hashes and re-extracts the exact sealed `.deb` files named by the
+  pre-post-host `final_inventory` snapshot before comparing their payload objects with
+  `ROOTFS-MANIFEST.json`. Its complete static vocabulary is `exact`,
+  `modified`, `missing`, `unattributed`, `ambiguous`, `structural`, `excluded` and
+  `unsupported`; any drift in the report or either bound input is refused;
+- the map says `sealed-recorded-deb`, not authenticated-by-itself. Its explicit assurance
+  dependency is the separate package-input replay that the release gate evaluates first.
+  One non-symlinked run-directory descriptor anchors all M3.1 reads and the one-time
+  report write; descriptor-relative no-follow traversal and closing leaf checks refuse
+  parent or file swaps. Run, transaction and rootfs paths are byte/depth bounded before
+  parsing and must already be canonical. JSON, selected packages/members, package
+  summaries, classifications, tar bytes, logical payload bytes, physical headers,
+  extension/PAX metadata and both `dpkg-deb` streams have explicit incremental bounds.
+  Each remaining aggregate allowance is applied before the next extraction or parse.
+  Compressed, malformed, recursive or oversized inputs fail closed;
+- those aggregate budgets are proved only by hostile fixtures; no real desktop run has
+  shown that its manifest fits them. A budget refusal is therefore a measured product
+  milestone, not grounds for an unreviewed limit increase. Schema v1
+  `payload_identity` records enumeration coverage, while `modified`, `missing` and
+  `ambiguous` remain separate comparison counts;
+- ISO-remaster mode binds the package aggregate and final manifest but inspects no payload
+  blob in M3.1: without a semantic authenticated-source baseline, all final paths are
+  `unsupported` and `payload_identity` is `partial`. The separate package-input validator
+  still re-hashes captured `.deb` bytes, so the complete gate refuses their drift;
+- `payload_identity: verified` records only that a bootstrap map enumerated,
+  canonicalized and bound every supported, in-scope direct payload member of that
+  inventory snapshot. It does not re-snapshot dpkg after arbitrary post-host hooks; such
+  later mutations remain M3.2 debt. ISO-remaster mode, an excluded path or an unsupported
+  object records `partial`.
+  Static equality cannot identify the action or producer that created the final object,
+  so the release gate still requires
+  `filesystem_causality: unverified` and `release_ready: false`. M3.2 must bind exact APT
+  `DPkg::Pre-Install-Pkgs` protocol v3 actions to observed before/after deltas and account
+  for maintainer scripts, triggers, conffiles, alternatives, diversions, removals,
+  customizers, the ISO baseline and other transformations;
 - the final rootfs is captured as a portable semantic manifest plus a host-specific
   packing guard, rescanned around `mksquashfs`, unpacked from the descriptor-held
   SquashFS into a fresh tree, and compared with the manifest. ISO assembly binds that
@@ -141,6 +175,7 @@ dist/
       commands.jsonl
       distroforge-provenance.json
       PACKAGE-INPUTS.json
+      PACKAGE-FILESYSTEM-CAUSALITY.json
       apt/
         transactions/*.json
         blobs/<kind>/<sha256>
@@ -174,6 +209,7 @@ The current schemas are:
 - `distroforge.provenance.v2`;
 - `distroforge.package-inputs.v1`;
 - `distroforge.package-input-transaction.v1`;
+- `distroforge.package-filesystem-causality.v1`;
 - `distroforge.rootfs-manifest.v1`;
 - `distroforge.rootfs-packing-verification.v1`;
 - `distroforge.iso-assembly.v1`;
@@ -190,7 +226,8 @@ Build provenance records:
 - raw definition, `project.json` and effective resolved configuration digests;
 - installed tool paths, versions, executable digests and recognized wrapper/target
   descriptor-dispatch identities;
-- the run-bound package-input aggregate and transactions when executing a sealed build;
+- the run-bound package-input aggregate, transactions and static package-filesystem
+  identity map when executing a sealed build;
 - critical kernel, initrd, manifest, squashfs, EFI/GRUB and final ISO artifacts;
 - the commands recorded before the provenance phase.
 
@@ -242,11 +279,18 @@ application run report and manifest, verifies the manifest sidecar and re-hashes
 listed file. It also locates `PACKAGE-INPUTS.json` through the provenance run ID and
 replays its archive/package closure against the effective build definition's external
 source mode, per-source policies, signer fingerprints, keyring SHA-256, run instant and
-final command ledger. The authoritative product path separately extracts the SquashFS
-from the descriptor-held final ISO, unpacks it and compares its semantic tree with
-`ROOTFS-MANIFEST.json`. That proves internal consistency against the recorded local
-manifest; final authentication still requires a verified signature or trusted WORM anchor,
-and package-to-rootfs filesystem causality remains blocking debt.
+  final command ledger. It then locates `PACKAGE-FILESYSTEM-CAUSALITY.json`. For a fresh
+  bootstrap it re-extracts the exact `.deb` payloads named by the bound pre-post-host
+  `final_inventory` snapshot and recomputes their static comparison with
+  `ROOTFS-MANIFEST.json`; for an ISO remaster it recomputes
+  the deliberately all-`unsupported` map without inspecting payload blobs. It does not
+  trust the map's recorded verdict. The authoritative
+product path separately extracts the SquashFS from the descriptor-held final ISO, unpacks
+it and compares its semantic tree with that same manifest. These checks prove internal
+consistency and static `payload_identity` against the recorded local inputs, not which
+producer caused the filesystem state. Final authentication still requires a verified
+signature or trusted WORM anchor, while `filesystem_causality` remains `unverified`,
+`release_ready` remains false and package-to-rootfs causality remains blocking M3.2 debt.
 
 `beginner-iso --repair-release-artifacts` may derive checksums and explanatory files from
 an existing ISO. Any provenance it creates is labelled
@@ -264,11 +308,18 @@ merely copied.
 
 ## Next executing milestones
 
-No existing artifact can be retrofitted into v2 proof. M2.2 is now closed at its stated
-source/test boundary by the receipt below. The next acceptable journey is:
+No existing artifact can be retrofitted into v2 proof. M2.2 is closed at its stated
+source/test boundary by the receipt below, and M3.1 closes only a static package-payload
+identity map in code and fixtures. It is not product evidence. The next acceptable journey
+is:
 
-1. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
-   package item can become publication-ready for evidence rather than by assertion;
+1. implement and test M3.2 producer causality: capture the exact APT
+   `DPkg::Pre-Install-Pkgs` protocol v3 action set, bind each executed producer to observed
+   before/after filesystem deltas, and account for maintainer scripts, triggers,
+   conffiles, alternatives, diversions, removals, customizers and every other
+   transformation, including the ISO baseline, before `filesystem_causality` may become
+   `verified` and
+   `release_ready` may become true;
 2. seal the source-ISO detached signature, verification status and exact keyring for
    offline release-gate replay, or keep ISO-remaster publication explicitly at `review`;
 3. execute a fresh minimal build with the externally pinned archive trust policy, package
@@ -390,3 +441,44 @@ ISO build.
 - This receipt closes only the M2.2 source/test-environment milestone. The run did not
   build a Debian package, execute the Golden path, assemble an ISO or boot one, and it
   cannot promote any of those ledger rows.
+
+### 2026-07-29 — M3.1 local static package/rootfs map
+
+- Starting from signed local documentation commit
+  `36481c54db3309c2933584b0aa00f6cfe92ef489`, the worktree added the run-bound
+  `PACKAGE-FILESYSTEM-CAUSALITY.json` v1 writer, authoritative replay and release-gate
+  binding. No existing build artifact was reinterpreted and no product run emitted this
+  schema.
+- A fresh-bootstrap replay opens each selected recorded `.deb` through a held
+  run-directory descriptor, asks bounded `dpkg-deb` commands for identity and the
+  documented uncompressed filesystem tar, parses it under per-object and aggregate
+  budgets, and compares supported direct payload members with the sealed final rootfs
+  manifest. ISO-remaster mode inspects no payload blob until a semantic source baseline
+  exists and records the complete final manifest as `unsupported`/`partial`.
+- The report says `sealed-recorded-deb`, with the authenticated package-input and external
+  source-policy replay as an explicit independent assurance dependency. Static
+  `payload_identity` never promotes `filesystem_causality: unverified` or
+  `release_ready: false`.
+- Negative controls cover path traversal, non-canonical aliases and depth, duplicate
+  members, both conflicting-byte and same-byte/multiple-path package identities,
+  archive/file drift, run/ancestor/parent/leaf swaps, non-regular objects, exclusions,
+  unsupported final objects, conflicting package claims, early rootfs cardinality,
+  output and incremental aggregate budgets, bounded stdout/stderr, compressed tar,
+  malformed numeric PAX, recursive Solaris PAX, GNU sparse headers and PAX sparse
+  metadata, cyclic/absent/deep hardlinks, forged reports and forbidden release
+  promotion. The hardlink resolver is iterative and its groups are sorted once.
+- The first restricted `make check`, before the final fixes, did useful falsification:
+  it exposed one real unpublished-mailbox fixture regression, while `no-new-privileges`
+  separately prevented the real `sudo -n` question and seven `gpg-agent` setups. The
+  mailbox fixture was corrected; the sandbox refusals were not relabelled as code passes.
+- On the final tree, `make check` ran in the usable local environment: Ruff passed, mypy
+  checked 256 source files, pytest reported 1,343 passed and one skipped, ShellCheck
+  passed, and both embedded maintainer-script Python payloads compiled. All eight
+  `pre-commit run --all-files` ratchets passed. The focused M3.1 hostile-input file
+  reported 50 passes, the focused rootfs evidence file reported 23 passes, and the
+  broader causality/provenance/rootfs/policy selection reported 261 passes.
+- These are local source, parser, fixture and policy results only. The aggregate budgets
+  have not been sized by a real desktop build. No Debian package, ISO, Golden path, QEMU
+  boot, tag, pull request, push or `main` movement occurred. `origin/develop` therefore
+  still names signed commit `7b87af7e2e2a411fdf626f02ba26928ac1c75dcb`; any later
+  develop-only push remains a separate explicit act.
