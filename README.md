@@ -255,10 +255,12 @@ does not run:
 .venv/bin/python -m distroforge packaging-policy .
 ```
 
-The suite is offline, rootless and tool-free by design: it never runs
-`debootstrap`, `mksquashfs`, `xorriso`, `qemu`, `apt` or `sbuild`, so a green
-suite proves the plan and the contracts, not that a real ISO boots. Line
-coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
+The suite is offline and rootless by design, and never executes a product package or ISO
+build. A bounded fixture subset does run installed `gpg`, `xorriso`, `mksquashfs`,
+`unsquashfs` and `tar --zstd` processes on synthetic or repository-pinned inputs; their
+test dependencies are declared explicitly. It never runs `debootstrap`, `qemu`, `apt` or
+`sbuild`, so a green suite proves the plans and contracts, not that a real ISO boots.
+Line coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
 
 The [golden path](docs/golden-path.md) is the authorized weekly execution harness
 intended to prove that a real ISO boots; its existence is not that proof. Its current

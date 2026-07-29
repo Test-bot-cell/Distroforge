@@ -60,6 +60,7 @@ def test_snapshot_records_filesystem_semantics_and_special_objects(tmp_path: Pat
     os.link(config, root / "etc" / "config.link")
     (root / "absolute-link").symlink_to("/etc/config")
     os.mkfifo(root / "event.pipe", 0o620)
+    (root / "event.pipe").chmod(0o620)
 
     payload = RootfsEvidenceService(root, excluded_descendants=()).snapshot()
     entries = _entries(payload)

@@ -176,16 +176,19 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         #
-        # zstd and xorriso are the two runtime Depends the suite really invokes -- a
-        # snapshot test drives tar --zstd for real -- so leaving them out failed a
-        # test for a missing tool rather than for a defect. debootstrap,
-        # qemu-system-x86 and squashfs-tools are Depends the suite never invokes and
-        # are deliberately absent here, which is why they left Build-Depends too.
+        # zstd, xorriso, squashfs-tools and gnupg are runtime Depends the suite
+        # really invokes: a snapshot drives tar --zstd, ISO/rootfs fixtures run
+        # xorriso plus mksquashfs/unsquashfs, and GPG tests parse the pinned
+        # maintainer key and create throwaway signing keys. All four are also
+        # Build-Depends <!nocheck> and are installed in this distribution-only
+        # job. debootstrap and qemu-system-x86 remain deliberately absent because
+        # the suite plans them but never executes them.
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             python3 python3-pytest python3-pydantic python3-yaml python3-pluggy \
-            python3-rich python3-typer python3-pyqt6 libegl1 zstd xorriso passwd
+            python3-rich python3-typer python3-pyqt6 gnupg libegl1 passwd \
+            squashfs-tools xorriso zstd
       - name: Report what the distribution provides
         run: |
           python3 --version

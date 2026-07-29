@@ -1,5 +1,25 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Repaired the test-environment debt exposed only after the commit-subject
+    ratchet itself passed. GitHub Actions run 30485032512 was green in
+    packaging-static, while all eight Python/Qt legs shared four CLI failures
+    caused by asking the runner PATH about ISO tools and one FIFO-mode failure
+    caused by assuming umask did not apply. The distribution-dependencies leg
+    added one real undeclared test prerequisite: the pinned-key test executes
+    gpg, but that container did not install its gnupg provider. The CLI tests
+    now pin only the required planning toolchain and retain a missing-tool
+    negative control; the FIFO fixture sets its intended mode explicitly; and
+    gnupg is both Build-Depends <!nocheck> and installed in the distribution
+    job. The final dependency audit also found that gpg is a real product
+    executable for source-ISO authentication and release signing, so gnupg is
+    now an honest runtime Depends rather than being mislabeled test-only.
+    Semantic-rootfs tests added after the old dependency measurement also run
+    mksquashfs and unsquashfs when present, so squashfs-tools now joins
+    Build-Depends <!nocheck> and the distribution job instead of silently
+    skipping that proof there. The original failures were reproduced with
+    PATH=/nonexistent and umask 0022; the complete local gate now passes 1,279
+    tests with one skip. No ISO, package, Golden-path run, tag, main
+    fast-forward or publication occurred.
   * Preserved the signed staging receipt while restoring the commit-subject
     ratchet. Commit 33ddb64c4205428e4208d2ce01a37f6cefb32d8e had already
     been pushed to develop when all ten jobs in GitHub Actions run 30482945660

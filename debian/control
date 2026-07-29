@@ -9,6 +9,7 @@ Vcs-Git: https://github.com/Test-bot-cell/Distroforge.git
 Build-Depends:
  debhelper-compat (= 13),
  dh-sequence-python3,
+ gnupg <!nocheck>,
  pybuild-plugin-pyproject,
  python3-all,
  python3-pluggy <!nocheck>,
@@ -19,6 +20,7 @@ Build-Depends:
  python3-typer <!nocheck>,
  python3-wheel,
  python3-yaml <!nocheck>,
+ squashfs-tools <!nocheck>,
  xorriso <!nocheck>,
  zstd <!nocheck>,
 Build-Depends-Indep:
@@ -31,6 +33,7 @@ Depends:
  ${python3:Depends},
  apt,
  debootstrap,
+ gnupg,
  lz4,
  mtools,
  python3-pluggy,

@@ -7,6 +7,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -63,6 +64,80 @@ def _package_data_patterns() -> tuple[str, ...]:
 
 def _package_data_declares(patterns: tuple[str, ...], relative_path: str) -> bool:
     return any(fnmatch.fnmatchcase(relative_path, pattern) for pattern in patterns)
+
+
+def _control_relationships(stanza: str, field: str) -> tuple[str, ...]:
+    """Raw comma-separated relationships from one deb822 field."""
+
+    lines = stanza.splitlines()
+    prefix = f"{field}:"
+    try:
+        index = next(index for index, line in enumerate(lines) if line.startswith(prefix))
+    except StopIteration as exc:
+        raise AssertionError(f"{field} is absent from debian/control") from exc
+    values = [lines[index][len(prefix) :].strip()]
+    for line in lines[index + 1 :]:
+        if not line.startswith((" ", "\t")):
+            break
+        values.append(line.strip())
+    return tuple(
+        relationship.strip()
+        for relationship in " ".join(values).split(",")
+        if relationship.strip()
+    )
+
+
+def _relation_packages(relationship: str) -> frozenset[str]:
+    packages: set[str] = set()
+    for alternative in relationship.split("|"):
+        match = re.match(
+            r"([a-z0-9][a-z0-9+.-]*)(?::[a-z0-9-]+)?(?:\s|$)",
+            alternative.strip(),
+        )
+        if match:
+            packages.add(match.group(1))
+    return frozenset(packages)
+
+
+def _control_relation_groups(stanza: str, field: str) -> set[frozenset[str]]:
+    """Package alternatives in one deb822 field, ignoring versions and qualifiers."""
+
+    return {
+        packages
+        for relationship in _control_relationships(stanza, field)
+        if (packages := _relation_packages(relationship))
+    }
+
+
+def _build_profiles(relationship: str) -> set[str]:
+    return {
+        profile
+        for expression in re.findall(r"<([^>]*)>", relationship)
+        for profile in expression.split()
+    }
+
+
+def _shell_argv(command: str) -> list[str]:
+    """Shell words that would execute, excluding everything after an unquoted comment."""
+
+    return shlex.split(command, comments=True)
+
+
+def test_dependency_gate_parsers_do_not_accept_weaker_lookalikes() -> None:
+    stanza = """Depends:
+ gnupg:any (>= 2.4) <!nocheck>,
+ xorriso | xorriso-compat,
+ ${misc:Depends},
+"""
+
+    assert _control_relation_groups(stanza, "Depends") == {
+        frozenset({"gnupg"}),
+        frozenset({"xorriso", "xorriso-compat"}),
+    }
+    gnupg_relation = _control_relationships(stanza, "Depends")[0]
+    assert _relation_packages(gnupg_relation) == frozenset({"gnupg"})
+    assert "!nocheck" in _build_profiles(gnupg_relation)
+    assert "gnupg" not in _shell_argv("apt-get install -y xorriso # gnupg")
 
 
 def test_public_name_is_distroforge_everywhere() -> None:
@@ -341,18 +416,65 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
 
     Measured with a PATH shim that logged every invocation across a full run: xorriso
     is called 9 times and zstd once (via `tar --zstd` in the snapshot service, whose
-    test fails without it). debootstrap, qemu-system-x86 and squashfs-tools were never
-    invoked and never even looked up, so every arch:all build installed them for
-    nothing. They stay in Depends, which is where the runtime need actually is.
+    test fails without it). The newer semantic-rootfs fixtures also execute mksquashfs
+    and unsquashfs when their provider is present. The Golden-path key test invokes
+    `gpg` unconditionally; run 30485032512 proved that omitting its `gnupg` provider
+    from the distribution job fails the suite rather than testing a source defect.
+    debootstrap and qemu-system-x86 are never executed, so every arch:all build
+    installed them for nothing. They stay in Depends, which is where the runtime need
+    actually is. gnupg belongs there too: executing source-ISO authentication and
+    release signing both run gpg, so calling it test-only would ship incomplete
+    product paths even if this CI job became green.
     """
     control = (ROOT / "debian/control").read_text(encoding="utf-8")
     build_depends, _, binary = control.partition("\nPackage: distroforge\n")
+    executed_tool_packages = {
+        "gpg": "gnupg",
+        "mksquashfs": "squashfs-tools",
+        "unsquashfs": "squashfs-tools",
+        "xorriso": "xorriso",
+        "zstd": "zstd",
+    }
+    build_relationships = _control_relationships(build_depends, "Build-Depends")
+    build_dependency_groups = _control_relation_groups(build_depends, "Build-Depends")
+    runtime_dependency_groups = _control_relation_groups(binary, "Depends")
 
-    for package in ("xorriso", "zstd"):
-        assert f" {package} <!nocheck>,\n" in build_depends
-    for package in ("debootstrap", "qemu-system-x86", "squashfs-tools"):
-        assert f" {package} <!nocheck>,\n" not in build_depends
-        assert f" {package},\n" in binary
+    for package in set(executed_tool_packages.values()):
+        assert frozenset({package}) in build_dependency_groups
+        assert frozenset({package}) in runtime_dependency_groups
+        matching_build_relations = [
+            relationship
+            for relationship in build_relationships
+            if _relation_packages(relationship) == frozenset({package})
+        ]
+        assert len(matching_build_relations) == 1
+        assert "!nocheck" in _build_profiles(matching_build_relations[0])
+    for package in ("debootstrap", "qemu-system-x86"):
+        assert frozenset({package}) not in build_dependency_groups
+        assert frozenset({package}) in runtime_dependency_groups
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    distro_steps = workflow["jobs"]["distro-dependencies"]["steps"]
+    install_step = next(
+        step
+        for step in distro_steps
+        if step.get("name") == "Install distribution packages only"
+    )
+    install_script = install_step["run"].replace("\\\n", " ")
+    install_commands = [
+        line.strip()
+        for line in install_script.splitlines()
+        if line.strip().startswith("apt-get install ")
+    ]
+    assert len(install_commands) == 1
+    install_argv = _shell_argv(install_commands[0])
+    for tool, package in executed_tool_packages.items():
+        assert package in install_argv, (
+            f"{tool} is executed by the suite but {package} is absent from "
+            "distro-dependencies"
+        )
     # ruff has no binary package in the archive, so declaring it would make the
     # source unbuildable. The E701/E702 gate is stdlib-only for exactly that reason.
     assert "ruff" not in build_depends

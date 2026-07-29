@@ -24,8 +24,8 @@ bootloader, a kernel or a desktop session ran.
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
-| source checkout | observed | signed commit `33ddb64c4205428e4208d2ce01a37f6cefb32d8e` is both the local `develop` and `origin/develop`; its signature verifies under primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized staging push advanced only `develop` from `66046b75b86f3c0b59303b927b15ce1d6486407b`; `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
-| CI action inputs | blocked | GitHub Actions run `30482945660` executed per-push CI for exact commit `33ddb64c…`; all ten jobs reached the same history-wide policy refusal because subject `audit: harden ISO build evidence chain` is not an admitted type. The run proves the refusal occurred, not that the source or build passed; the Golden workflow did not run. |
+| source checkout | observed | the audited base of this local M2.2 work is signed commit `ccf1febf361857e47b1447e04f244d79d16ae393`, also `origin/develop`; its signature verifies under primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The two authorized staging pushes advanced only `develop`, first to signed audit commit `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`, then to its signed M2.1 repair. `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
+| CI action inputs | blocked | GitHub Actions run `30485032512` executed per-push CI for exact commit `ccf1febf…`. `packaging-static` passed the complete-history M2.1 ratchet; the other nine jobs exposed three test-environment debts: CLI planning tests depended on host ISO tools, a FIFO fixture depended on umask, and the distribution-only leg invoked an undeclared `gpg`. This is a captured source/test CI refusal, not a Golden-path or ISO-build result. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -266,10 +266,11 @@ merely copied.
 
 No existing artifact can be retrofitted into v2 proof. The next acceptable journey is:
 
-1. repair the per-push CI ratchet without rewriting the signed staging commit: grandfather
-   only the exact `(33ddb64c4205428e4208d2ce01a37f6cefb32d8e, audit: harden ISO build
-   evidence chain)` pair, keep every other `audit:` subject rejected, run the complete
-   local gate and record the next remote CI verdict;
+1. push the signed local M2.2 test-environment repair only after explicit authorization,
+   then record its remote CI verdict. M2.1 already preserved the exact
+   `(33ddb64c4205428e4208d2ce01a37f6cefb32d8e, audit: harden ISO build evidence
+   chain)` pair while keeping every other `audit:` subject rejected; run `30485032512`
+   proved that complete-history ratchet green and exposed the next portability debts;
 2. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
    package item can become publication-ready for evidence rather than by assertion;
 3. seal the source-ISO detached signature, verification status and exact keyring for
@@ -314,3 +315,51 @@ ISO build.
   exact subject. It does not admit `audit:` globally and does not rewrite or force-push
   protected history. No ISO, package, Golden-path build, release tag or publication was
   produced by this handoff.
+
+### 2026-07-29 — M2.1 verdict and local M2.2 repair
+
+- The explicitly authorized push advanced only `origin/develop` from `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`
+  to signed commit `ccf1febf361857e47b1447e04f244d79d16ae393`.
+  `origin/main` remained `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`;
+  annotated tag `debian/0.3.5-16` remained object
+  `b7e5f3b3504a793a457954f12301c37ab1b17e92`, peeled to
+  `38217da4ecbd1076514c9c4e949100a18272ee8a`. No tag, pull request or
+  `main` fast-forward was created.
+- Per-push [CI run 30485032512](https://github.com/Test-bot-cell/Distroforge/actions/runs/30485032512)
+  completed with one success and nine failures for exact HEAD `ccf1febf…`.
+  `packaging-static` passed every step, including the complete-history subject policy,
+  so M2.1 itself reached its intended remote gate.
+- Every Python 3.11–3.14 and Qt matrix leg passed installation, Ruff and mypy, then
+  reported the same five tests: four CLI tests were stopped by the real host-tool
+  doctor before their subject was reached, and the FIFO fixture requested `0620` but
+  observed the correct umask-filtered `0600`. Each leg recorded 1,236 passed, 37
+  skipped and five failed tests.
+- `distro-dependencies` reported those same five failures plus
+  `test_golden_path_verifies_the_builder_with_the_pinned_public_key`: it executed
+  `gpg`, but neither the job nor `Build-Depends <!nocheck>` supplied `gnupg`. That
+  leg recorded 1,224 passed, 48 skipped and six failed tests.
+- The CLI failures reproduce with `PATH=/nonexistent`; the FIFO failure reproduces
+  under umask `0022` and passes under the workstation's `0002`. M2.2 pins only the
+  required ISO planning tools inside the subject tests, keeps a separate all-tools-
+  absent refusal test, applies the requested FIFO mode explicitly after creation,
+  and declares plus installs `gnupg` for the suite. The final dependency audit also
+  found that executing source-ISO authentication and release signing invoke `gpg`,
+  so the binary package now depends on `gnupg` instead of misclassifying it as
+  test-only. It also found that the semantic-rootfs fixtures execute `mksquashfs`
+  and `unsquashfs` when available; `squashfs-tools` is now a test dependency and
+  installed in the distribution job so that proof no longer skips there. Targeted
+  CLI tests pass both with the normal PATH and with `PATH=/nonexistent`; the FIFO
+  test passes under both umasks.
+- The Node 20 deprecation annotation is a separate non-blocking Actions maintenance
+  debt: checkout, setup-python and `packaging-static` completed. M2.2 does not mix an
+  action-pin migration into this causal repair.
+- This local M2.2 work runs no package or ISO build and does not exercise the Golden
+  workflow. Its commit and any later push remain separate acts; no push is authorized
+  by this receipt.
+- The complete local `make check` ran outside the restricted validation wrapper whose
+  `no-new-privileges` setting prevents `gpg-agent` startup and changes `sudo -n` from
+  an authentication result into a container refusal. In that usable environment Ruff
+  passed, mypy checked 255 source files, pytest reported 1,279 passed and one skipped,
+  ShellCheck passed and both embedded Python payloads compiled. All eight
+  `pre-commit run --all-files` ratchets also passed. These are local source/test
+  results; the remote M2.2 verdict does not exist until an explicitly authorized push.

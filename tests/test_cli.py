@@ -7,6 +7,26 @@ import pytest
 from distroforge.cli import main
 from distroforge.core.project import Project
 
+_ISO_PLAN_TOOLCHAIN = frozenset(
+    {
+        "apt-get",
+        "chroot",
+        "mformat",
+        "mksquashfs",
+        "mmdebstrap",
+        "xorriso",
+    }
+)
+
+
+def _pin_iso_plan_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep CLI planning tests about their subject, not the host PATH."""
+
+    monkeypatch.setattr(
+        "distroforge.core.iso_doctor.CommandRunner.has_binary",
+        staticmethod(lambda name: name in _ISO_PLAN_TOOLCHAIN),
+    )
+
 
 def test_cli_doctor_python(capsys) -> None:
     main(["doctor", "--python"])
@@ -131,7 +151,14 @@ def test_cli_plan_reports_sanitized_legacy_desktop_packages(capsys, tmp_path) ->
         ("xubuntu", "xubuntu-desktop"),
     ],
 )
-def test_cli_build_dry_run_respects_selected_desktop_package(capsys, tmp_path, desktop, expected) -> None:
+def test_cli_build_dry_run_respects_selected_desktop_package(
+    capsys,
+    tmp_path,
+    monkeypatch,
+    desktop,
+    expected,
+) -> None:
+    _pin_iso_plan_toolchain(monkeypatch)
     project = Project.create(f"DesktopPlan-{desktop}", tmp_path / f"desktop-plan-{desktop}", "26.04")
     project.source_mode = "bootstrap"
     project.save()
@@ -146,6 +173,8 @@ def test_cli_build_dry_run_respects_selected_desktop_package(capsys, tmp_path, d
     ])
 
     out = capsys.readouterr().out
+    assert "build blocked" not in out.lower()
+    assert "blocked before command planning" not in out.lower()
     install_lines = [line for line in out.splitlines() if "apt-get -y install" in line]
     assert install_lines
     desktop_line = next(line for line in install_lines if expected in line)
@@ -177,6 +206,33 @@ def test_cli_build_dry_run_respects_selected_desktop_package(capsys, tmp_path, d
     assert desktop_tokens == {expected}
 
 
+def test_cli_build_dry_run_stops_before_planning_without_iso_toolchain(
+    capsys,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "distroforge.core.iso_doctor.CommandRunner.has_binary",
+        staticmethod(lambda _name: False),
+    )
+    project = Project.create("NoIsoTools", tmp_path / "no-iso-tools", "26.04")
+    project.source_mode = "bootstrap"
+    project.save()
+
+    main(["build", str(project.root), "--desktop", "ubuntu"])
+
+    out = capsys.readouterr().out
+    assert "build blocked" in out.lower()
+    assert "blocked before command planning" in out.lower()
+    assert "apt-get -y install" not in out
+    reports = list((project.output_dir / "evidence" / "plans").glob("*/ISO-BUILD.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    finding_codes = {finding["code"] for finding in report["doctor"]["findings"]}
+    assert {"host-bootstrap-tool", "host-tools-missing"} <= finding_codes
+    assert report["command_log"] is None
+
+
 def test_cli_dry_run_report_reports_sanitized_legacy_desktop_packages(capsys, tmp_path) -> None:
     project = Project.create("DryRunSanitize", tmp_path / "dryrun-sanitize", "26.04")
     project.source_mode = "bootstrap"
@@ -198,6 +254,7 @@ def test_cli_dry_run_report_reports_sanitized_legacy_desktop_packages(capsys, tm
 def test_cli_build_blocks_on_cve_policy(capsys, tmp_path, monkeypatch) -> None:
     # main() persists --no-sudo as os.environ["DISTROFORGE_PRIVILEGE"]; let monkeypatch
     # restore it on teardown so the privilege backend does not leak into later tests.
+    _pin_iso_plan_toolchain(monkeypatch)
     monkeypatch.setenv("DISTROFORGE_PRIVILEGE", "none")
     project = Project.create("CveCli", tmp_path / "cve-cli", "26.04")
     project.source_mode = "bootstrap"
@@ -220,9 +277,13 @@ def test_cli_build_blocks_on_cve_policy(capsys, tmp_path, monkeypatch) -> None:
         )
 
     assert exc.value.code == 2
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
+    err = captured.err
     assert "distroforge: error:" in err
     assert "CVE policy" in err
+    assert "CVE-2023-38545" in err
+    assert "iso-toolchain --install" not in err
+    assert "blocked before command planning" not in captured.out.lower()
     assert "Traceback" not in err
 
 

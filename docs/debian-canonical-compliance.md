@@ -116,13 +116,15 @@ the gap is part of the rule, not an exception to it:
   `debian/tests/*` is linted by `shellcheck`, and the `python3` payloads embedded in those
   scripts are handed to `compile()`, which nothing else checks: dpkg runs the script, the
   interpreter dies, and the surrounding `2>/dev/null` plus `|| true` swallow the traceback.
-- The test suite never executes an external build tool, and that boundary is deliberate
-  and permanent: it keeps the suite offline, rootless and sub-second, and it is what lets
-  the same suite run under buildd and autopkgtest. An executing verification harness now
-  lives outside the suite, in `.github/workflows/golden-path.yml`, on a weekly schedule.
-  It has not yet established a successful source-to-UEFI/login chain; the current runtime
-  milestones are recorded in `docs/iso-build-proof-ledger.md`. The hermetic build path
-  remains the maintainer's own route for a publication build.
+- The test suite never executes a product package or ISO build. A bounded fixture subset
+  does execute `gpg`, `xorriso`, `mksquashfs`, `unsquashfs` and `tar --zstd` offline and
+  rootless against synthetic or repository-pinned inputs; those test dependencies are
+  declared explicitly. It never drives `debootstrap`, QEMU, APT or sbuild. The executing
+  verification harness lives outside the suite, in `.github/workflows/golden-path.yml`,
+  on a weekly schedule. It has not yet established a successful source-to-UEFI/login
+  chain; the current runtime milestones are recorded in
+  `docs/iso-build-proof-ledger.md`. The hermetic build path remains the maintainer's own
+  route for a publication build.
 
 ## GUI Theming Dependencies
 
