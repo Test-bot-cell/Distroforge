@@ -137,10 +137,18 @@ a wall-clock one: timing assertions are flaky across hardware and prove less.
 ## Commit subjects, and the changelog entry that goes with them
 
 A subject starts with a Conventional Commits type and a colon: `fix:`, `feat:`, `docs:`,
-`ci:`, `test:`, `refactor:`, `perf:`, `chore:`, `build:`, `style:`, `revert:`. All 58
-commits in this repository's history already did this before anything checked it;
-`test_every_commit_subject_carries_a_type_the_log_can_be_filtered_by` is what makes it
-survive.
+`ci:`, `test:`, `refactor:`, `perf:`, `chore:`, `build:`, `style:`, `revert:`. At the
+2026-07-27 measurement that introduced the gate, all 58 reachable commits conformed. One
+later signed staging commit, `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`, had already
+been pushed to `develop` with the exact subject
+`audit: harden ISO build evidence chain` when CI exposed the mistake. Protected history is
+preserved rather than rewritten: the history test grandfathers that exact hash-and-subject
+pair only. `audit:` is not an admitted type and every other occurrence remains rejected.
+
+`pre-commit install` installs both the normal file hooks and the `commit-msg` hook declared
+by this repository. Existing clones must run it again after receiving the hook. The latter
+reads the proposed subject before Git creates or signs the commit, while the full-history CI
+test remains the independent backstop.
 
 The scope field — `fix(ci):` — is optional and unused, on purpose. The case for it is that
 `git log --oneline | grep <zone>` should find a zone's commits, and measurement does not

@@ -7,9 +7,21 @@
 #
 # The pygrep hooks are ratchets against defects this tree actually shipped. Each
 # expression was checked to match the code before its fix and nothing after it.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   - repo: local
     hooks:
+      # The history test runs before git creates a commit, so it cannot inspect the
+      # candidate subject.  Check the message itself before signing; the full-history
+      # CI ratchet remains the independent backstop.
+      - id: commit-subject
+        name: "the commit subject carries an admitted Conventional Commits type"
+        entry: python3 -m distroforge.core.commit_subject
+        language: system
+        stages: [commit-msg]
+        always_run: true
+
       - id: ruff
         name: ruff
         entry: ruff check --force-exclude

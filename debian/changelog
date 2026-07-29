@@ -1,5 +1,13 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Preserved the signed staging receipt while restoring the commit-subject
+    ratchet. Commit 33ddb64c4205428e4208d2ce01a37f6cefb32d8e had already
+    been pushed to develop when all ten jobs in GitHub Actions run 30482945660
+    rejected its unsupported audit: subject. The policy exception is bound to
+    that exact commit SHA and exact subject; audit: remains rejected everywhere
+    else, and a new commit-msg hook checks the candidate before Git creates or
+    signs it. No commit was rewritten or force-pushed, and no ISO build, release
+    tag, main fast-forward or publication occurred.
   * Closed the executing source-ISO boundary without calling it a release
     proof. An ISO remaster now requires stable regular source and detached
     signature files, an externally supplied full SHA256 and one exclusive full
@@ -616,7 +624,7 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     label must be the release debian/changelog targets -- and both fail if a
     single job is set back to ubuntu-latest.
 
- -- DistroForge maintainers <github@distroforge.anonaddy.com>  Wed, 29 Jul 2026 20:58:17 +0200
+ -- DistroForge maintainers <github@distroforge.anonaddy.com>  Wed, 29 Jul 2026 21:23:20 +0200
 
 distroforge (0.3.5-16) resolute; urgency=medium
 

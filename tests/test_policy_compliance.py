@@ -14,8 +14,14 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from distroforge.cli import build_parser
+from distroforge.core.commit_subject import (
+    COMMIT_TYPES,
+    SUBJECT_PATTERN,
+    subject_is_conforming,
+)
 from distroforge.core.definition import load_definition
 from distroforge.core.packaging import REQUIRED_AUTOPKGTEST_SMOKE_CHECKS
 from distroforge.core.schema import validate_definition_data
@@ -1021,30 +1027,86 @@ def test_no_finalized_changelog_revision_is_left_without_a_release_tag() -> None
 
 
 
-_COMMIT_TYPES = (
-    "build",
-    "chore",
-    "ci",
-    "docs",
-    "feat",
-    "fix",
-    "perf",
-    "refactor",
-    "revert",
-    "style",
-    "test",
+_GRANDFATHERED_NONCONFORMING_COMMIT = (
+    "33ddb64c4205428e4208d2ce01a37f6cefb32d8e",
+    "audit: harden ISO build evidence chain",
 )
-_SUBJECT = re.compile(rf"^({'|'.join(_COMMIT_TYPES)})(\([a-z0-9][a-z0-9./_-]*\))?!?: \S")
+
+
+def _commit_subject_is_allowed(commit_sha: str, subject: str) -> bool:
+    return subject_is_conforming(subject) or (
+        commit_sha,
+        subject,
+    ) == _GRANDFATHERED_NONCONFORMING_COMMIT
+
+
+def test_commit_message_hook_rejects_an_invalid_subject_before_commit(
+    tmp_path: Path,
+) -> None:
+    config = yaml.safe_load(
+        (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
+    assert config["default_install_hook_types"] == ["pre-commit", "commit-msg"]
+    local = next(repo for repo in config["repos"] if repo["repo"] == "local")
+    hook = next(item for item in local["hooks"] if item["id"] == "commit-subject")
+    assert hook == {
+        "id": "commit-subject",
+        "name": "the commit subject carries an admitted Conventional Commits type",
+        "entry": "python3 -m distroforge.core.commit_subject",
+        "language": "system",
+        "stages": ["commit-msg"],
+        "always_run": True,
+    }
+
+    message = tmp_path / "COMMIT_EDITMSG"
+    cases = (
+        ("fix: restore the subject ratchet\n\nDetailed reason.\n", 0),
+        ("fix(policy)!: preserve the ratchet\n", 0),
+        ("audit: harden ISO build evidence chain\n", 1),
+        ("Fix the vendor lookup\n", 1),
+        ("fix:no space\n", 1),
+        ("", 1),
+    )
+    for content, expected in cases:
+        message.write_text(content, encoding="utf-8")
+        completed = subprocess.run(
+            (
+                sys.executable,
+                "-m",
+                "distroforge.core.commit_subject",
+                str(message),
+            ),
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == expected, completed.stderr
+
+    missing = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "distroforge.core.commit_subject",
+            str(tmp_path / "missing"),
+        ),
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode == 2
+    assert "cannot read commit message" in missing.stderr
 
 
 def test_every_commit_subject_carries_a_type_the_log_can_be_filtered_by() -> None:
-    """A convention followed by 58 commits out of 58 and written down nowhere.
+    """Keep one immutable incident narrow without admitting its ``audit:`` type.
 
-    Measured 2026-07-27: every subject in this repository's history carries a Conventional
-    Commits type prefix -- 38 `fix:`, 6 `docs:`, 5 `feat:`, 3 `ci:`, 2 `test:`, and one
-    each of refactor, perf, chore and build -- and no file in the tree documented it, no
-    hook checked it and no test asserted it. That is the shape of thing this project
-    treats as a defect on its own: a rule everyone follows and nothing protects.
+    At the 2026-07-27 measurement, all 58 reachable subjects carried a
+    Conventional Commits type.  Signed staging commit 33ddb64 was later pushed
+    with an unsupported ``audit:`` subject before CI exposed it.  Protected
+    ``develop`` is not rewritten: that one exact hash-and-subject pair is the
+    historical receipt, while every other use of ``audit:`` remains invalid.
 
     The optional scope field is deliberately not required. Requiring it would split the
     history into two regimes, because the 58 existing commits are signed and cannot be
@@ -1060,18 +1122,59 @@ def test_every_commit_subject_carries_a_type_the_log_can_be_filtered_by() -> Non
     forever; these four shapes are the ones a `grep`-flavoured rewrite would start letting
     through.
     """
-    for rejected in ("Fix the vendor lookup", "wip", "fix the vendor lookup", "fix:no space"):
-        assert not _SUBJECT.match(rejected), f"the subject gate accepts {rejected!r}"
+    grandfathered_sha, grandfathered_subject = _GRANDFATHERED_NONCONFORMING_COMMIT
+    for rejected in (
+        "Fix the vendor lookup",
+        "wip",
+        "fix the vendor lookup",
+        "fix:no space",
+        grandfathered_subject,
+    ):
+        assert not SUBJECT_PATTERN.match(rejected), (
+            f"the general subject gate accepts {rejected!r}"
+        )
+    assert _commit_subject_is_allowed(grandfathered_sha, grandfathered_subject)
+    assert not _commit_subject_is_allowed("0" * 40, grandfathered_subject)
+    assert not _commit_subject_is_allowed(
+        grandfathered_sha,
+        "audit: another unsupported subject",
+    )
+    assert _commit_subject_is_allowed("0" * 40, "fix: a normal conforming subject")
+    assert COMMIT_TYPES == (
+        "build",
+        "chore",
+        "ci",
+        "docs",
+        "feat",
+        "fix",
+        "perf",
+        "refactor",
+        "revert",
+        "style",
+        "test",
+    )
 
     if not _git_history_available():
         pytest.skip("no git binary or no .git here, so there is no history to check")
-    log = _git("log", "--format=%s")
+    log = _git("log", "--format=%H%x00%s")
     assert log.returncode == 0, log.stderr
-    subjects = [line for line in log.stdout.splitlines() if line.strip()]
-    if not subjects:
+    commits: list[tuple[str, str]] = []
+    for line in log.stdout.splitlines():
+        if not line.strip():
+            continue
+        commit_sha, separator, subject = line.partition("\0")
+        assert separator and re.fullmatch(r"[0-9a-f]{40}", commit_sha), (
+            f"git log returned a malformed commit-subject record: {line!r}"
+        )
+        commits.append((commit_sha, subject))
+    if not commits:
         pytest.skip("no commits reachable from here")
 
-    offenders = [subject for subject in subjects if not _SUBJECT.match(subject)]
+    offenders = [
+        (commit_sha, subject)
+        for commit_sha, subject in commits
+        if not _commit_subject_is_allowed(commit_sha, subject)
+    ]
     assert offenders == [], (
         "these subjects carry no Conventional Commits type, so `git log` cannot be "
         f"filtered by kind of change: {offenders}"

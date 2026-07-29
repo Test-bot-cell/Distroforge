@@ -24,8 +24,8 @@ bootloader, a kernel or a desktop session ran.
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
-| source checkout | observed | the local `develop` worktree contains the open `0.3.5-17` audit; its closing signed commit and remote identity must be recorded only after the current changes and tests are complete |
-| CI action inputs | planned | every third-party action reference currently present in `ci.yml` and `golden-path.yml` is pinned to a full 40-hex commit SHA; no post-change Actions run has yet bound those workflow bytes to an executed build |
+| source checkout | observed | signed commit `33ddb64c4205428e4208d2ce01a37f6cefb32d8e` is both the local `develop` and `origin/develop`; its signature verifies under primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized staging push advanced only `develop` from `66046b75b86f3c0b59303b927b15ce1d6486407b`; `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
+| CI action inputs | blocked | GitHub Actions run `30482945660` executed per-push CI for exact commit `33ddb64c…`; all ten jobs reached the same history-wide policy refusal because subject `audit: harden ISO build evidence chain` is not an admitted type. The run proves the refusal occurred, not that the source or build passed; the Golden workflow did not run. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -266,29 +266,51 @@ merely copied.
 
 No existing artifact can be retrofitted into v2 proof. The next acceptable journey is:
 
-1. run the complete static/unit gate on the open source tree;
-2. close the signed source commit and record its exact local/remote identity without
-   creating a release tag or advancing `main`;
-3. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
+1. repair the per-push CI ratchet without rewriting the signed staging commit: grandfather
+   only the exact `(33ddb64c4205428e4208d2ce01a37f6cefb32d8e, audit: harden ISO build
+   evidence chain)` pair, keep every other `audit:` subject rejected, run the complete
+   local gate and record the next remote CI verdict;
+2. implement and test the missing `.deb` payload-to-final-rootfs causal ledger, so the
    package item can become publication-ready for evidence rather than by assertion;
-4. seal the source-ISO detached signature, verification status and exact keyring for
+3. seal the source-ISO detached signature, verification status and exact keyring for
    offline release-gate replay, or keep ISO-remaster publication explicitly at `review`;
-5. execute a fresh minimal build with the externally pinned archive trust policy, package
+4. execute a fresh minimal build with the externally pinned archive trust policy, package
    transaction closure, corrected GRUB MBR and appended GPT ESP;
-6. replay the semantic rootfs manifest from that exact final ISO and verify every
+5. replay the semantic rootfs manifest from that exact final ISO and verify every
    append-only run file and intermediate identity;
-7. review the executed command identities and explicitly account for the still-open
+6. review the executed command identities and explicitly account for the still-open
    transitive ELF loader/library boundary;
-8. execute BIOS and UEFI proofs against that exact ISO through `login_prompt`;
-9. execute UEFI Secure Boot and prove shim, signed GRUB, kernel and casper milestones;
-10. repeat with the selected desktop and require display-manager and graphical-session
+7. execute BIOS and UEFI proofs against that exact ISO through `login_prompt`;
+8. execute UEFI Secure Boot and prove shim, signed GRUB, kernel and casper milestones;
+9. repeat with the selected desktop and require display-manager and graphical-session
    milestones;
-11. build independently a second time from pinned inputs and compare the complete
+10. build independently a second time from pinned inputs and compare the complete
    artifact manifests;
-12. sign and verify the closing manifests, or commit them and the corresponding artifacts
+11. sign and verify the closing manifests, or commit them and the corresponding artifacts
    to trusted WORM/content-addressed storage.
 
 Until those rows are proved, `0.3.5-17` stays `UNRELEASED`; no release tag or `main`
 fast-forward is justified by this ledger. An explicitly authorized push of the audit code
 to `develop` is staging, not publication proof, and must not be reported as a successful
 ISO build.
+
+## Staging and CI receipts
+
+### 2026-07-29 — develop audit handoff
+
+- The authorized staging push advanced only `origin/develop`, from
+  `66046b75b86f3c0b59303b927b15ce1d6486407b` to signed commit
+  `33ddb64c4205428e4208d2ce01a37f6cefb32d8e`. Its signature verifies under primary
+  fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`.
+- `origin/main` remained `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`. Annotated tag
+  `debian/0.3.5-16` remained object `b7e5f3b3504a793a457954f12301c37ab1b17e92`,
+  peeled to commit `38217da4ecbd1076514c9c4e949100a18272ee8a`. No tag, pull request
+  or `main` fast-forward was created.
+- Per-push [CI run 30482945660](https://github.com/Test-bot-cell/Distroforge/actions/runs/30482945660)
+  completed with ten failed jobs. Installation, lint and type checks reached success; the
+  test and packaging-policy steps all encountered the history-wide subject ratchet because
+  `audit:` is not admitted. This is a captured refusal, not a successful CI receipt.
+- M2.1 preserves the immutable signed commit and narrows the exception to its exact SHA and
+  exact subject. It does not admit `audit:` globally and does not rewrite or force-push
+  protected history. No ISO, package, Golden-path build, release tag or publication was
+  produced by this handoff.
