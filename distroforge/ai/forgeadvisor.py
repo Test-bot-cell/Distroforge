@@ -14,6 +14,7 @@ from distroforge.ai.backend import (
 )
 from distroforge.ai.proposals import ProposalReport, build_proposal
 from distroforge.ai.registers import AdvisorRegister, select_register
+from distroforge.ai.verdict import verdict_for_findings
 from distroforge.core.build import BuildOptions
 from distroforge.core.build_diagnosis import iter_log_matches
 from distroforge.core.definition import load_definition
@@ -73,11 +74,7 @@ class AdvisorReport:
 
     @property
     def verdict(self) -> str:
-        if any(finding.level == "error" for finding in self.findings):
-            return "blocked"
-        if any(finding.level == "warning" for finding in self.findings):
-            return "review"
-        return "informational"
+        return verdict_for_findings(self.findings)
 
     def to_dict(self) -> dict[str, object]:
         return {

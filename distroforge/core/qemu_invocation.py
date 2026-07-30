@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .command import CommandRunner, CommandSpec
 
 QEMU_SYSTEM = "qemu-system-x86_64"
 
@@ -116,6 +119,34 @@ def is_secure_boot_firmware(code: str, vars_: str) -> bool:
     filenames do not.
     """
     return ".secboot." in Path(code).name and ".ms." in Path(vars_).name
+
+
+def prepare_ovmf_vars_store(
+    runner: CommandRunner,
+    *,
+    firmware: str,
+    ovmf_vars_override: str,
+    secure_boot: bool,
+    dest: Path,
+) -> None:
+    """Copy the OVMF variable-store template into a writable per-run copy.
+
+    A no-op for non-UEFI firmware. Every QEMU service that boots UEFI needs its
+    own writable variable store (QEMU refuses to flash the read-only template),
+    so the copy-file audit command plus the real ``shutil.copy2`` live here once
+    instead of once per service.
+    """
+    if firmware != "uefi":
+        return
+    template = default_ovmf_vars(ovmf_vars_override, secure_boot=secure_boot)
+    runner.run(
+        CommandSpec(
+            argv=("copy-file", template, str(dest)),
+            description="Prepare writable OVMF variables store",
+        )
+    )
+    if not runner.dry_run:
+        shutil.copy2(template, dest)
 
 
 def _first_installed(override: str, candidates: tuple[str, ...]) -> str:

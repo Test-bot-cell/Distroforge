@@ -1280,17 +1280,3 @@ def _set_editable_combo_value(combo: QComboBox, value: str) -> None:
         combo.setCurrentIndex(index)
         return
     combo.setCurrentText(value)
-
-
-def _int_or_default(value: str, default: int) -> int:
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _optional_int(value: str) -> int | None:
-    text = value.strip()
-    if not text:
-        return None
-    return _int_or_default(text, 0)

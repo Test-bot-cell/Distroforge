@@ -7,6 +7,7 @@ from pathlib import Path
 from .artifact_paths import default_output_iso
 from .build import BuildOptions
 from .hashing import sha256_file
+from .jsonio import read_json_object
 from .project import Project
 from .release_gate import ReleaseGateService
 
@@ -96,7 +97,7 @@ def _check_iso_contract(items: list[IsoAcceptanceItem], project: Project, iso: P
         return
     digest = sha256_file(iso)
     items.append(IsoAcceptanceItem("iso", "ready", f"{size} bytes, SHA256 {digest}."))
-    data = _read_report(report_path)
+    data = read_json_object(report_path)
     if not data:
         items.append(IsoAcceptanceItem("iso-build-report", "blocked", "ISO-BUILD.json is missing or invalid."))
         return
@@ -111,16 +112,6 @@ def _check_iso_contract(items: list[IsoAcceptanceItem], project: Project, iso: P
         items.append(IsoAcceptanceItem("iso-build-report", "blocked", "ISO-BUILD.json belongs to a different project."))
     else:
         items.append(IsoAcceptanceItem("iso-build-report", "ready", str(report_path)))
-
-
-def _read_report(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _next_command(project: Project, iso: Path, items: list[IsoAcceptanceItem]) -> str:

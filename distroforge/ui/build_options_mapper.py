@@ -43,6 +43,7 @@ from distroforge.core.systemd import SystemdOptions
 from distroforge.core.trust import TrustOptions
 from distroforge.core.users import UserOptions, UserSpec
 from distroforge.core.vulnscan import VulnScanOptions
+from distroforge.ui.field_parsing import int_or_default, optional_int
 from distroforge.ui.widgets import set_combo_data
 
 
@@ -102,7 +103,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             devel_suite=window.devel_suite_edit.text().strip() or "devel",
             enable_backports=window.backports_check.isChecked(),
             enable_proposed=window.proposed_check.isChecked(),
-            proposed_pin=_int_or_default(window.proposed_pin_edit.text(), 100),
+            proposed_pin=int_or_default(window.proposed_pin_edit.text(), 100),
             enable_unattended_upgrades=window.rolling_upgrades_check.isChecked(),
             full_upgrade=window.rolling_full_upgrade_check.isChecked(),
         ),
@@ -207,11 +208,11 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             firmware=window.prebuild_vm_firmware_combo.currentData(),
             secure_boot=window.prebuild_vm_secure_boot_check.isChecked(),
             tpm=window.prebuild_vm_tpm_check.isChecked(),
-            memory_mb=_int_or_default(window.prebuild_vm_memory_edit.text(), 4096),
-            cpus=_int_or_default(window.prebuild_vm_cpus_edit.text(), 2),
+            memory_mb=int_or_default(window.prebuild_vm_memory_edit.text(), 4096),
+            cpus=int_or_default(window.prebuild_vm_cpus_edit.text(), 2),
             disk_size=window.prebuild_vm_disk_size_edit.text().strip() or "24G",
             network=window.prebuild_vm_network_check.isChecked(),
-            timeout_seconds=_int_or_default(window.prebuild_vm_timeout_edit.text(), 300),
+            timeout_seconds=int_or_default(window.prebuild_vm_timeout_edit.text(), 300),
             serial_log=window.prebuild_vm_serial_log_edit.text().strip() or "prebuild-vm-serial.log",
             screenshot=window.prebuild_vm_screenshot_check.isChecked(),
             screenshot_name=window.prebuild_vm_screenshot_name_edit.text().strip() or "prebuild-vm.ppm",
@@ -233,7 +234,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
         ),
         size_analysis=SizeAnalysisOptions(
             enabled=window.size_report_check.isChecked(),
-            top=_int_or_default(window.size_top_edit.text(), 50),
+            top=int_or_default(window.size_top_edit.text(), 50),
         ),
         vuln_scan=VulnScanOptions(
             enabled=window.vuln_scan_check.isChecked(),
@@ -245,7 +246,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
         provenance=ProvenanceOptions(sbom_format=window.sbom_format_combo.currentData()),
         reproducible=ReproducibleOptions(
             enabled=window.reproducible_check.isChecked(),
-            source_date_epoch=_optional_int(window.source_date_epoch_edit.text()),
+            source_date_epoch=optional_int(window.source_date_epoch_edit.text()),
             apt_snapshot=window.apt_snapshot_edit.text().strip() or None,
         ),
         plugins=PluginOptions(
@@ -316,7 +317,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
             verify_pgp=window.kernel_verify_pgp_check.isChecked(),
             prune_obsolete_kernels=window.prune_obsolete_kernels_check.isChecked(),
             localversion=window.kernel_localversion_edit.text().strip() or "-dforge",
-            jobs=_int_or_default(window.kernel_jobs_edit.text(), 0),
+            jobs=int_or_default(window.kernel_jobs_edit.text(), 0),
             config_strategy=window.kernel_config_strategy_combo.currentData(),
             install_debs=window.kernel_install_debs_check.isChecked(),
             gpg_keyring=window.kernel_gpg_keyring_edit.text().strip() or None,
@@ -333,7 +334,7 @@ def build_options_from_window(window: BuildOptionsWindow) -> BuildOptions:
                 for value in _split_lines(window.desktop_source_components_edit.toPlainText())
             ],
             install_debs=window.desktop_source_install_debs_check.isChecked(),
-            jobs=_int_or_default(window.desktop_source_jobs_edit.text(), 0),
+            jobs=int_or_default(window.desktop_source_jobs_edit.text(), 0),
             local_suffix=window.desktop_source_local_suffix_edit.text().strip() or "dforge",
             build_dependencies=_split_values(window.desktop_source_build_deps_edit.text()),
             require_sha256=window.desktop_source_require_sha256_check.isChecked(),
@@ -682,20 +683,6 @@ def _combo_value(combo) -> str:
         data = combo.itemData(index)
         return str(data or "").strip()
     return text
-
-
-def _int_or_default(value: str, default: int) -> int:
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _optional_int(value: str) -> int | None:
-    text = value.strip()
-    if not text:
-        return None
-    return _int_or_default(text, 0)
 
 
 def _safe_parse_palette_colors(text: str) -> tuple[str, ...]:

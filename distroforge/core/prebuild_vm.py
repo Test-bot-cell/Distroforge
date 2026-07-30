@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -12,8 +11,8 @@ from .integrity import IntegrityService
 from .qemu_invocation import (
     QemuInvocation,
     default_ovmf_code,
-    default_ovmf_vars,
     kvm_is_usable,
+    prepare_ovmf_vars_store,
 )
 from .qmp import QmpControl, stop_by_pidfile
 
@@ -182,17 +181,13 @@ class QemuLabService:
         )
 
     def _prepare_firmware(self, artifacts: QemuLabArtifacts) -> None:
-        if self.options.firmware != "uefi":
-            return
-        template = default_ovmf_vars(self.options.ovmf_vars, secure_boot=self.options.secure_boot)
-        self.runner.run(
-            CommandSpec(
-                argv=("copy-file", template, str(artifacts.ovmf_vars)),
-                description="Prepare writable OVMF variables store",
-            )
+        prepare_ovmf_vars_store(
+            self.runner,
+            firmware=self.options.firmware,
+            ovmf_vars_override=self.options.ovmf_vars,
+            secure_boot=self.options.secure_boot,
+            dest=artifacts.ovmf_vars,
         )
-        if not self.runner.dry_run:
-            shutil.copy2(template, artifacts.ovmf_vars)
 
     def _prepare_tpm(self, artifacts: QemuLabArtifacts) -> None:
         if not self.options.tpm:

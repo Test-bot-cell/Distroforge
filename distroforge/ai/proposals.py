@@ -22,6 +22,8 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from distroforge.ai.verdict import verdict_for_findings
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -78,11 +80,7 @@ class ProposalReport:
 
     @property
     def verdict(self) -> str:
-        if any(finding.level == "error" for finding in self.findings):
-            return "blocked"
-        if any(finding.level == "warning" for finding in self.findings):
-            return "review"
-        return "informational"
+        return verdict_for_findings(self.findings)
 
     def to_dict(self) -> dict[str, object]:
         return {

@@ -13,8 +13,8 @@ from distroforge.ui.command_center_page import (
     repair_beginner_release_artifacts_from_start,
     run_beginner_boot_proof_from_start,
 )
-from distroforge.ui.qt import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
-from distroforge.ui.widgets import button, button_group, responsive_row
+from distroforge.ui.qt import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from distroforge.ui.widgets import ReflowingCardGrid, button, button_group, responsive_row
 
 
 def build_start_journey_panel(window) -> QWidget:
@@ -70,41 +70,15 @@ def refresh_start_journey_cards(window, report=None) -> None:
     window.start_journey_cards.set_items(report.items)
 
 
-class JourneyCardsGrid(QWidget):
+class JourneyCardsGrid(ReflowingCardGrid):
     def __init__(self, window, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(980, parent)
         self._window = window
         self._items: tuple[BuildJourneyItem, ...] = ()
-        self._cards: list[QWidget] = []
-        self._compact: bool | None = None
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(10)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     def set_items(self, items: tuple[BuildJourneyItem, ...]) -> None:
         self._items = items
-        self._cards = [_journey_card(self._window, item) for item in items]
-        self._reflow(force=True)
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._reflow()
-
-    def _reflow(self, force: bool = False) -> None:
-        compact = self.width() < 980
-        if not force and compact == self._compact:
-            return
-        self._compact = compact
-        while (item := self._grid.takeAt(0)) is not None:
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-        columns = 1 if compact else 2
-        for index, card in enumerate(self._cards):
-            self._grid.addWidget(card, index // columns, index % columns)
-        for column in range(2):
-            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+        self.set_cards([_journey_card(self._window, item) for item in items])
 
 
 def _journey_card(window, item: BuildJourneyItem) -> QFrame:

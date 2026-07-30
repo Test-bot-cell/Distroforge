@@ -167,6 +167,50 @@ def responsive_row(*widgets: QWidget, breakpoint: int = 960) -> ResponsiveRow:
     return ResponsiveRow(*widgets, breakpoint=breakpoint)
 
 
+class ReflowingCardGrid(QWidget):
+    """A 1/2-column card grid that collapses to one column below a breakpoint.
+
+    The goal hub and the journey spine each own a grid of equal cards that flows
+    onto two columns when wide and one when narrow; only the breakpoint and how
+    the cards are produced differ. Subclasses call :meth:`set_cards` with the
+    cards they built; the grid arithmetic -- two stretched columns above the
+    breakpoint, one below -- lives here once so the two surfaces cannot drift.
+    """
+
+    def __init__(self, compact_width: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._compact_width = compact_width
+        self._cards: list[QWidget] = []
+        self._compact: bool | None = None
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(10)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def set_cards(self, cards: list[QWidget]) -> None:
+        self._cards = cards
+        self._reflow(force=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reflow()
+
+    def _reflow(self, force: bool = False) -> None:
+        compact = self.width() < self._compact_width
+        if not force and compact == self._compact:
+            return
+        self._compact = compact
+        while (item := self._grid.takeAt(0)) is not None:
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+        columns = 1 if compact else 2
+        for index, card in enumerate(self._cards):
+            self._grid.addWidget(card, index // columns, index % columns)
+        for column in range(2):
+            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+
+
 def button_group(title: str, *items: QWidget, breakpoint: int = 720) -> QWidget:
     """A captioned cluster of related actions for use inside a section.
 

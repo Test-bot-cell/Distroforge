@@ -11,44 +11,19 @@ selected level, matching the level-independent escape hatch.
 from __future__ import annotations
 
 from distroforge.core.workflows import PRODUCT_CAPABILITIES, WORKFLOW_LEVELS, ProductCapability
-from distroforge.ui.qt import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
-from distroforge.ui.widgets import ElidingLabel, button
+from distroforge.ui.qt import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from distroforge.ui.widgets import ElidingLabel, ReflowingCardGrid, button
 
 _LEVEL_LABEL = {level.key: level.label for level in WORKFLOW_LEVELS}
 
 
-class GoalHubGrid(QWidget):
+class GoalHubGrid(ReflowingCardGrid):
     """A reflowing 1/2-column grid of static product-capability goal cards."""
 
     def __init__(self, window, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(760, parent)
         self._window = window
-        self._cards = [_goal_card(window, capability) for capability in PRODUCT_CAPABILITIES]
-        self._compact: bool | None = None
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(10)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._reflow(force=True)
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._reflow()
-
-    def _reflow(self, force: bool = False) -> None:
-        compact = self.width() < 760
-        if not force and compact == self._compact:
-            return
-        self._compact = compact
-        while (item := self._grid.takeAt(0)) is not None:
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-        columns = 1 if compact else 2
-        for index, card in enumerate(self._cards):
-            self._grid.addWidget(card, index // columns, index % columns)
-        for column in range(2):
-            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+        self.set_cards([_goal_card(window, capability) for capability in PRODUCT_CAPABILITIES])
 
 
 def _goal_card(window, capability: ProductCapability) -> QFrame:
