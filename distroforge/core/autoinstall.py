@@ -51,15 +51,15 @@ class AutoinstallService:
             "#cloud-config",
             "autoinstall:",
             "  version: 1",
-            f"  locale: {locale}",
+            f"  locale: {_scalar(locale)}",
             "  keyboard:",
-            f"    layout: {keyboard}",
-            f"  timezone: {timezone}",
+            f"    layout: {_scalar(keyboard)}",
+            f"  timezone: {_scalar(timezone)}",
             "  identity:",
-            f"    hostname: {hostname}",
-            f"    username: {self.options.username}",
-            f"    realname: {self.options.realname}",
-            f"    password: '{self.options.password_hash}'",
+            f"    hostname: {_scalar(hostname)}",
+            f"    username: {_scalar(self.options.username)}",
+            f"    realname: {_scalar(self.options.realname)}",
+            f"    password: {_scalar(self.options.password_hash)}",
             "  storage:",
             "    layout:",
             "      name: direct",
@@ -73,3 +73,13 @@ class AutoinstallService:
             lines.append("  late-commands:")
             lines.extend(f"    - {command}" for command in self.options.late_commands)
         return "\n".join(lines) + "\n"
+
+
+def _scalar(value: str) -> str:
+    """``value`` as a single-quoted YAML scalar.
+
+    Identity fields are free text -- a realname is whatever the operator typed --
+    and interpolating them raw let a newline or a quote in one of them close the
+    mapping and add keys to the autoinstall the installer then honours.
+    """
+    return "'" + str(value).replace("\n", " ").replace("\r", " ").replace("'", "''") + "'"

@@ -100,10 +100,46 @@ class LiveBuildPlanner:
             content = item.get("content")
             if not path or not isinstance(content, str):
                 continue
-            target = include_dir / path
+            target = _include_target(include_dir, path)
+            if target is None:
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-            mode = item.get("mode")
-            if isinstance(mode, str):
-                target.chmod(int(mode, 8))
+            mode = _permission_bits(item.get("mode"))
+            if mode is not None:
+                target.chmod(mode)
         write_definition(plan.to_dict(), plan.output_dir / "distroforge-live-build-plan.yaml")
+
+
+def _include_target(include_dir: Path, path: str) -> Path | None:
+    """The path under ``include_dir`` a captured config may be written to.
+
+    A profile is a file that travels: it is exported on one machine, reviewed,
+    and planned on another. Its config entries name their own destination, so
+    ``../`` in one of them decides where the planner writes, and returning None
+    for anything that leaves the includes tree keeps that decision here.
+    """
+    candidate = include_dir / path
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    root = include_dir.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        return None
+    return resolved
+
+
+def _permission_bits(mode: object) -> int | None:
+    """Permission bits from a profile-supplied mode, without the setuid family.
+
+    Only the low nine bits are honoured: a captured mode is data from another
+    machine, and setuid, setgid and sticky bits are not something a review of a
+    plan would notice on a file the plan itself created.
+    """
+    if not isinstance(mode, str) or not mode.strip():
+        return None
+    try:
+        return int(mode, 8) & 0o777
+    except ValueError:
+        return None

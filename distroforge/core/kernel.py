@@ -216,21 +216,22 @@ class KernelModuleService:
 
     def _configure_full_kernel(self, source_dir: Path) -> None:
         kernel = self._latest_kernel()
-        target_dir = self._target_path(source_dir)
+        target_dir = shlex.quote(self._target_path(source_dir))
         if self.options.config_strategy == "defconfig":
             command = f"cd {target_dir} && make defconfig"
         else:
+            host_config = shlex.quote(f"/boot/config-{kernel}")
             command = (
                 f"cd {target_dir} && "
-                f"if [ -f /boot/config-{kernel} ]; then "
-                f"cp /boot/config-{kernel} .config; "
+                f"if [ -f {host_config} ]; then "
+                f"cp {host_config} .config; "
                 "else make defconfig; fi && "
                 "make olddefconfig"
             )
         ChrootService(self.runner, self.root, self.use_sudo).run("/bin/bash", "-lc", command)
 
     def _build_kernel_debs(self, source_dir: Path) -> None:
-        target_dir = self._target_path(source_dir)
+        target_dir = shlex.quote(self._target_path(source_dir))
         jobs = self.options.jobs if self.options.jobs > 0 else "$(nproc)"
         localversion = shlex.quote(self.options.localversion)
         command = f"cd {target_dir} && make -j{jobs} bindeb-pkg LOCALVERSION={localversion}"
@@ -245,7 +246,7 @@ class KernelModuleService:
                 )
             )
             return
-        target_dir = self._target_path(packages_dir)
+        target_dir = shlex.quote(self._target_path(packages_dir))
         command = (
             f"set -e; debs=$(find {target_dir} -maxdepth 1 -name '*.deb' -print | sort); "
             'test -n "$debs"; dpkg -i $debs || apt-get -f -y install'

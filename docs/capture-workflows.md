@@ -42,6 +42,10 @@ The output profile is a normal build definition plus a `capture` report section.
 Whitelisted config capture is intentionally narrow: paths must stay inside the target root,
 symlinks are reported but not embedded, files above 64 KiB are skipped, binary files are
 not embedded, and names matching secret/cache patterns are blocked even when a glob matches.
+Content is checked as well as the name: a whitelisted file whose text carries a credential
+key (`password`, `passphrase`, `psk`, `token`, a private-key block) is reported as dangerous
+and left out of the profile, which is what keeps a `--include-config /etc/netplan` capture
+from exporting the build machine's wireless PSK.
 
 `capture-diff` renders the maintainer-facing review summary: captured package count,
 embedded config files, ignored findings, dangerous findings, and not-reproducible findings.

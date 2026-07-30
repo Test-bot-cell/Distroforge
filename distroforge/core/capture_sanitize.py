@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,33 @@ SECRET_PATTERNS = (
     "keyring",
     ".pem",
     ".key",
+)
+
+# Keys and markers whose value is a credential wherever it appears. A path rule cannot
+# see these: /etc/netplan is whitelisted by default and a netplan file for a wireless
+# interface carries the build machine's PSK under `password:`, so a capture that only
+# filtered filenames exported it verbatim into a profile meant to be shared.
+SECRET_CONTENT_KEYS = (
+    "api_key",
+    "apikey",
+    "auth_token",
+    "credential",
+    "passphrase",
+    "password",
+    "presharedkey",
+    "private_key",
+    "privatekey",
+    "psk",
+    "secret",
+    "token",
+)
+
+SECRET_CONTENT_MARKERS = (
+    "-----begin openssh private key-----",
+    "-----begin pgp private key block-----",
+    "-----begin private key-----",
+    "-----begin rsa private key-----",
+    "-----begin ec private key-----",
 )
 
 DEFAULT_CONFIG_WHITELIST = (
@@ -71,8 +99,53 @@ def classify_config_with_policy(path: Path, root: Path, policy: ConfigCapturePol
         return CaptureFinding("config", display, "ignored", f"Config exceeds {policy.max_bytes} byte capture limit")
     for value in policy.whitelist:
         if _matches_rule(display, value):
+            secret_key = secret_material(path)
+            if secret_key:
+                return CaptureFinding(
+                    "config",
+                    display,
+                    "dangerous",
+                    f"Excluded: content carries a credential ({secret_key})",
+                )
             return CaptureFinding("config", display, "captured", "Whitelisted configuration path")
     return CaptureFinding("config", display, "ignored", "Not whitelisted; review before including")
+
+
+def secret_material(path: Path) -> str | None:
+    """The credential-bearing key or marker in ``path``, or None.
+
+    Whitelisting is a statement about a path, not about what the file at that path
+    happens to hold today, so the content is read before it is copied into a
+    profile that leaves the machine.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return secret_material_in_text(text)
+
+
+def secret_material_in_text(text: str) -> str | None:
+    lowered = text.lower()
+    for marker in SECRET_CONTENT_MARKERS:
+        if marker in lowered:
+            return marker.strip("-")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        for separator in (":", "="):
+            if separator not in line:
+                continue
+            key, value = line.split(separator, 1)
+            if not value.strip().strip("\"'"):
+                continue
+            normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+            for secret_key in SECRET_CONTENT_KEYS:
+                if secret_key in normalized:
+                    return secret_key
+            break
+    return None
 
 
 def _display_path(path: Path, root: Path) -> str:

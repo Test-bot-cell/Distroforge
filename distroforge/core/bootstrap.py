@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -494,7 +495,10 @@ class BootstrapService:
             self.runner.run(CommandSpec(argv=("write-file", str(eltorito)), description="Plan GRUB El Torito boot image"))
             return
         self.runner.run(CommandSpec(argv=("grub-mkimage", "-O", "i386-pc", "-o", str(core_img), "-p", "/boot/grub", "biosdisk", "iso9660", "normal", "linux", "configfile", "search"), description="Build GRUB BIOS core image"))
-        self.runner.run(CommandSpec(argv=("sh", "-c", f"cat /usr/lib/grub/i386-pc/cdboot.img '{core_img}' > '{eltorito}'"), description="Assemble GRUB El Torito boot image"))
+        assemble = (
+            f"cat /usr/lib/grub/i386-pc/cdboot.img {shlex.quote(str(core_img))} > {shlex.quote(str(eltorito))}"
+        )
+        self.runner.run(CommandSpec(argv=("sh", "-c", assemble), description="Assemble GRUB El Torito boot image"))
 
     def _efi_payloads(self, layout: _EfiArch) -> list[tuple[Path, str]]:
         """``(source inside the rootfs, leafname on the ESP)`` for this architecture.
