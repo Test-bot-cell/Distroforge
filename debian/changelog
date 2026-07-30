@@ -1,5 +1,20 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Recorded and repaired the M3.1 per-push typecheck falsification without
+    rewriting published history. The authorized develop-only fast-forward
+    published signed commit 6017476ee081532507e6029be47ab86bd4f0a2ad;
+    packaging-static and distro-dependencies passed in GitHub Actions run
+    30517720041, while all eight Python/Qt legs stopped before tests at the same
+    mypy error. CI resolved the admitted mypy>=1.11 range to mypy 2.3.0, whose
+    stricter invariant-dict inference rejected package_binding at both _report
+    call sites. An isolated, non-incremental mypy 2.3.0 run reproduced exactly
+    those two errors across 256 files. Declaring package_binding as
+    dict[str, object] closes the stated contract and makes that same command,
+    local mypy, Ruff and all 50 focused M3.1 tests pass. The repaired complete
+    gate passes 1,343 pytest cases with one skip, ShellCheck, both embedded
+    Python payloads and all eight pre-commit ratchets. No follow-up push,
+    package/ISO build, Golden-path run, tag, pull request or main movement
+    occurred.
   * Repaired the test-environment debt exposed only after the commit-subject
     ratchet itself passed. GitHub Actions run 30485032512 was green in
     packaging-static, while all eight Python/Qt legs shared four CLI failures

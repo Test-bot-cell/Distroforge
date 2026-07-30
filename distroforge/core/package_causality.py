@@ -701,7 +701,7 @@ def _recompute_payload(
         package_inputs,
         expected_run_id,
     )
-    package_binding = {
+    package_binding: dict[str, object] = {
         "path": "PACKAGE-INPUTS.json",
         "schema": PACKAGE_INPUTS_SCHEMA,
         "source_mode": source_mode,
