@@ -121,10 +121,11 @@ class Project:
             return []
         self.packages = filtered
         target = project_file or (self.root / "project.json")
-        try:
-            target.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        except OSError:
-            pass
+        # A swallowed write here left in-memory packages and desktop_sanitization_message()
+        # claiming the conflicts were removed while project.json still held them, so the next
+        # load sanitized the same packages again and a read-only or full disk passed as success.
+        # Persistence failures propagate, exactly as save() lets them.
+        target.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return removed
 
     def desktop_sanitization_message(self) -> str:

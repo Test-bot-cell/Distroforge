@@ -16,6 +16,7 @@ from distroforge.core.packaging import (
     HermeticBuildPlan,
     _check_from_result,
     _write_deb_content_report,
+    _write_openai_audit,
     build_debian_package,
     create_hermetic_release_bundle,
     debian_changelog_suite,
@@ -833,6 +834,28 @@ def _changelog_versions() -> list[str]:
 
 def _changelog_suites() -> set[str]:
     return {line.split()[2].rstrip(";") for line in _changelog_versions()}
+
+
+def test_openai_audit_fails_and_names_a_file_it_cannot_read(tmp_path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    output_dir = tmp_path / "empty-output"
+    output_dir.mkdir()
+    unreadable = root / "locked.env"
+    unreadable.write_text("harmless\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    try:
+        report = tmp_path / "OPENAI-SECRET-AUDIT.txt"
+        check = _write_openai_audit(report, root, output_dir)
+    finally:
+        unreadable.chmod(0o600)
+
+    # A file the scan could not open must not read as clean: it is reported and the gate fails.
+    assert check.status == "failed"
+    assert "unreadable" in check.reason
+    body = report.read_text(encoding="utf-8")
+    assert "Unreadable paths (not scanned): 1" in body
+    assert str(unreadable) in body
 
 
 def test_lintian_is_never_invoked_without_the_resolved_profile() -> None:

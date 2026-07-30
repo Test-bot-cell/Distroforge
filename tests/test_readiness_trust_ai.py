@@ -404,6 +404,16 @@ def test_project_load_sanitizes_legacy_desktop_packages_in_place(tmp_path: Path)
     assert "kubuntu-desktop" not in persisted["packages"]
 
 
+def test_project_sanitization_propagates_a_persist_failure(tmp_path: Path) -> None:
+    project = Project.create("SanitizeReadonly", tmp_path / "sanitize-readonly", "26.04")
+    project.customization.desktop = "ubuntu"
+    project.packages = ["ubuntu-desktop", "kubuntu-desktop"]
+
+    missing = tmp_path / "does-not-exist" / "project.json"
+    with pytest.raises(OSError):
+        project.sanitize_legacy_desktop_packages(project_file=missing)
+
+
 def test_unknown_desktop_choice_does_not_crash_and_keeps_user_intent(tmp_path: Path) -> None:
     project = Project.create("UnknownDesktop", tmp_path / "unknown-desktop", "26.04")
     project.customization.desktop = "not-a-real-desktop"

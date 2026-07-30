@@ -821,6 +821,7 @@ def _write_openai_audit(path: Path, root: Path, output_dir: Path) -> PackageBuil
     ignored_suffixes = (".egg-info",)
     scanned = 0
     matches: list[str] = []
+    unreadable: list[str] = []
     for base in (root, output_dir):
         for candidate in base.rglob("*"):
             if not candidate.is_file() or candidate.is_symlink():
@@ -829,7 +830,11 @@ def _write_openai_audit(path: Path, root: Path, output_dir: Path) -> PackageBuil
                 continue
             try:
                 data = candidate.read_bytes()
-            except OSError:
+            except OSError as exc:
+                # A file the scanner cannot open is a file it cannot clear. Swallowing the
+                # OSError dropped it from the count and let a scan that never read a byte of it
+                # report "no key found", so an unreadable secret passed the gate silently.
+                unreadable.append(f"{candidate}: {exc.strerror or exc}")
                 continue
             if b"\0" in data[:8192]:
                 continue
@@ -845,12 +850,18 @@ def _write_openai_audit(path: Path, root: Path, output_dir: Path) -> PackageBuil
                 f"Paths scanned: {scanned}",
                 f"OpenAI-shaped key path hits: {len(matches)}",
                 *(matches if matches else ["No OpenAI-shaped key pattern was found."]),
+                f"Unreadable paths (not scanned): {len(unreadable)}",
+                *unreadable,
                 "",
             ]
         ),
         encoding="utf-8",
     )
-    return PackageBuildCheck("openai-secret-audit", "passed" if not matches else "failed", ("redacted-openai-audit", str(root), str(output_dir)), reason=f"{len(matches)} path hits")
+    status = "passed" if not matches and not unreadable else "failed"
+    reason_parts = [f"{len(matches)} path hits"]
+    if unreadable:
+        reason_parts.append(f"{len(unreadable)} unreadable")
+    return PackageBuildCheck("openai-secret-audit", status, ("redacted-openai-audit", str(root), str(output_dir)), reason=", ".join(reason_parts))
 
 
 def _write_iso_validation_plan(path: Path, iso: Path | None) -> None:
