@@ -697,7 +697,7 @@ def customize_target(orch: BuildOrchestrator, services: BuildServices) -> None:
         orch._step(
             BuildPhase.PACKAGE_EVIDENCE,
             "Seal package inputs",
-            "Release/Packages/keyrings/.deb bytes",
+            "Release/Packages/keyrings/.deb bytes + self-consistent APT v3 receipt",
         )
         services.package_evidence.seal_before_cleanup()
         orch._step(

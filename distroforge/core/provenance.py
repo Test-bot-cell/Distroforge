@@ -22,6 +22,7 @@ from .iso_evidence import (
     ISO_ASSEMBLY_FILENAME,
     validate_iso_assembly_evidence,
 )
+from .package_apt_actions import PACKAGE_APT_ACTIONS_FILENAME
 from .package_causality import PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
 from .project import Project
 
@@ -96,10 +97,21 @@ class ProvenanceService:
                 "PACKAGE-INPUTS.json",
                 executed=executed_mode,
             )
+            package_apt_actions = evidence_run_path(
+                self.project.output_dir,
+                run_id,
+                PACKAGE_APT_ACTIONS_FILENAME,
+                executed=executed_mode,
+            )
             if package_inputs.is_file():
                 data["package_inputs"] = artifact_identity(
                     package_inputs,
                     role="package-input-closure",
+                )
+            if package_apt_actions.is_file():
+                data["package_apt_actions"] = artifact_identity(
+                    package_apt_actions,
+                    role="package-apt-actions",
                 )
             rootfs_manifest = evidence_run_path(
                 self.project.output_dir,

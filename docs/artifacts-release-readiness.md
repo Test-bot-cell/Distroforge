@@ -110,6 +110,24 @@ effective definition passed to the gate, so package evidence cannot self-authori
 different trust policy. A locally built `.deb` with no independent producer attestation
 blocks the input closure.
 
+M3.2a also requires the same run and its provenance to bind
+`PACKAGE-APT-ACTIONS.json`, schema `distroforge.package-apt-actions.v1`. An authoritative
+refresh reopens the bounded journal, raw protocol copy, transaction records, recorder and
+generated configuration, then recomputes the supplied version-3 action transcript and
+the one-to-one package/version/architecture binding for every unpack action. The stored
+status cannot authorize itself, and missing, malformed, incomplete, oversized, drifting
+or forged inputs block the package item.
+
+That replay establishes internal consistency only. Before host collection, the
+transcript, journal and CAS live in the mutable target rootfs, so matching their hashes
+afterward cannot prove that APT produced them. A non-empty valid receipt therefore says
+`apt_actions: self-consistent`, while an empty post-bootstrap capture says
+`apt_actions: not-observed`; both preserve `capture_origin:
+unverified-mutable-target-rootfs`, `filesystem_causality: unverified` and
+`release_ready: false`. A post marker closes the capture interval but is not evidence of
+dpkg success. M3.2b must use a host-isolated one-shot witness whose acknowledgement is a
+precondition for dpkg.
+
 M3.1 adds the run-bound `PACKAGE-FILESYSTEM-CAUSALITY.json` artifact with schema
 `distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
 refresh re-hashes and re-extracts the exact `.deb` files selected by the sealed
@@ -148,19 +166,23 @@ drift; the static map itself makes no remaster-payload claim.
 This closes only static `payload_identity`. It is `verified` only for a bootstrap map that
 accounts for every supported, in-scope direct payload member of that inventory snapshot.
 The snapshot precedes arbitrary post-host hooks, and M3.1 does not re-read dpkg state after
-them; a later package mutation therefore remains M3.2 debt. ISO-remaster mode, an excluded
+them; a later package mutation therefore remains M3.2b debt. ISO-remaster mode, an excluded
 path or an unsupported object makes it `partial`. Identical payload
 and final objects do not prove which APT/dpkg action, maintainer script, trigger, conffile
 decision, diversion, alternative, customizer or other producer created the final state.
 Consequently `filesystem_causality` remains `unverified`, `release_ready` remains false
 and `package-inputs` remains `blocked`, even when every comparable object is `exact`.
-M3.2 must bind APT `DPkg::Pre-Install-Pkgs` protocol v3 actions to observed before/after
+M3.2a validates only the self-consistency of supplied
+`DPkg::Pre-Install-Pkgs` protocol-v3 bytes; it does not authenticate their origin.
+M3.2b must move capture to the acknowledged host boundary, bind observed before/after
 producer deltas and account explicitly for those dynamic transformations and the ISO
 baseline.
 
-The package-input and M3.1 payload-identity paths are implemented and covered by offline,
-rootless cryptographic/package fixtures, but no new live-archive ISO build has exercised
-them in the 2026-07-29 hardening lot. A fixture pass is not an archive or ISO proof.
+The package-input, M3.1 payload-identity and M3.2a action-replay paths are implemented and
+covered by offline, rootless cryptographic/package fixtures. The M3.2a harness also
+executes the generated shell pre/post state machine against synthetic input and controlled
+helpers, not a real apt/apt-get transaction or dpkg operation. No new live-archive ISO
+build has exercised these paths. A fixture pass is not an archive or ISO proof.
 
 The same distinction applies to the product bytes. The code now captures a semantic
 `ROOTFS-MANIFEST.json`, proves no source-tree drift across `mksquashfs`, unpacks the
@@ -179,7 +201,8 @@ trusted WORM/content-addressed storage.
 
 `publish-bundle` creates `dist/publish/` for maintainer review. It copies the ISO,
 `SHA256SUMS`, `BUILDINFO`, provenance, HTML report, executed boot proof when present, plus
-the referenced run evidence (including package-input transactions),
+the referenced run evidence (including package-input transactions, the M3.2a receipt and
+its collected journal/transcript copies),
 `RELEASE-GATE.json` and `README-PUBLISH.txt`. A blocked release gate still produces an
 inspection bundle, but the README marks it `BLOCKED` and lists the blocking items; the
 top-level CLI exits 2 for that blocked result.

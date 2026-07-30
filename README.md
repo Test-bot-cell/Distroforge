@@ -232,13 +232,21 @@ Those budgets are proved by hostile fixtures, not yet sized by a real desktop ru
 product build that exceeds one must stop and justify a measured schema/budget change.
 Schema v1's `payload_identity` is enumeration coverage: `modified`, `missing` and
 `ambiguous` remain separate comparison counts rather than silently changing that status.
-`filesystem_causality` therefore remains `unverified`, `release_ready` remains false and
-the release gate still blocks publication. M3.2 must bind APT hook protocol v3 actions and
-observed producer deltas, including package scripts and dpkg transformations. The semantic
-rootfs manifest, SquashFS round-trip, final-ISO replay and this new map are implemented and
+M3.2a adds `PACKAGE-APT-ACTIONS.json`, schema
+`distroforge.package-apt-actions.v1`, as a bounded, self-consistent replay of supplied APT
+`DPkg::Pre-Install-Pkgs` version-3 transcripts and their bindings to the recorded
+package/version/architecture identities. It does not authenticate APT as the origin:
+the transcript, journal and CAS remain mutable inside the target rootfs until host
+collection. Every report therefore records `capture_origin:
+unverified-mutable-target-rootfs`, `filesystem_causality: unverified` and
+`release_ready: false`; a non-empty replay records `apt_actions: self-consistent`, not
+“executed by APT”. M3.2b must add a host-isolated one-shot witness acknowledged before
+dpkg can run, then bind observed producer deltas, package scripts and dpkg
+transformations. The release gate still blocks publication. The semantic rootfs manifest,
+SquashFS round-trip, final-ISO replay, M3.1 map and M3.2a receipt are implemented and
 tested with offline, rootless fixtures, not promoted to an executed build claim. No new
-real ISO or boot was produced by this hardening work; see the
-[ISO build proof ledger](docs/iso-build-proof-ledger.md).
+real APT transaction, dpkg operation, ISO or boot was produced by this hardening work; see
+the [ISO build proof ledger](docs/iso-build-proof-ledger.md).
 
 ## Supported sources
 
@@ -283,11 +291,15 @@ does not run:
 ```
 
 The suite is offline and rootless by design, and never executes a product package or ISO
-build. A bounded fixture subset does run installed `dpkg-deb`, `gpg`, `xorriso`,
-`mksquashfs`, `unsquashfs` and `tar --zstd` processes on synthetic or repository-pinned
-inputs. Non-Essential test dependencies are declared explicitly; `dpkg-deb` comes from
-Essential package `dpkg`. It never runs `debootstrap`, `qemu`, `apt` or `sbuild`, so a
-green suite proves the plans and contracts, not that a real ISO boots.
+build. A bounded fixture subset does run installed `apt-config`, `dpkg-deb`, `gpg`,
+`xorriso`, `mksquashfs`, `unsquashfs` and `tar --zstd` processes on synthetic or
+repository-pinned inputs. `apt-config` parses the generated evidence-hook fragment, and a
+controlled-root harness executes the generated shell pre/post state machine with
+synthetic input and controlled helpers; neither runs a real apt/apt-get transaction or
+dpkg operation. Non-Essential test dependencies are declared explicitly; `dpkg-deb`
+comes from Essential package `dpkg`, while `apt-config` comes from the declared
+`apt <!nocheck>` build dependency. The suite never runs `debootstrap`, QEMU or sbuild, so
+a green result proves the plans and contracts, not that a real ISO boots.
 Line coverage is 74.7% overall and 58.6% under `distroforge/ui/`.
 
 The [golden path](docs/golden-path.md) is the authorized weekly execution harness

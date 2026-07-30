@@ -30,12 +30,17 @@ from distroforge.core.iso_evidence import (
     ISO_ASSEMBLY_SCHEMA,
     validate_iso_assembly_evidence,
 )
+from distroforge.core.package_apt_actions import (
+    PACKAGE_APT_ACTIONS_FILENAME,
+    build_package_apt_actions_report,
+)
 from distroforge.core.package_causality import write_package_filesystem_causality
 from distroforge.core.package_evidence import (
     PACKAGE_INPUTS_SCHEMA,
     PACKAGE_TRANSACTION_SCHEMA,
     package_apt_command_argv_sha256,
     package_source_policy_sha256,
+    validate_package_apt_actions_evidence,
     validate_package_evidence_payload,
 )
 from distroforge.core.project import Project
@@ -351,6 +356,56 @@ def _write_valid_package_input_evidence(
     }
     target = run_dir / "PACKAGE-INPUTS.json"
     target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def _write_valid_package_apt_actions(
+    run_dir: Path,
+    run_id: str,
+    package_inputs_path: Path,
+) -> Path:
+    package_inputs = json.loads(
+        package_inputs_path.read_text(encoding="utf-8")
+    )
+    if not isinstance(package_inputs, dict):
+        raise AssertionError("invalid PACKAGE-INPUTS fixture")
+    refs = package_inputs.get("transactions")
+    if not isinstance(refs, list):
+        raise AssertionError("invalid package transaction fixture")
+    transactions = [
+        json.loads(
+            (run_dir / str(ref["path"])).read_text(encoding="utf-8")
+        )
+        for ref in refs
+        if isinstance(ref, dict)
+    ]
+    journal = run_dir / "apt" / "transactions.tsv"
+    journal.write_text(
+        "J\t1\tapt-pre-install-v3\tstable\n",
+        encoding="utf-8",
+    )
+    report = build_package_apt_actions_report(
+        run_id=run_id,
+        package_inputs=package_inputs,
+        package_inputs_identity=_run_artifact(
+            package_inputs_path,
+            run_dir,
+        ),
+        journal_identity=_run_artifact(journal, run_dir),
+        transactions=transactions,
+        captures=[],
+    )
+    target = run_dir / PACKAGE_APT_ACTIONS_FILENAME
+    target.write_text(
+        json.dumps(report, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    validation = validate_package_apt_actions_evidence(
+        run_dir,
+        expected_run_id=run_id,
+    )
+    if not validation.ok:
+        raise AssertionError(f"invalid APT action fixture: {validation.detail}")
     return target
 
 
@@ -765,6 +820,13 @@ def write_valid_build_evidence(
     )
     package_inputs_identity = _artifact(package_inputs)
     package_inputs_identity["role"] = "package-input-closure"
+    package_apt_actions = _write_valid_package_apt_actions(
+        run_dir,
+        run_id,
+        package_inputs,
+    )
+    package_apt_actions_identity = _artifact(package_apt_actions)
+    package_apt_actions_identity["role"] = "package-apt-actions"
     staged_squashfs = (
         project.iso_root
         / project.release.livefs
@@ -938,6 +1000,7 @@ def write_valid_build_evidence(
         "executed_host_entrypoints": executed_entrypoints,
         "executed_host_entrypoints_sha256": canonical_sha256(executed_entrypoints),
         "package_inputs": package_inputs_identity,
+        "package_apt_actions": package_apt_actions_identity,
         "package_filesystem_causality": package_filesystem_causality_identity,
         "rootfs_manifest": rootfs_manifest_identity,
         "rootfs_packing_verification": rootfs_verification_identity,

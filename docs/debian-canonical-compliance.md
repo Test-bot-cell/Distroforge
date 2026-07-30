@@ -117,16 +117,21 @@ the gap is part of the rule, not an exception to it:
   scripts are handed to `compile()`, which nothing else checks: dpkg runs the script, the
   interpreter dies, and the surrounding `2>/dev/null` plus `|| true` swallow the traceback.
 - The test suite never executes a product package or ISO build. A bounded fixture subset
-  does execute `dpkg-deb`, `gpg`, `xorriso`, `mksquashfs`, `unsquashfs` and
-  `tar --zstd` offline and rootless against synthetic or repository-pinned inputs.
-  Non-Essential test dependencies are declared explicitly; `dpkg-deb` is supplied by
-  Essential package `dpkg`. The build doctor requires it for fresh-bootstrap payload
-  inspection only; ISO-remaster M3.1 records payload mapping as unsupported and does not
-  pretend to execute it. The general toolchain inventory still reports the complete
-  bootstrap capability. The suite never drives `debootstrap`, QEMU, APT or sbuild. The executing
-  verification harness lives outside the suite, in `.github/workflows/golden-path.yml`,
-  on a weekly schedule. It has not yet established a successful source-to-UEFI/login
-  chain; the current runtime milestones are recorded in
+  does execute `apt-config`, `dpkg-deb`, `gpg`, `xorriso`, `mksquashfs`, `unsquashfs`
+  and `tar --zstd` offline and rootless against synthetic or repository-pinned inputs.
+  `apt-config` parses the generated hook fragment, and a controlled-root harness executes
+  the generated shell pre/post state machine using synthetic protocol bytes and controlled
+  helpers. Neither path executes a real apt/apt-get transaction or dpkg operation.
+  Non-Essential test dependencies are declared explicitly: `apt-config` is supplied by
+  `apt`, which is a `Build-Depends <!nocheck>` and is installed explicitly in the
+  distribution-dependencies job; `dpkg-deb` is supplied by Essential package `dpkg`.
+  The build doctor requires the latter for fresh-bootstrap payload inspection only;
+  ISO-remaster M3.1 records payload mapping as unsupported and does not pretend to execute
+  it. The general toolchain inventory still reports the complete bootstrap capability.
+  The suite never drives `debootstrap`, QEMU or sbuild. The
+  executing verification harness lives outside the suite, in
+  `.github/workflows/golden-path.yml`, on a weekly schedule. It has not yet established a
+  successful source-to-UEFI/login chain; the current runtime milestones are recorded in
   `docs/iso-build-proof-ledger.md`. The hermetic build path remains the maintainer's own
   route for a publication build.
 

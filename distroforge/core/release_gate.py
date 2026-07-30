@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 from dataclasses import dataclass, field
@@ -22,12 +23,20 @@ from .iso_evidence import (
     ISO_ASSEMBLY_SCHEMA,
     validate_iso_assembly_evidence,
 )
+from .package_apt_actions import (
+    MAX_REPORT_JSON_BYTES,
+    PACKAGE_APT_ACTIONS_FILENAME,
+    PACKAGE_APT_ACTIONS_SCHEMA,
+)
 from .package_causality import (
     PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
     PACKAGE_FILESYSTEM_CAUSALITY_SCHEMA,
     validate_package_filesystem_causality,
 )
-from .package_evidence import validate_package_evidence
+from .package_evidence import (
+    validate_package_apt_actions_evidence,
+    validate_package_evidence,
+)
 from .packaging import packaging_policy_report
 from .prebuild_vm import validate_qemu_report
 from .project import Project
@@ -241,6 +250,13 @@ def _package_inputs_item(
             "blocked",
             "The current run has no PACKAGE-INPUTS.json closure.",
         )
+    action_evidence = run_dir / PACKAGE_APT_ACTIONS_FILENAME
+    if not action_evidence.is_file():
+        return ReleaseGateItem(
+            "package-inputs",
+            "blocked",
+            f"The current run has no {PACKAGE_APT_ACTIONS_FILENAME} receipt.",
+        )
     causality_evidence = run_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
     if not causality_evidence.is_file():
         return ReleaseGateItem(
@@ -251,14 +267,30 @@ def _package_inputs_item(
     if not verify:
         try:
             payload = json.loads(evidence.read_text(encoding="utf-8"))
+            action_payload = _read_bounded_json_file(
+                action_evidence,
+                max_bytes=MAX_REPORT_JSON_BYTES,
+                label="APT action report",
+            )
             causality_payload = json.loads(
                 causality_evidence.read_text(encoding="utf-8")
             )
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             return ReleaseGateItem(
                 "package-inputs",
                 "blocked",
                 f"Package-input evidence is unreadable: {exc}",
+            )
+        action_boundary_error = _package_apt_actions_boundary_error(
+            action_payload,
+            run_dir,
+            run_id,
+        )
+        if action_boundary_error is not None:
+            return ReleaseGateItem(
+                "package-inputs",
+                "blocked",
+                action_boundary_error,
             )
         if (
             not isinstance(causality_payload, dict)
@@ -334,6 +366,16 @@ def _package_inputs_item(
             "blocked",
             validation.detail,
         )
+    action_validation = validate_package_apt_actions_evidence(
+        run_dir,
+        expected_run_id=run_id,
+    )
+    if not action_validation.ok:
+        return ReleaseGateItem(
+            "package-inputs",
+            "blocked",
+            action_validation.detail,
+        )
     causality_validation = validate_package_filesystem_causality(
         run_dir,
         expected_run_id=run_id,
@@ -348,11 +390,146 @@ def _package_inputs_item(
         "package-inputs",
         (
             "ready"
-            if validation.release_ready and causality_validation.release_ready
+            if (
+                validation.release_ready
+                and action_validation.release_ready
+                and causality_validation.release_ready
+            )
             else "blocked"
         ),
-        f"{validation.detail}; {causality_validation.detail}",
+        (
+            f"{validation.detail}; {action_validation.detail}; "
+            f"{causality_validation.detail}"
+        ),
     )
+
+
+def _read_bounded_json_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    label: str,
+) -> object:
+    """Read one regular JSON file through a stable, size-bounded descriptor."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size <= 0
+            or before.st_size > max_bytes
+        ):
+            raise ValueError(f"{label} exceeds its byte bound")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            data = stream.read(max_bytes + 1)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if (
+        len(data) > max_bytes
+        or len(data) != before.st_size
+        or any(getattr(before, field) != getattr(after, field) for field in stable_fields)
+    ):
+        raise ValueError(f"{label} changed while it was read")
+    try:
+        return json.loads(data.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+
+
+def _package_apt_actions_boundary_error(
+    payload: object,
+    run_dir: Path,
+    run_id: str,
+) -> str | None:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != PACKAGE_APT_ACTIONS_SCHEMA
+        or payload.get("run_id") != run_id
+        or payload.get("scope")
+        != "apt-dpkg-pre-install-pkgs-v3-planned-actions-m3.2a"
+        or payload.get("capture_origin")
+        != "unverified-mutable-target-rootfs"
+        or payload.get("filesystem_causality") != "unverified"
+        or payload.get("release_ready") is not False
+        or payload.get("apt_actions")
+        not in {"self-consistent", "not-observed"}
+    ):
+        return (
+            "The APT action receipt does not preserve the M3.2a "
+            "proof boundary."
+        )
+    for identity_field, expected_path in (
+        ("package_inputs", "PACKAGE-INPUTS.json"),
+        ("capture_journal", "apt/transactions.tsv"),
+    ):
+        identity = payload.get(identity_field)
+        if not isinstance(identity, dict):
+            return (
+                "The APT action receipt has no valid "
+                f"{identity_field} identity."
+            )
+        artifact = run_dir / expected_path
+        if (
+            identity.get("path") != expected_path
+            or artifact.is_symlink()
+            or not artifact.is_file()
+            or identity.get("size") != artifact.stat().st_size
+            or identity.get("sha256") != sha256_file(artifact)
+        ):
+            return (
+                "The APT action receipt is not bound to this run's "
+                f"{expected_path}."
+            )
+    transactions = payload.get("transactions")
+    if not isinstance(transactions, list):
+        return "The APT action receipt transaction list is malformed."
+    if (
+        payload.get("apt_actions") == "self-consistent"
+        and not transactions
+    ) or (
+        payload.get("apt_actions") == "not-observed" and transactions
+    ):
+        return "The APT action status contradicts its transaction list."
+    transaction_ids: set[str] = set()
+    for transaction in transactions:
+        if not isinstance(transaction, dict):
+            return "The APT action receipt contains a malformed transaction."
+        transaction_id = transaction.get("id")
+        protocol = transaction.get("protocol")
+        capture = transaction.get("capture")
+        actions = transaction.get("actions")
+        if (
+            not isinstance(transaction_id, str)
+            or not transaction_id
+            or Path(transaction_id).name != transaction_id
+            or transaction_id in transaction_ids
+            or not isinstance(protocol, dict)
+            or protocol.get("version") != 3
+            or not isinstance(capture, dict)
+            or capture.get("complete") is not True
+            or not isinstance(actions, list)
+            or protocol.get("action_count") != len(actions)
+            or not isinstance(transaction.get("recorder"), dict)
+            or not isinstance(transaction.get("configuration"), dict)
+        ):
+            return (
+                "The APT action receipt contains an invalid protocol-v3 "
+                "transaction."
+            )
+        transaction_ids.add(transaction_id)
+    return None
 
 
 def _command_argv_ledger(path: Path) -> tuple[tuple[str, ...], ...]:
@@ -1059,6 +1236,7 @@ def _validate_build_provenance(
     immutable = immutable_dir / "distroforge-provenance.json"
     iso_report = immutable_dir / "ISO-BUILD.json"
     package_inputs = immutable_dir / "PACKAGE-INPUTS.json"
+    package_apt_actions = immutable_dir / PACKAGE_APT_ACTIONS_FILENAME
     package_filesystem_causality = (
         immutable_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
     )
@@ -1071,6 +1249,7 @@ def _validate_build_provenance(
         immutable,
         iso_report,
         package_inputs,
+        package_apt_actions,
         package_filesystem_causality,
         rootfs_manifest,
         rootfs_verification,
@@ -1101,6 +1280,22 @@ def _validate_build_provenance(
             "provenance",
             "blocked",
             "Provenance does not bind this run's package-input closure.",
+        )
+    package_apt_actions_identity = data.get("package_apt_actions")
+    if (
+        not isinstance(package_apt_actions_identity, dict)
+        or package_apt_actions_identity.get("path")
+        != str(package_apt_actions)
+        or package_apt_actions_identity.get("role") != "package-apt-actions"
+        or package_apt_actions_identity.get("size")
+        != package_apt_actions.stat().st_size
+        or package_apt_actions_identity.get("sha256")
+        != sha256_file(package_apt_actions)
+    ):
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            "Provenance does not bind this run's APT protocol-v3 action receipt.",
         )
     package_filesystem_causality_identity = data.get(
         "package_filesystem_causality"
@@ -1301,6 +1496,7 @@ def _validate_build_provenance(
         output_dir / "SHA256SUMS",
         output_dir / "BUILDINFO",
         package_inputs,
+        package_apt_actions,
         package_filesystem_causality,
         rootfs_manifest,
         rootfs_verification,

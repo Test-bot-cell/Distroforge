@@ -176,18 +176,19 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         #
-        # zstd, xorriso, squashfs-tools and gnupg are runtime Depends the suite
-        # really invokes: a snapshot drives tar --zstd, ISO/rootfs fixtures run
-        # xorriso plus mksquashfs/unsquashfs, and GPG tests parse the pinned
-        # maintainer key and create throwaway signing keys. All four are also
-        # Build-Depends <!nocheck> and are installed in this distribution-only
-        # job. debootstrap and qemu-system-x86 remain deliberately absent because
-        # the suite plans them but never executes them.
+        # apt, zstd, xorriso, squashfs-tools and gnupg are runtime Depends the
+        # suite really invokes: the M3.2a hook contract is parsed by apt-config,
+        # a snapshot drives tar --zstd, ISO/rootfs fixtures run xorriso plus
+        # mksquashfs/unsquashfs, and GPG tests parse the pinned maintainer key
+        # and create throwaway signing keys. All five are also Build-Depends
+        # <!nocheck> and are installed in this distribution-only job.
+        # debootstrap and qemu-system-x86 remain deliberately absent because the
+        # suite plans them but never executes them.
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             python3 python3-pytest python3-pydantic python3-yaml python3-pluggy \
-            python3-rich python3-typer python3-pyqt6 gnupg libegl1 passwd \
+            python3-rich python3-typer python3-pyqt6 apt gnupg libegl1 passwd \
             squashfs-tools xorriso zstd
       - name: Report what the distribution provides
         run: |

@@ -63,6 +63,20 @@ def test_package_payload_identity_is_planned_before_the_filesystem_is_repacked(
     BuildOrchestrator(project, runner, BuildOptions(use_sudo=False)).run()
 
     argv_list = [spec.argv for spec in runner.history]
+    package_inputs = _index_of(
+        argv_list,
+        lambda argv: (
+            argv[:1] == ("write-file",)
+            and argv[-1].endswith("PACKAGE-INPUTS.json")
+        ),
+    )
+    apt_actions = _index_of(
+        argv_list,
+        lambda argv: (
+            argv[:1] == ("write-file",)
+            and argv[-1].endswith("PACKAGE-APT-ACTIONS.json")
+        ),
+    )
     rootfs_manifest = _index_of(
         argv_list,
         lambda argv: any(part.endswith("ROOTFS-MANIFEST.json") for part in argv),
@@ -76,10 +90,12 @@ def test_package_payload_identity_is_planned_before_the_filesystem_is_repacked(
     )
     repacked = _index_of(argv_list, lambda argv: argv[:1] == ("mksquashfs",))
 
+    assert package_inputs is not None
+    assert apt_actions is not None
     assert rootfs_manifest is not None
     assert payload_map is not None
     assert repacked is not None
-    assert rootfs_manifest < payload_map < repacked
+    assert package_inputs < apt_actions < rootfs_manifest < payload_map < repacked
 
 
 def test_staged_hooks_are_removed_even_when_a_hook_fails(tmp_path: Path) -> None:

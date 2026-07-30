@@ -421,7 +421,10 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
     `gpg` unconditionally; run 30485032512 proved that omitting its `gnupg` provider
     from the distribution job fails the suite rather than testing a source defect.
     M3.1 fixtures execute dpkg-deb, which is supplied by Essential package dpkg and
-    therefore does not need a separate package relationship.
+    therefore does not need a separate package relationship. M3.2a executes
+    apt-config to parse the exact generated hook fragment; apt is non-Essential, so
+    that provider must be declared and installed even though the container needs apt
+    to bootstrap itself.
     debootstrap and qemu-system-x86 are never executed, so every arch:all build
     installed them for nothing. They stay in Depends, which is where the runtime need
     actually is. gnupg belongs there too: executing source-ISO authentication and
@@ -431,6 +434,7 @@ def test_build_depends_nocheck_names_only_tools_the_suite_runs() -> None:
     control = (ROOT / "debian/control").read_text(encoding="utf-8")
     build_depends, _, binary = control.partition("\nPackage: distroforge\n")
     executed_tool_packages = {
+        "apt-config": "apt",
         "gpg": "gnupg",
         "mksquashfs": "squashfs-tools",
         "unsquashfs": "squashfs-tools",

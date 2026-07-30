@@ -26,6 +26,27 @@ from .command import CommandError, CommandRunner, CommandSpec
 from .evidence_run import evidence_run_path, write_immutable_text
 from .fsops import FileSystemOps
 from .gpg import normalize_fingerprint
+from .package_apt_actions import (
+    MAX_APT_ACTION_CAPTURES,
+    MAX_APT_PROTOCOL_BYTES,
+    MAX_CAPTURE_JOURNAL_BYTES,
+    MAX_PACKAGE_INPUT_BLOB_BYTES,
+    MAX_PACKAGE_INPUTS_BYTES,
+    MAX_PACKAGE_RECORDS_PER_TRANSACTION,
+    MAX_PACKAGE_TRANSACTION_BYTES,
+    MAX_PACKAGE_TRANSACTIONS,
+    MAX_REPORT_JSON_BYTES,
+    MAX_TOTAL_APT_PROTOCOL_BYTES,
+    MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES,
+    MAX_TOTAL_PACKAGE_RECORDS,
+    PACKAGE_APT_ACTIONS_FILENAME,
+    AptProtocolCapture,
+    PackageAptActionsError,
+    PackageAptActionsValidation,
+    build_package_apt_actions_report,
+    parse_apt_pre_install_v3,
+    validate_package_apt_actions_report,
+)
 
 if TYPE_CHECKING:
     from .project import Project
@@ -34,7 +55,10 @@ if TYPE_CHECKING:
 PACKAGE_INPUTS_SCHEMA = "distroforge.package-inputs.v1"
 PACKAGE_TRANSACTION_SCHEMA = "distroforge.package-input-transaction.v1"
 _COPY_CHUNK = 1024 * 1024
-_JOURNAL_COLUMNS = 8
+_FILE_JOURNAL_COLUMNS = 8
+_PROTOCOL_JOURNAL_COLUMNS = 6
+_END_JOURNAL_COLUMNS = 4
+_JOURNAL_HEADER = "J\t1\tapt-pre-install-v3\tstable\n"
 _INSECURE_APT_PATTERNS = (
     re.compile(r"\btrusted\s*=\s*yes\b", re.IGNORECASE),
     re.compile(r"\ballow-insecure\s*=\s*yes\b", re.IGNORECASE),
@@ -693,6 +717,12 @@ class PackageEvidenceService:
             "Configure package-input capture and retained APT downloads",
             mode="0644",
         )
+        fs.write_text(
+            self.root / self._STAGING / "transactions.tsv",
+            _JOURNAL_HEADER,
+            "Initialize package-input capture journal",
+            mode="0600",
+        )
 
     def cleanup_target_capture(self) -> None:
         """Remove a partially installed hook after an aborted build."""
@@ -712,12 +742,24 @@ class PackageEvidenceService:
                 description="Write sealed package-input closure",
             )
         )
+        action_target = evidence_run_path(
+            self.project.output_dir,
+            self._run_id,
+            PACKAGE_APT_ACTIONS_FILENAME,
+            executed=self._executed,
+        )
+        self.runner.run(
+            CommandSpec(
+                argv=("write-file", str(action_target)),
+                description="Write sealed APT protocol-v3 action receipt",
+            )
+        )
         if self.runner.dry_run:
             self._remove_capture_hook()
             return None
 
         try:
-            self._collect_hook_transactions()
+            captured_protocols = self._collect_hook_transactions()
             # Captures the final active repository state as evidence even when an
             # update downloaded no packages and therefore invoked no DPkg hook.
             current = self._current_apt_records(include_host_keyring=False)
@@ -789,6 +831,63 @@ class PackageEvidenceService:
             if not validation.ok:
                 raise ValueError(
                     f"Package-input closure failed: {validation.detail}"
+                )
+            package_inputs_identity = _identity_for_run(
+                target,
+                self._run_dir,
+            )
+            journal_identity = _identity_for_run(
+                self._run_dir / "apt" / "transactions.tsv",
+                self._run_dir,
+            )
+            transactions = [
+                _read_bounded_json_object(
+                    self._run_dir,
+                    str(path.relative_to(self._run_dir)),
+                    max_bytes=MAX_PACKAGE_TRANSACTION_BYTES,
+                    label="package transaction",
+                )
+                for path in self._transaction_paths
+            ]
+            captures = [
+                _apt_protocol_capture(record)
+                for record in captured_protocols
+            ]
+            action_report = build_package_apt_actions_report(
+                run_id=self._run_id,
+                package_inputs=aggregate,
+                package_inputs_identity=package_inputs_identity,
+                journal_identity=journal_identity,
+                transactions=transactions,
+                captures=captures,
+            )
+            action_validation = validate_package_apt_actions_report(
+                action_report,
+                run_id=self._run_id,
+                package_inputs=aggregate,
+                package_inputs_identity=package_inputs_identity,
+                journal_identity=journal_identity,
+                transactions=transactions,
+                captures=captures,
+            )
+            if not action_validation.ok:
+                raise ValueError(
+                    f"APT action closure failed: {action_validation.detail}"
+                )
+            write_immutable_text(
+                action_target,
+                json.dumps(action_report, indent=2) + "\n",
+            )
+            persisted_action_validation = (
+                validate_package_apt_actions_evidence(
+                    self._run_dir,
+                    expected_run_id=self._run_id,
+                )
+            )
+            if not persisted_action_validation.ok:
+                raise ValueError(
+                    "Persisted APT action closure failed: "
+                    f"{persisted_action_validation.detail}"
                 )
             return target
         finally:
@@ -1038,6 +1137,24 @@ class PackageEvidenceService:
         closure_issues = closure.get("issues")
         if isinstance(closure_issues, list):
             issues.extend(str(issue) for issue in closure_issues)
+        closure_debs = closure.get("debs")
+        if isinstance(closure_debs, list):
+            deb_identity_by_path = {
+                item.get("path"): item
+                for item in closure_debs
+                if isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+            }
+            for record in records:
+                if record.get("kind") != "deb":
+                    continue
+                identity = deb_identity_by_path.get(record.get("path"))
+                if not isinstance(identity, dict):
+                    continue
+                for field in ("package", "version", "architecture"):
+                    value = identity.get(field)
+                    if isinstance(value, str) and value:
+                        record[field] = value
         deb_count = sum(record.get("kind") == "deb" for record in records)
         if require_debs and deb_count == 0:
             issues.append("transaction captured no .deb bytes")
@@ -1107,7 +1224,7 @@ class PackageEvidenceService:
             ),
         )
 
-    def _collect_hook_transactions(self) -> None:
+    def _collect_hook_transactions(self) -> list[dict[str, object]]:
         staging = self.root / self._STAGING
         journal = staging / "transactions.tsv"
         try:
@@ -1116,27 +1233,173 @@ class PackageEvidenceService:
                 journal,
                 expected="regular",
             ) as journal_descriptor:
+                journal_size = os.fstat(journal_descriptor).st_size
+                if (
+                    journal_size <= 0
+                    or journal_size > MAX_CAPTURE_JOURNAL_BYTES
+                ):
+                    raise ValueError(
+                        "Package pre-install journal exceeds its byte bound"
+                    )
                 journal_bytes = _stable_read_fd(journal_descriptor)
         except FileNotFoundError:
-            return
+            return []
+        # Validate the complete ordering and every aggregate claim before any
+        # protocol or blob CAS member is opened or copied into the host run.
+        _parse_sealed_capture_journal(journal_bytes)
         grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
+        protocols: dict[str, dict[str, object]] = {}
+        states: dict[str, str] = {}
+        total_protocol_bytes = 0
+        total_blob_bytes = 0
+        total_records = 0
         try:
             journal_text = journal_bytes.decode("utf-8", errors="strict")
         except UnicodeDecodeError as exc:
             raise ValueError("Package pre-install journal is not UTF-8") from exc
-        for raw_line in journal_text.splitlines():
+        header_seen = False
+        for line_number, raw_line in enumerate(
+            journal_text.splitlines(),
+            start=1,
+        ):
             fields = raw_line.split("\t")
-            if len(fields) != _JOURNAL_COLUMNS or fields[0] != "F":
+            record_type = fields[0] if fields else ""
+            if record_type == "J":
+                if (
+                    line_number != 1
+                    or fields != ["J", "1", "apt-pre-install-v3", "stable"]
+                ):
+                    raise ValueError(
+                        "Package pre-install journal header is malformed"
+                    )
+                header_seen = True
+                continue
+            if (
+                record_type == "P"
+                and len(fields) == _PROTOCOL_JOURNAL_COLUMNS
+            ):
+                _, txid, digest, size_text, protocol, status = fields
+                if (
+                    not txid.isdigit()
+                    or int(txid) <= 0
+                    or not _HEX_SHA256.fullmatch(digest)
+                    or not size_text.isdigit()
+                    or int(size_text) <= 0
+                    or int(size_text) > MAX_APT_PROTOCOL_BYTES
+                    or protocol != "apt-pre-install-v3"
+                    or status != "stable"
+                    or txid in states
+                    or len(protocols) >= MAX_APT_ACTION_CAPTURES
+                ):
+                    raise ValueError(
+                        "Package pre-install journal contains an invalid "
+                        "protocol record"
+                    )
+                protocol_size = int(size_text)
+                total_protocol_bytes += protocol_size
+                if total_protocol_bytes > MAX_TOTAL_APT_PROTOCOL_BYTES:
+                    raise ValueError(
+                        "Package pre-install protocols exceed their "
+                        "aggregate byte bound"
+                    )
+                source = staging / "store" / "protocol" / digest
+                with _open_confined_path(
+                    self.root,
+                    source,
+                    expected="regular",
+                ) as source_descriptor:
+                    if os.fstat(source_descriptor).st_size != protocol_size:
+                        raise ValueError(
+                            "Package pre-install protocol CAS size differs "
+                            "from its journal"
+                        )
+                    protocol_bytes = _stable_read_fd(source_descriptor)
+                    actual_sha = hashlib.sha256(protocol_bytes).hexdigest()
+                    if (
+                        actual_sha != digest
+                        or len(protocol_bytes) != protocol_size
+                    ):
+                        raise ValueError(
+                            "Package pre-install protocol CAS differs "
+                            "from its journal"
+                        )
+                    target = (
+                        self._run_dir
+                        / "apt"
+                        / "protocol"
+                        / f"{digest}.v3"
+                    )
+                    self.runner.run(
+                        CommandSpec(
+                            argv=("copy-file", str(source), str(target)),
+                            description=(
+                                "Copy sealed APT v3 protocol transaction "
+                                f"{txid}"
+                            ),
+                        )
+                    )
+                    _stable_copy_fd(
+                        source_descriptor,
+                        source,
+                        target,
+                        expected_sha256=digest,
+                        expected_size=len(protocol_bytes),
+                    )
+                protocols[txid] = {
+                    "transaction_id": f"apt-{int(txid):04d}",
+                    "path": str(target.relative_to(self._run_dir)),
+                    "size": len(protocol_bytes),
+                    "sha256": digest,
+                    "data": protocol_bytes,
+                    "complete": False,
+                }
+                states[txid] = "protocol"
+                continue
+            if (
+                record_type == "E"
+                and len(fields) == _END_JOURNAL_COLUMNS
+            ):
+                _, txid, result, status = fields
+                if (
+                    not txid.isdigit()
+                    or int(txid) <= 0
+                    or result != "complete"
+                    or status != "stable"
+                    or states.get(txid) != "files"
+                ):
+                    raise ValueError(
+                        "Package pre-install journal contains an invalid "
+                        "end record"
+                    )
+                states[txid] = "complete"
+                protocols[txid]["complete"] = True
+                continue
+            if (
+                record_type != "F"
+                or len(fields) != _FILE_JOURNAL_COLUMNS
+            ):
                 raise ValueError("Package pre-install journal is malformed")
             _, txid, kind, digest, size_text, original, extra, status = fields
             if (
                 not txid.isdigit()
-                or kind not in {"source", "config", "keyring", "release", "index", "deb"}
+                or int(txid) <= 0
+                or kind
+                not in {
+                    "source",
+                    "config",
+                    "keyring",
+                    "release",
+                    "index",
+                    "deb",
+                    "recorder",
+                }
                 or not _HEX_SHA256.fullmatch(digest)
                 or not size_text.isdigit()
                 or status != "stable"
+                or states.get(txid) not in {"protocol", "files"}
             ):
                 raise ValueError("Package pre-install journal contains an invalid record")
+            states[txid] = "files"
             _inside_root(
                 self.root,
                 original,
@@ -1148,6 +1411,24 @@ class PackageEvidenceService:
                 source,
                 expected="regular",
             ) as source_descriptor:
+                blob_size = os.fstat(source_descriptor).st_size
+                if (
+                    blob_size != int(size_text)
+                    or blob_size > MAX_PACKAGE_INPUT_BLOB_BYTES
+                ):
+                    raise ValueError(
+                        "Package pre-install CAS size differs from its journal "
+                        "or exceeds its blob bound"
+                    )
+                total_blob_bytes += blob_size
+                if (
+                    total_blob_bytes
+                    > MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES
+                ):
+                    raise ValueError(
+                        "Package pre-install CAS exceeds its aggregate "
+                        "blob bound"
+                    )
                 actual_sha, actual_size = _stable_digest_fd(source_descriptor)
                 if actual_sha != digest or actual_size != int(size_text):
                     raise ValueError(
@@ -1184,14 +1465,46 @@ class PackageEvidenceService:
                     "extra": extra,
                 }
             )
+            total_records += 1
+            if (
+                len(grouped[txid]) > MAX_PACKAGE_RECORDS_PER_TRANSACTION
+                or total_records > MAX_TOTAL_PACKAGE_RECORDS
+            ):
+                raise ValueError(
+                    "Package pre-install journal exceeds its record bound"
+                )
+        if not header_seen:
+            raise ValueError("Package pre-install journal header is missing")
+        incomplete = [
+            txid for txid, state in states.items() if state != "complete"
+        ]
+        if incomplete:
+            raise ValueError(
+                "Package pre-install journal contains an incomplete transaction"
+            )
         for txid in sorted(grouped, key=int):
+            if txid not in protocols:
+                raise ValueError(
+                    "Package pre-install files have no protocol transcript"
+                )
             name = f"apt-{int(txid):04d}"
+            protocol_data = protocols[txid].get("data")
+            if not isinstance(protocol_data, bytes):
+                raise ValueError(
+                    "Package pre-install protocol bytes are unavailable"
+                )
+            parsed_protocol = parse_apt_pre_install_v3(protocol_data)
+            requires_deb = any(
+                action.operation
+                in {"install", "upgrade", "downgrade", "reinstall"}
+                for action in parsed_protocol.actions
+            )
             transaction = self._close_transaction(
                 name,
                 "apt-pre-install",
                 grouped[txid],
                 inventory=[],
-                require_debs=True,
+                require_debs=requires_deb,
             )
             self._write_transaction(name, transaction)
 
@@ -1212,6 +1525,10 @@ class PackageEvidenceService:
                 journal,
                 journal_target,
             )
+        return [
+            protocols[txid]
+            for txid in sorted(protocols, key=int)
+        ]
 
     def _capture_local_debs(self) -> dict[str, object] | None:
         roots = (
@@ -1338,6 +1655,76 @@ def validate_package_evidence(
         expected_verification_time=expected_verification_time,
         apt_command_argv=apt_command_argv,
     )
+
+
+def validate_package_apt_actions_evidence(
+    run_dir: Path,
+    *,
+    expected_run_id: str,
+) -> PackageAptActionsValidation:
+    """Reload and recompute the M3.2a receipt from immutable run bytes."""
+
+    try:
+        report = _read_bounded_json_object(
+            run_dir,
+            PACKAGE_APT_ACTIONS_FILENAME,
+            max_bytes=MAX_REPORT_JSON_BYTES,
+            label="APT action report",
+        )
+        package_inputs_bytes = _read_bounded_run_bytes(
+            run_dir,
+            "PACKAGE-INPUTS.json",
+            max_bytes=MAX_PACKAGE_INPUTS_BYTES,
+            label="PACKAGE-INPUTS",
+        )
+        package_inputs = _decode_json_object(
+            package_inputs_bytes,
+            "PACKAGE-INPUTS",
+        )
+        package_inputs_identity = _bytes_identity(
+            "PACKAGE-INPUTS.json",
+            package_inputs_bytes,
+        )
+        transactions = _load_package_transactions_for_actions(
+            run_dir,
+            package_inputs,
+        )
+        journal_identity_raw = report.get("capture_journal")
+        journal_identity, journal_bytes = _load_bounded_run_identity(
+            run_dir,
+            journal_identity_raw,
+            max_bytes=MAX_CAPTURE_JOURNAL_BYTES,
+            label="APT capture journal",
+            required_path="apt/transactions.tsv",
+        )
+        captures = _captures_from_sealed_journal(
+            run_dir,
+            journal_bytes,
+            transactions,
+        )
+        return validate_package_apt_actions_report(
+            report,
+            run_id=expected_run_id,
+            package_inputs=package_inputs,
+            package_inputs_identity=package_inputs_identity,
+            journal_identity=journal_identity,
+            transactions=transactions,
+            captures=captures,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        PackageAptActionsError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        return PackageAptActionsValidation(
+            False,
+            f"APT action evidence is unreadable: {exc}",
+        )
 
 
 def validate_package_evidence_payload(
@@ -1613,13 +2000,22 @@ def validate_package_evidence_payload(
         record_kinds = {
             record.get("kind") for record in records if isinstance(record, dict)
         }
-        if kind in {"bootstrap", "apt-pre-install"} and not {
+        if kind == "bootstrap" and not {
             "release",
             "index",
             "deb",
         } <= record_kinds:
             return PackageEvidenceValidation(
                 False, f"{kind} transaction omitted signed package bytes"
+            )
+        if (
+            kind == "apt-pre-install"
+            and "deb" in record_kinds
+            and not {"release", "index"} <= record_kinds
+        ):
+            return PackageEvidenceValidation(
+                False,
+                "apt-pre-install unpack transaction omitted signed repository state",
             )
         if kind == "apt-state":
             final_state_transactions.append(transaction)
@@ -1645,6 +2041,38 @@ def validate_package_evidence_payload(
         closure_debs = closure.get("debs")
         if not isinstance(closure_debs, list):
             return PackageEvidenceValidation(False, "invalid .deb closure")
+        closed_debs_by_path = {
+            item.get("path"): item
+            for item in closure_debs
+            if isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+        }
+        for record in records:
+            if not isinstance(record, dict) or record.get("kind") != "deb":
+                continue
+            closed = closed_debs_by_path.get(record.get("path"))
+            if not isinstance(closed, dict):
+                continue
+            for field in ("package", "version", "architecture"):
+                recorded_value = record.get(field)
+                if (
+                    kind == "apt-pre-install"
+                    and recorded_value != closed.get(field)
+                ):
+                    return PackageEvidenceValidation(
+                        False,
+                        "APT .deb action identity differs from its "
+                        f"authenticated archive bytes: {field}",
+                    )
+                if (
+                    recorded_value is not None
+                    and recorded_value != closed.get(field)
+                ):
+                    return PackageEvidenceValidation(
+                        False,
+                        "recorded .deb identity differs from its "
+                        f"authenticated archive bytes: {field}",
+                    )
         for item in closure_debs:
             if not isinstance(item, dict):
                 return PackageEvidenceValidation(False, "invalid .deb closure")
@@ -2512,6 +2940,469 @@ def _dpkg_deb_identity(
     return fields[0], fields[1], fields[2]
 
 
+def _apt_protocol_capture(
+    value: Mapping[str, object],
+) -> AptProtocolCapture:
+    transaction_id = value.get("transaction_id")
+    path = value.get("path")
+    size = value.get("size")
+    digest = value.get("sha256")
+    data = value.get("data")
+    complete = value.get("complete")
+    if (
+        not isinstance(transaction_id, str)
+        or not isinstance(path, str)
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or not isinstance(digest, str)
+        or not isinstance(data, bytes)
+        or not isinstance(complete, bool)
+    ):
+        raise ValueError("Package pre-install protocol capture is malformed")
+    return AptProtocolCapture(
+        transaction_id=transaction_id,
+        path=path,
+        size=size,
+        sha256=digest,
+        data=data,
+        complete=complete,
+    )
+
+
+def _decode_json_object(data: bytes, label: str) -> dict[str, object]:
+    try:
+        payload = json.loads(data.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} is not a JSON object")
+    return payload
+
+
+def _read_bounded_json_object(
+    run_dir: Path,
+    relative: str,
+    *,
+    max_bytes: int,
+    label: str,
+) -> dict[str, object]:
+    return _decode_json_object(
+        _read_bounded_run_bytes(
+            run_dir,
+            relative,
+            max_bytes=max_bytes,
+            label=label,
+        ),
+        label,
+    )
+
+
+def _read_bounded_run_bytes(
+    run_dir: Path,
+    relative: str,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    path = Path(relative)
+    if (
+        not relative
+        or path.is_absolute()
+        or ".." in path.parts
+        or str(path) != relative
+    ):
+        raise ValueError(f"{label} path is unsafe")
+    with _open_confined_path(
+        run_dir,
+        run_dir / path,
+        expected="regular",
+    ) as descriptor:
+        size = os.fstat(descriptor).st_size
+        if size <= 0 or size > max_bytes:
+            raise ValueError(f"{label} exceeds its byte bound")
+        return _stable_read_fd(descriptor)
+
+
+def _bytes_identity(relative: str, data: bytes) -> dict[str, object]:
+    return {
+        "path": relative,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _load_bounded_run_identity(
+    run_dir: Path,
+    value: object,
+    *,
+    max_bytes: int,
+    label: str,
+    required_path: str | None = None,
+) -> tuple[dict[str, object], bytes]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} identity is malformed")
+    relative = value.get("path")
+    expected_size = value.get("size")
+    expected_sha256 = value.get("sha256")
+    if (
+        not isinstance(relative, str)
+        or (required_path is not None and relative != required_path)
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+        or expected_size > max_bytes
+        or not isinstance(expected_sha256, str)
+        or not _HEX_SHA256.fullmatch(expected_sha256)
+    ):
+        raise ValueError(f"{label} identity is malformed")
+    data = _read_bounded_run_bytes(
+        run_dir,
+        relative,
+        max_bytes=max_bytes,
+        label=label,
+    )
+    actual = _bytes_identity(relative, data)
+    if (
+        actual["size"] != expected_size
+        or actual["sha256"] != expected_sha256
+    ):
+        raise ValueError(f"{label} bytes differ from their identity")
+    return actual, data
+
+
+def _load_package_transactions_for_actions(
+    run_dir: Path,
+    package_inputs: Mapping[str, object],
+) -> list[dict[str, object]]:
+    refs = package_inputs.get("transactions")
+    if (
+        not isinstance(refs, list)
+        or not refs
+        or len(refs) > MAX_PACKAGE_TRANSACTIONS
+    ):
+        raise ValueError("PACKAGE-INPUTS transaction references are malformed")
+    total_bytes = 0
+    transactions: list[dict[str, object]] = []
+    for ref in refs:
+        identity, data = _load_bounded_run_identity(
+            run_dir,
+            ref,
+            max_bytes=MAX_PACKAGE_TRANSACTION_BYTES,
+            label="package transaction",
+        )
+        identity_size = identity["size"]
+        if not isinstance(identity_size, int):
+            raise ValueError("package transaction size is malformed")
+        total_bytes += identity_size
+        if total_bytes > MAX_PACKAGE_TRANSACTION_BYTES:
+            raise ValueError(
+                "package transactions exceed their aggregate byte bound"
+            )
+        transactions.append(
+            _decode_json_object(data, "package transaction")
+        )
+    return transactions
+
+
+def _journal_source_path(value: str) -> None:
+    path = Path(value)
+    if (
+        not value
+        or not path.is_absolute()
+        or ".." in path.parts
+        or str(path) != value
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("APT capture journal contains an unsafe source path")
+
+
+def _parse_sealed_capture_journal(
+    data: bytes,
+) -> list[dict[str, object]]:
+    if not data.endswith(b"\n"):
+        raise ValueError("APT capture journal has no final newline")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("APT capture journal is not UTF-8") from exc
+    lines = text.splitlines()
+    if not lines or lines[0] != _JOURNAL_HEADER.rstrip("\n"):
+        raise ValueError("APT capture journal header is invalid")
+    if len(lines) > MAX_TOTAL_PACKAGE_RECORDS + (2 * MAX_APT_ACTION_CAPTURES) + 1:
+        raise ValueError("APT capture journal exceeds its line bound")
+
+    transactions: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    expected_txid = 1
+    total_protocol_bytes = 0
+    total_blob_bytes = 0
+    total_records = 0
+    for raw_line in lines[1:]:
+        if (
+            not raw_line
+            or len(raw_line.encode("utf-8")) > 64 * 1024
+            or any(ord(char) < 9 or ord(char) in {11, 12, 127} for char in raw_line)
+        ):
+            raise ValueError("APT capture journal contains an invalid line")
+        fields = raw_line.split("\t")
+        record_type = fields[0]
+        if record_type == "P":
+            if (
+                current is not None
+                or len(fields) != _PROTOCOL_JOURNAL_COLUMNS
+            ):
+                raise ValueError("APT capture protocol record is out of order")
+            _, txid, digest, size_text, protocol, status = fields
+            if (
+                txid != str(expected_txid)
+                or not _HEX_SHA256.fullmatch(digest)
+                or not size_text.isdigit()
+                or not 0 < int(size_text) <= MAX_APT_PROTOCOL_BYTES
+                or protocol != "apt-pre-install-v3"
+                or status != "stable"
+            ):
+                raise ValueError("APT capture protocol record is malformed")
+            total_protocol_bytes += int(size_text)
+            if total_protocol_bytes > MAX_TOTAL_APT_PROTOCOL_BYTES:
+                raise ValueError(
+                    "APT capture protocols exceed their aggregate byte bound"
+                )
+            current = {
+                "txid": txid,
+                "sha256": digest,
+                "size": int(size_text),
+                "records": [],
+            }
+            continue
+        if record_type == "F":
+            if current is None or len(fields) != _FILE_JOURNAL_COLUMNS:
+                raise ValueError("APT capture file record is out of order")
+            _, txid, kind, digest, size_text, original, extra, status = fields
+            if (
+                txid != current["txid"]
+                or kind
+                not in {
+                    "source",
+                    "config",
+                    "keyring",
+                    "release",
+                    "index",
+                    "deb",
+                    "recorder",
+                }
+                or not _HEX_SHA256.fullmatch(digest)
+                or not size_text.isdigit()
+                or status != "stable"
+                or any(ord(char) < 32 or ord(char) == 127 for char in extra)
+            ):
+                raise ValueError("APT capture file record is malformed")
+            blob_size = int(size_text)
+            if blob_size > MAX_PACKAGE_INPUT_BLOB_BYTES:
+                raise ValueError(
+                    "APT capture file exceeds its blob bound"
+                )
+            total_blob_bytes += blob_size
+            if total_blob_bytes > MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES:
+                raise ValueError(
+                    "APT capture files exceed their aggregate blob bound"
+                )
+            _journal_source_path(original)
+            records = current["records"]
+            if not isinstance(records, list):
+                raise ValueError("APT capture journal state is malformed")
+            records.append(
+                {
+                    "kind": kind,
+                    "sha256": digest,
+                    "size": int(size_text),
+                    "source_path": original,
+                    "extra": extra,
+                }
+            )
+            total_records += 1
+            if (
+                len(records) > MAX_PACKAGE_RECORDS_PER_TRANSACTION
+                or total_records > MAX_TOTAL_PACKAGE_RECORDS
+            ):
+                raise ValueError("APT capture transaction exceeds its file bound")
+            continue
+        if record_type == "E":
+            if current is None or len(fields) != _END_JOURNAL_COLUMNS:
+                raise ValueError("APT capture end record is out of order")
+            _, txid, result, status = fields
+            records = current["records"]
+            if (
+                txid != current["txid"]
+                or result != "complete"
+                or status != "stable"
+                or not isinstance(records, list)
+                or not records
+            ):
+                raise ValueError("APT capture end record is malformed")
+            transactions.append(current)
+            current = None
+            expected_txid += 1
+            if len(transactions) > MAX_APT_ACTION_CAPTURES:
+                raise ValueError("APT capture journal exceeds its transaction bound")
+            continue
+        raise ValueError("APT capture journal contains an unknown record")
+    if current is not None:
+        raise ValueError("APT capture journal contains an incomplete transaction")
+    return transactions
+
+
+def _journal_record_path(record: Mapping[str, object]) -> str:
+    kind = record["kind"]
+    digest = record["sha256"]
+    suffix = ".deb" if kind == "deb" else ""
+    return f"apt/blobs/{kind}/{digest}{suffix}"
+
+
+def _validate_capture_contract_bytes(
+    run_dir: Path,
+    transaction_id: str,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    expected = (
+        (
+            "recorder",
+            "/usr/lib/distroforge/capture-package-inputs",
+            _capture_hook_script().encode("utf-8"),
+        ),
+        (
+            "config",
+            "/etc/apt/apt.conf.d/99distroforge-evidence",
+            _capture_hook_config().encode("utf-8"),
+        ),
+    )
+    for kind, source_path, expected_bytes in expected:
+        matches = [
+            record
+            for record in records
+            if record.get("kind") == kind
+            and record.get("source_path") == source_path
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"APT transaction {transaction_id} does not bind exactly "
+                f"one {kind} contract"
+            )
+        record = matches[0]
+        identity = {
+            "path": _journal_record_path(record),
+            "size": record.get("size"),
+            "sha256": record.get("sha256"),
+        }
+        _, actual_bytes = _load_bounded_run_identity(
+            run_dir,
+            identity,
+            max_bytes=MAX_PACKAGE_INPUTS_BYTES,
+            label=f"APT {kind} contract",
+        )
+        if actual_bytes != expected_bytes:
+            raise ValueError(
+                f"APT transaction {transaction_id} used unexpected "
+                f"{kind} contract bytes"
+            )
+
+
+def _captures_from_sealed_journal(
+    run_dir: Path,
+    journal_bytes: bytes,
+    transactions: Sequence[Mapping[str, object]],
+) -> list[AptProtocolCapture]:
+    journal_transactions = _parse_sealed_capture_journal(journal_bytes)
+    apt_transactions: dict[str, Mapping[str, object]] = {}
+    for transaction in transactions:
+        transaction_id = transaction.get("id")
+        if (
+            transaction.get("kind") == "apt-pre-install"
+            and isinstance(transaction_id, str)
+        ):
+            apt_transactions[transaction_id] = transaction
+
+    captures: list[AptProtocolCapture] = []
+    journal_ids: set[str] = set()
+    total_records = 0
+    for journal_transaction in journal_transactions:
+        txid = journal_transaction["txid"]
+        if not isinstance(txid, str):
+            raise ValueError("APT capture transaction id is malformed")
+        transaction_id = f"apt-{int(txid):04d}"
+        journal_ids.add(transaction_id)
+        apt_transaction = apt_transactions.get(transaction_id)
+        if not isinstance(apt_transaction, Mapping):
+            raise ValueError(
+                "APT capture journal references no package transaction"
+            )
+        raw_records = apt_transaction.get("records")
+        journal_records = journal_transaction.get("records")
+        if not isinstance(raw_records, list) or not isinstance(
+            journal_records,
+            list,
+        ):
+            raise ValueError("APT capture transaction records are malformed")
+        normalised_records: list[dict[str, object]] = []
+        for raw_record in raw_records:
+            if not isinstance(raw_record, Mapping):
+                raise ValueError("APT package transaction record is malformed")
+            core = {
+                "kind": raw_record.get("kind"),
+                "sha256": raw_record.get("sha256"),
+                "size": raw_record.get("size"),
+                "source_path": raw_record.get("source_path"),
+                "extra": raw_record.get("extra"),
+            }
+            if raw_record.get("path") != _journal_record_path(core):
+                raise ValueError(
+                    "APT package transaction CAS path differs from its journal"
+                )
+            normalised_records.append(core)
+        if normalised_records != journal_records:
+            raise ValueError(
+                "APT package transaction records differ from the sealed journal"
+            )
+        total_records += len(normalised_records)
+        if total_records > MAX_TOTAL_PACKAGE_RECORDS:
+            raise ValueError("APT capture records exceed their aggregate bound")
+        _validate_capture_contract_bytes(
+            run_dir,
+            transaction_id,
+            normalised_records,
+        )
+
+        digest = journal_transaction.get("sha256")
+        size = journal_transaction.get("size")
+        if not isinstance(digest, str) or not isinstance(size, int):
+            raise ValueError("APT capture protocol identity is malformed")
+        protocol_path = f"apt/protocol/{digest}.v3"
+        _, protocol_bytes = _load_bounded_run_identity(
+            run_dir,
+            {
+                "path": protocol_path,
+                "size": size,
+                "sha256": digest,
+            },
+            max_bytes=MAX_APT_PROTOCOL_BYTES,
+            label="APT protocol capture",
+        )
+        captures.append(
+            AptProtocolCapture(
+                transaction_id=transaction_id,
+                path=protocol_path,
+                size=size,
+                sha256=digest,
+                data=protocol_bytes,
+                complete=True,
+            )
+        )
+    if journal_ids != set(apt_transactions):
+        raise ValueError(
+            "APT package transactions differ from the sealed capture journal"
+        )
+    return captures
+
+
 def _identity_error(value: object, run_dir: Path) -> str | None:
     if not isinstance(value, dict):
         return "package evidence contains a malformed file identity"
@@ -3131,7 +4022,24 @@ def _capture_hook_config() -> str:
             'APT::Keep-Downloaded-Packages "true";',
             'Binary::apt::APT::Keep-Downloaded-Packages "true";',
             'Binary::apt-get::APT::Keep-Downloaded-Packages "true";',
-            'DPkg::Pre-Install-Pkgs {"/usr/lib/distroforge/capture-package-inputs";};',
+            (
+                'DPkg::Pre-Install-Pkgs {'
+                '"/usr/lib/distroforge/capture-package-inputs pre";'
+                "};"
+            ),
+            (
+                "DPkg::Tools::options::"
+                '/usr/lib/distroforge/capture-package-inputs::Version "3";'
+            ),
+            (
+                "DPkg::Tools::options::"
+                '/usr/lib/distroforge/capture-package-inputs::InfoFD "0";'
+            ),
+            (
+                'DPkg::Post-Invoke {'
+                '"/usr/lib/distroforge/capture-package-inputs post";'
+                "};"
+            ),
             "",
         ]
     )
@@ -3144,43 +4052,214 @@ set -eu
 base=/var/lib/distroforge/package-evidence
 store=$base/store
 journal=$base/transactions.tsv
-mkdir -p "$store"
-last=0
-if [ -f "$journal" ]; then
-    last=$(awk -F '\\t' '$1 == "F" { value = $2 } END { print value + 0 }' "$journal")
-fi
-tx=$((last + 1))
+sequence=$base/sequence
+active=$base/active
+lock=$base/lock
+protocol_limit=16777216
+blob_limit=34359738368
+blob_total_limit=68719476736
+blob_total=0
+umask 077
+
+fail() {
+    echo "package evidence: $*" >&2
+    exit 125
+}
+
+safe_field() {
+    value=$1
+    if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        fail "journal field contains a control character"
+    fi
+}
+
+require_regular() {
+    path=$1
+    [ -f "$path" ] && [ ! -L "$path" ] \
+        || fail "unsafe package evidence state: $path"
+}
+
+acquire_lock() {
+    if [ -e "$base" ]; then
+        [ -d "$base" ] && [ ! -L "$base" ] \
+            || fail "unsafe package evidence staging root"
+    else
+        mkdir -p "$base"
+    fi
+    if ! mkdir "$lock"; then
+        fail "another package evidence transaction is active"
+    fi
+    trap 'rmdir "$lock" 2>/dev/null || true' 0 1 2 3 15
+    if [ -e "$journal" ]; then
+        require_regular "$journal"
+        IFS= read -r journal_header < "$journal" \
+            || fail "package evidence journal has no header"
+        expected_header=$(printf 'J\\t1\\tapt-pre-install-v3\\tstable')
+        [ "$journal_header" = "$expected_header" ] \
+            || fail "package evidence journal header is malformed"
+    else
+        journal_part=$(mktemp "$base/journal.XXXXXX")
+        printf 'J\\t1\\tapt-pre-install-v3\\tstable\\n' > "$journal_part"
+        chmod 0600 "$journal_part"
+        if ! ln "$journal_part" "$journal"; then
+            rm -f -- "$journal_part"
+            fail "could not create the package evidence journal"
+        fi
+        rm -f -- "$journal_part"
+    fi
+}
+
+release_lock() {
+    rmdir "$lock"
+    trap - 0 1 2 3 15
+}
+
+next_transaction() {
+    last=0
+    if [ -e "$sequence" ]; then
+        require_regular "$sequence"
+        IFS= read -r last < "$sequence" \
+            || fail "transaction sequence is unreadable"
+        case "$last" in
+            ''|*[!0-9]*) fail "transaction sequence is malformed" ;;
+        esac
+    fi
+    tx=$((last + 1))
+    [ "$tx" -gt "$last" ] || fail "transaction sequence overflow"
+    temporary=$(mktemp "$base/sequence.XXXXXX")
+    printf '%s\\n' "$tx" > "$temporary"
+    chmod 0600 "$temporary"
+    mv -- "$temporary" "$sequence"
+}
 
 seal_file() {
     kind=$1
     source=$2
     extra=${3-}
     [ -f "$source" ] || return 0
-    before=$(sha256sum -- "$source")
-    digest=${before%% *}
+    [ ! -L "$source" ] || fail "refusing symlinked input: $source"
+    safe_field "$kind"
+    safe_field "$source"
+    safe_field "$extra"
     size=$(wc -c < "$source")
+    case "$size" in
+        ''|*[!0-9]*) fail "input size is malformed: $source" ;;
+    esac
+    [ "$size" -le "$blob_limit" ] \
+        || fail "input exceeds the blob byte limit: $source"
+    blob_total=$((blob_total + size))
+    [ "$blob_total" -le "$blob_total_limit" ] \
+        || fail "package evidence inputs exceed the aggregate byte limit"
+    before=$(head -c $((blob_limit + 1)) -- "$source" | sha256sum)
+    digest=${before%% *}
     directory=$store/$kind
     target=$directory/$digest
     mkdir -p "$directory"
     if [ ! -f "$target" ]; then
-        temporary=$target.part.$$
-        cp -- "$source" "$temporary"
+        temporary=$(mktemp "$directory/$digest.part.XXXXXX")
+        head -c $((blob_limit + 1)) -- "$source" > "$temporary"
+        copied_size=$(wc -c < "$temporary")
+        if [ "$copied_size" -gt "$blob_limit" ]; then
+            rm -f -- "$temporary"
+            fail "input grew beyond the blob byte limit: $source"
+        fi
         copied=$(sha256sum -- "$temporary")
         copied=${copied%% *}
-        after=$(sha256sum -- "$source")
+        after=$(head -c $((blob_limit + 1)) -- "$source" | sha256sum)
         after=${after%% *}
-        if [ "$digest" != "$copied" ] || [ "$digest" != "$after" ]; then
+        after_size=$(wc -c < "$source")
+        if [ "$size" != "$copied_size" ] \
+            || [ "$size" != "$after_size" ] \
+            || [ "$digest" != "$copied" ] \
+            || [ "$digest" != "$after" ]; then
             rm -f -- "$temporary"
-            echo "package evidence: bytes changed during capture: $source" >&2
-            exit 125
+            fail "bytes changed during capture: $source"
         fi
-        chmod 0644 "$temporary"
+        chmod 0600 "$temporary"
         mv -- "$temporary" "$target"
+    else
+        require_regular "$target"
+        copied_size=$(wc -c < "$target")
+        if [ "$copied_size" -gt "$blob_limit" ]; then
+            fail "content-addressed input exceeds the blob byte limit: $target"
+        fi
+        copied=$(head -c $((blob_limit + 1)) -- "$target" | sha256sum)
+        copied=${copied%% *}
+        if [ "$size" != "$copied_size" ] || [ "$digest" != "$copied" ]; then
+            fail "content-addressed input is inconsistent: $target"
+        fi
     fi
     printf 'F\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\tstable\\n' \
         "$tx" "$kind" "$digest" "$size" "$source" "$extra" >> "$journal"
 }
 
+mode=${1-}
+case "$mode" in
+    pre)
+        [ "${APT_HOOK_INFO_FD-}" = 0 ] \
+            || fail "APT_HOOK_INFO_FD does not confirm InfoFD 0"
+        acquire_lock
+        [ ! -e "$active" ] \
+            || fail "an earlier APT transaction was not closed"
+        next_transaction
+        mkdir -p "$store/protocol"
+        protocol_part=$(mktemp "$base/protocol.$tx.XXXXXX")
+        head -c $((protocol_limit + 1)) > "$protocol_part"
+        protocol_size=$(wc -c < "$protocol_part")
+        if [ "$protocol_size" -gt "$protocol_limit" ]; then
+            rm -f -- "$protocol_part"
+            fail "APT protocol transcript exceeds the byte limit"
+        fi
+        [ "$protocol_size" -gt 0 ] \
+            || fail "APT protocol transcript is empty"
+        protocol_sha=$(sha256sum -- "$protocol_part")
+        protocol_sha=${protocol_sha%% *}
+        protocol_target=$store/protocol/$protocol_sha
+        chmod 0600 "$protocol_part"
+        if [ -e "$protocol_target" ]; then
+            require_regular "$protocol_target"
+            existing_size=$(wc -c < "$protocol_target")
+            [ "$existing_size" -le "$protocol_limit" ] \
+                || fail "APT protocol CAS exceeds the byte limit"
+            existing_sha=$(
+                head -c $((protocol_limit + 1)) -- "$protocol_target" \
+                    | sha256sum
+            )
+            existing_sha=${existing_sha%% *}
+            rm -f -- "$protocol_part"
+            if [ "$protocol_sha" != "$existing_sha" ] \
+                || [ "$protocol_size" != "$existing_size" ]; then
+                fail "APT protocol CAS is inconsistent"
+            fi
+        else
+            mv -- "$protocol_part" "$protocol_target"
+        fi
+        active_part=$(mktemp "$base/active.XXXXXX")
+        printf '%s\\n' "$tx" > "$active_part"
+        chmod 0600 "$active_part"
+        mv -- "$active_part" "$active"
+        printf 'P\\t%s\\t%s\\t%s\\tapt-pre-install-v3\\tstable\\n' \
+            "$tx" "$protocol_sha" "$protocol_size" >> "$journal"
+        ;;
+    post)
+        acquire_lock
+        require_regular "$active"
+        IFS= read -r tx < "$active" \
+            || fail "active transaction is unreadable"
+        case "$tx" in
+            ''|*[!0-9]*) fail "active transaction is malformed" ;;
+        esac
+        printf 'E\\t%s\\tcomplete\\tstable\\n' "$tx" >> "$journal"
+        rm -f -- "$active"
+        release_lock
+        exit 0
+        ;;
+    *)
+        fail "expected pre or post capture mode"
+        ;;
+esac
+
+seal_file recorder /usr/lib/distroforge/capture-package-inputs
 for source in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
     [ -f "$source" ] && seal_file source "$source"
 done
@@ -3203,14 +4282,24 @@ if [ -n "$lists" ]; then
     done
 fi
 
-targets=$base/index-targets.$$
+targets=$(mktemp "$base/index-targets.XXXXXX")
+# APT expands these indextarget fields; the shell must receive them literally.
+# shellcheck disable=SC2016
 apt-get indextargets --format '$(IDENTIFIER)|$(FILENAME)|$(URI)' > "$targets"
 while IFS='|' read -r identifier filename uri; do
     [ "$identifier" = Packages ] && seal_file index "$filename" "$uri"
 done < "$targets"
 rm -f -- "$targets"
 
+archives=$(mktemp "$base/archives.$tx.XXXXXX")
+awk '
+    actions && NF == 9 && substr($9, 1, 1) == "/" { print $9 }
+    $0 == "" { actions = 1 }
+' "$protocol_target" > "$archives"
 while IFS= read -r archive; do
     [ -f "$archive" ] && seal_file deb "$archive"
-done
+done < "$archives"
+rm -f -- "$archives"
+
+release_lock
 """

@@ -770,7 +770,7 @@ def test_release_gate_detects_provenance_alias_and_manifest_tampering(tmp_path: 
     assert "differs from immutable" in item.detail
 
 
-def test_release_gate_recomputes_the_package_map_once(
+def test_release_gate_recomputes_each_package_receipt_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -781,17 +781,31 @@ def test_release_gate_recomputes_the_package_map_once(
     write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
     validate = release_gate_module.validate_package_filesystem_causality
-    calls = 0
+    validate_actions = (
+        release_gate_module.validate_package_apt_actions_evidence
+    )
+    map_calls = 0
+    action_calls = 0
 
     def counted_validation(*args: object, **kwargs: object):
-        nonlocal calls
-        calls += 1
+        nonlocal map_calls
+        map_calls += 1
         return validate(*args, **kwargs)
+
+    def counted_action_validation(*args: object, **kwargs: object):
+        nonlocal action_calls
+        action_calls += 1
+        return validate_actions(*args, **kwargs)
 
     monkeypatch.setattr(
         release_gate_module,
         "validate_package_filesystem_causality",
         counted_validation,
+    )
+    monkeypatch.setattr(
+        release_gate_module,
+        "validate_package_apt_actions_evidence",
+        counted_action_validation,
     )
 
     ReleaseGateService().check(
@@ -801,7 +815,102 @@ def test_release_gate_recomputes_the_package_map_once(
         output_dir=project.output_dir,
     )
 
-    assert calls == 1
+    assert action_calls == 1
+    assert map_calls == 1
+
+
+def test_release_gate_requires_the_apt_action_receipt(
+    tmp_path: Path,
+) -> None:
+    project = Project.create(
+        "MissingActions",
+        tmp_path / "missing-actions",
+        "26.04",
+    )
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "MissingActions.iso"
+    iso.write_bytes(b"iso")
+    immutable = write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    (immutable.parent / "PACKAGE-APT-ACTIONS.json").unlink()
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+    )
+
+    item = next(item for item in gate.items if item.code == "package-inputs")
+    assert item.status == "blocked"
+    assert "no PACKAGE-APT-ACTIONS.json receipt" in item.detail
+
+
+def test_release_gate_rejects_a_forged_apt_action_promotion(
+    tmp_path: Path,
+) -> None:
+    project = Project.create(
+        "ForgedActions",
+        tmp_path / "forged-actions",
+        "26.04",
+    )
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "ForgedActions.iso"
+    iso.write_bytes(b"iso")
+    immutable = write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    action_path = immutable.parent / "PACKAGE-APT-ACTIONS.json"
+    action_payload = json.loads(action_path.read_text(encoding="utf-8"))
+    action_payload["release_ready"] = True
+    action_path.write_text(
+        json.dumps(action_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+    )
+
+    item = next(item for item in gate.items if item.code == "package-inputs")
+    assert item.status == "blocked"
+    assert "forbidden release promotion" in item.detail
+
+
+def test_release_gate_preview_bounds_the_apt_action_receipt_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = Project.create(
+        "OversizedActions",
+        tmp_path / "oversized-actions",
+        "26.04",
+    )
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "OversizedActions.iso"
+    iso.write_bytes(b"iso")
+    immutable = write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    action_path = immutable.parent / "PACKAGE-APT-ACTIONS.json"
+    monkeypatch.setattr(
+        release_gate_module,
+        "MAX_REPORT_JSON_BYTES",
+        action_path.stat().st_size - 1,
+    )
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+        verify_checksums=False,
+    )
+
+    item = next(item for item in gate.items if item.code == "package-inputs")
+    assert item.status == "blocked"
+    assert "APT action report exceeds its byte bound" in item.detail
 
 
 @pytest.mark.parametrize(

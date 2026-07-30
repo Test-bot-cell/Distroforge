@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import distroforge.core.package_evidence as package_evidence_module
 from distroforge.core.bootstrap import BootstrapOptions, BootstrapService
 from distroforge.core.command import CommandResult, CommandRunner, CommandSpec
+from distroforge.core.package_apt_actions import (
+    MAX_APT_PROTOCOL_BYTES,
+    MAX_PACKAGE_INPUT_BLOB_BYTES,
+    MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES,
+    PACKAGE_APT_ACTIONS_FILENAME,
+    AptProtocolCapture,
+    build_package_apt_actions_report,
+)
 from distroforge.core.package_evidence import (
     PACKAGE_INPUTS_SCHEMA,
     PACKAGE_TRANSACTION_SCHEMA,
@@ -19,9 +30,11 @@ from distroforge.core.package_evidence import (
     _capture_hook_script,
     _inside_root,
     _packages_records,
+    _parse_sealed_capture_journal,
     _stable_digest,
     package_apt_command_argv_sha256,
     package_source_policy_sha256,
+    validate_package_apt_actions_evidence,
     validate_package_evidence_payload,
 )
 from distroforge.core.project import Project
@@ -424,17 +437,647 @@ def test_bootstrap_tools_retain_inputs_and_pin_an_explicit_keyring(
     assert f"--keyring={keyring}" in debootstrap_argv
 
 
-def test_preinstall_hook_captures_all_chain_bytes_before_dpkg() -> None:
+def test_preinstall_hook_captures_apt_v3_and_all_chain_bytes_before_dpkg(
+    tmp_path: Path,
+) -> None:
     script = _capture_hook_script()
     config = _capture_hook_config()
 
-    assert "DPkg::Pre-Install-Pkgs" in config
+    assert (
+        'DPkg::Pre-Install-Pkgs {'
+        '"/usr/lib/distroforge/capture-package-inputs pre";'
+        "};"
+    ) in config
+    assert (
+        "DPkg::Tools::options::"
+        '/usr/lib/distroforge/capture-package-inputs::Version "3";'
+    ) in config
+    assert (
+        "DPkg::Tools::options::"
+        '/usr/lib/distroforge/capture-package-inputs::InfoFD "0";'
+    ) in config
+    assert (
+        'DPkg::Post-Invoke {'
+        '"/usr/lib/distroforge/capture-package-inputs post";'
+        "};"
+    ) in config
     assert 'APT::Keep-Downloaded-Packages "true"' in config
-    for kind in ("source", "config", "keyring", "release", "index", "deb"):
+    for kind in (
+        "recorder",
+        "source",
+        "config",
+        "keyring",
+        "release",
+        "index",
+        "deb",
+    ):
         assert f"seal_file {kind}" in script
+    assert '"${APT_HOOK_INFO_FD-}" = 0' in script
+    assert f"protocol_limit={MAX_APT_PROTOCOL_BYTES}" in script
+    assert f"blob_limit={MAX_PACKAGE_INPUT_BLOB_BYTES}" in script
+    assert (
+        f"blob_total_limit={MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES}"
+        in script
+    )
+    assert "apt-pre-install-v3" in script
+    assert "complete" in script
     assert "apt-get indextargets" in script
     assert "sha256sum --" in script
     assert "bytes changed during capture" in script
+    assert 'head -c $((blob_limit + 1)) -- "$source"' in script
+    assert script.index('size=$(wc -c < "$source")') < script.index(
+        'before=$(head -c $((blob_limit + 1)) -- "$source" | sha256sum)'
+    )
+    assert script.index(
+        'existing_size=$(wc -c < "$protocol_target")'
+    ) < script.index("existing_sha=$(")
+
+    config_path = tmp_path / "99distroforge-evidence"
+    config_path.write_text(config, encoding="utf-8")
+    dumped = subprocess.run(
+        ("apt-config", "-c", str(config_path), "dump"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert (
+        'DPkg::Tools::options::'
+        '/usr/lib/distroforge/capture-package-inputs::Version "3";'
+    ) in dumped
+    assert (
+        "DPkg::Tools::options::"
+        '/usr/lib/distroforge/capture-package-inputs::InfoFD "0";'
+    ) in dumped
+    subprocess.run(
+        ("sh", "-n"),
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
+    tmp_path: Path,
+) -> None:
+    controlled_root = tmp_path / "root"
+    base = controlled_root / "var/lib/distroforge/package-evidence"
+    recorder = (
+        controlled_root
+        / "usr/lib/distroforge/capture-package-inputs"
+    )
+    config_dir = controlled_root / "etc/apt/apt.conf.d"
+    keyring_dir = controlled_root / "usr/share/keyrings"
+    fake_bin = controlled_root / "fake-bin"
+    for directory in (
+        recorder.parent,
+        config_dir,
+        keyring_dir,
+        fake_bin,
+    ):
+        directory.mkdir(parents=True)
+    (config_dir / "99distroforge-evidence").write_text(
+        _capture_hook_config(),
+        encoding="utf-8",
+    )
+    for helper in ("apt-config", "apt-get"):
+        target = fake_bin / helper
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o755)
+
+    script = _capture_hook_script()
+    replacements = (
+        (
+            "base=/var/lib/distroforge/package-evidence",
+            f"base={shlex.quote(str(base))}",
+        ),
+        (
+            "/usr/lib/distroforge/capture-package-inputs",
+            str(recorder),
+        ),
+        ("/etc/apt", str(controlled_root / "etc/apt")),
+        ("/usr/share/keyrings", str(keyring_dir)),
+    )
+    for source, replacement in replacements:
+        script = script.replace(source, replacement)
+    recorder.write_text(script, encoding="utf-8")
+    recorder.chmod(0o755)
+
+    protocol = (
+        b"VERSION 3\n"
+        b"APT::Architecture=amd64\n\n"
+        b"proof 1 amd64 none = 1 amd64 none **CONFIGURE**\n"
+    )
+    base_env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+    }
+    missing_fd = subprocess.run(
+        ("sh", str(recorder), "pre"),
+        input=protocol,
+        capture_output=True,
+        env=base_env,
+        check=False,
+    )
+    assert missing_fd.returncode == 125
+    assert b"APT_HOOK_INFO_FD" in missing_fd.stderr
+
+    hook_env = {**base_env, "APT_HOOK_INFO_FD": "0"}
+    pre = subprocess.run(
+        ("sh", str(recorder), "pre"),
+        input=protocol,
+        capture_output=True,
+        env=hook_env,
+        check=False,
+    )
+    assert pre.returncode == 0, pre.stderr.decode(errors="replace")
+    assert (base / "active").is_file()
+
+    concurrent = subprocess.run(
+        ("sh", str(recorder), "pre"),
+        input=protocol,
+        capture_output=True,
+        env=hook_env,
+        check=False,
+    )
+    assert concurrent.returncode == 125
+    assert b"earlier APT transaction was not closed" in concurrent.stderr
+
+    post = subprocess.run(
+        ("sh", str(recorder), "post"),
+        capture_output=True,
+        env=base_env,
+        check=False,
+    )
+    assert post.returncode == 0, post.stderr.decode(errors="replace")
+    assert not (base / "active").exists()
+    journal = (base / "transactions.tsv").read_bytes()
+    parsed = _parse_sealed_capture_journal(journal)
+    assert len(parsed) == 1
+    assert parsed[0]["size"] == len(protocol)
+    assert any(
+        record["kind"] == "recorder"
+        for record in parsed[0]["records"]
+    )
+    assert b"\nE\t1\tcomplete\tstable\n" in journal
+
+    oversized_base = controlled_root / "oversized"
+    oversized_script = script.replace(
+        f"base={shlex.quote(str(base))}",
+        f"base={shlex.quote(str(oversized_base))}",
+    ).replace(
+        f"protocol_limit={MAX_APT_PROTOCOL_BYTES}",
+        "protocol_limit=64",
+    )
+    oversized_recorder = controlled_root / "oversized-recorder"
+    oversized_recorder.write_text(oversized_script, encoding="utf-8")
+    oversized_recorder.chmod(0o755)
+    oversized = subprocess.run(
+        ("sh", str(oversized_recorder), "pre"),
+        input=b"x" * 65,
+        capture_output=True,
+        env=hook_env,
+        check=False,
+    )
+    assert oversized.returncode == 125
+    assert b"exceeds the byte limit" in oversized.stderr
+
+    blob_limited_base = controlled_root / "blob-limited"
+    blob_limited_script = script.replace(
+        f"base={shlex.quote(str(base))}",
+        f"base={shlex.quote(str(blob_limited_base))}",
+    ).replace(
+        f"blob_limit={MAX_PACKAGE_INPUT_BLOB_BYTES}",
+        "blob_limit=1",
+    )
+    blob_limited_recorder = controlled_root / "blob-limited-recorder"
+    blob_limited_recorder.write_text(
+        blob_limited_script,
+        encoding="utf-8",
+    )
+    blob_limited_recorder.chmod(0o755)
+    blob_limited = subprocess.run(
+        ("sh", str(blob_limited_recorder), "pre"),
+        input=protocol,
+        capture_output=True,
+        env=hook_env,
+        check=False,
+    )
+    assert blob_limited.returncode == 125
+    assert b"exceeds the blob byte limit" in blob_limited.stderr
+
+    aggregate_limited_base = controlled_root / "aggregate-limited"
+    aggregate_limited_script = script.replace(
+        f"base={shlex.quote(str(base))}",
+        f"base={shlex.quote(str(aggregate_limited_base))}",
+    ).replace(
+        f"blob_total_limit={MAX_TOTAL_PACKAGE_INPUT_BLOB_BYTES}",
+        "blob_total_limit=1",
+    )
+    aggregate_limited_recorder = controlled_root / "aggregate-limited-recorder"
+    aggregate_limited_recorder.write_text(
+        aggregate_limited_script,
+        encoding="utf-8",
+    )
+    aggregate_limited_recorder.chmod(0o755)
+    aggregate_limited = subprocess.run(
+        ("sh", str(aggregate_limited_recorder), "pre"),
+        input=protocol,
+        capture_output=True,
+        env=hook_env,
+        check=False,
+    )
+    assert aggregate_limited.returncode == 125
+    assert b"aggregate byte limit" in aggregate_limited.stderr
+
+
+@pytest.mark.parametrize(
+    ("action", "requires_deb"),
+    (
+        (
+            "proof 1 amd64 none = 1 amd64 none **CONFIGURE**",
+            False,
+        ),
+        (
+            "proof - - none < 1 amd64 none "
+            "/var/cache/apt/archives/proof_1_amd64.deb",
+            True,
+        ),
+    ),
+)
+def test_hook_journal_closes_and_replays_protocol_v3_before_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    requires_deb: bool,
+) -> None:
+    service, project = _capture_service(tmp_path, monkeypatch)
+    root = project.squashfs_root
+    staging = root / "var/lib/distroforge/package-evidence"
+    recorder = root / "usr/lib/distroforge/capture-package-inputs"
+    recorder.parent.mkdir(parents=True)
+    recorder.write_bytes(b"recorder bytes\n")
+    recorder_sha = hashlib.sha256(recorder.read_bytes()).hexdigest()
+    recorder_store = staging / "store" / "recorder" / recorder_sha
+    recorder_store.parent.mkdir(parents=True)
+    recorder_store.write_bytes(recorder.read_bytes())
+
+    protocol = (
+        "VERSION 3\n"
+        "APT::Architecture=amd64\n"
+        "\n"
+        f"{action}\n"
+    ).encode()
+    protocol_sha = hashlib.sha256(protocol).hexdigest()
+    protocol_store = staging / "store" / "protocol" / protocol_sha
+    protocol_store.parent.mkdir(parents=True)
+    protocol_store.write_bytes(protocol)
+    journal = staging / "transactions.tsv"
+    journal.write_text(
+        (
+            "J\t1\tapt-pre-install-v3\tstable\n"
+            f"P\t1\t{protocol_sha}\t{len(protocol)}\t"
+            "apt-pre-install-v3\tstable\n"
+            f"F\t1\trecorder\t{recorder_sha}\t"
+            f"{recorder.stat().st_size}\t"
+            "/usr/lib/distroforge/capture-package-inputs\t\tstable\n"
+            "E\t1\tcomplete\tstable\n"
+        ),
+        encoding="utf-8",
+    )
+
+    closed: list[tuple[str, str, bool]] = []
+    written: list[str] = []
+
+    def close_transaction(
+        transaction_id: str,
+        kind: str,
+        records: list[dict[str, object]],
+        *,
+        inventory: list[dict[str, str]],
+        require_debs: bool,
+    ) -> dict[str, object]:
+        del records, inventory
+        closed.append((transaction_id, kind, require_debs))
+        return {
+            "schema": PACKAGE_TRANSACTION_SCHEMA,
+            "run_id": service._run_id,
+            "id": transaction_id,
+            "kind": kind,
+            "complete": True,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(service, "_close_transaction", close_transaction)
+    monkeypatch.setattr(
+        service,
+        "_write_transaction",
+        lambda name, _transaction: written.append(name),
+    )
+
+    captures = service._collect_hook_transactions()
+
+    assert closed == [("apt-0001", "apt-pre-install", requires_deb)]
+    assert written == ["apt-0001"]
+    assert len(captures) == 1
+    assert captures[0]["transaction_id"] == "apt-0001"
+    assert captures[0]["data"] == protocol
+    assert captures[0]["complete"] is True
+    assert (
+        service._run_dir / f"apt/protocol/{protocol_sha}.v3"
+    ).read_bytes() == protocol
+
+
+def test_hook_journal_refuses_an_unclosed_protocol_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service, project = _capture_service(tmp_path, monkeypatch)
+    staging = (
+        project.squashfs_root
+        / "var/lib/distroforge/package-evidence"
+    )
+    protocol = (
+        b"VERSION 3\n\n"
+        b"proof 1 amd64 none = 1 amd64 none **CONFIGURE**\n"
+    )
+    digest = hashlib.sha256(protocol).hexdigest()
+    source = staging / "store" / "protocol" / digest
+    source.parent.mkdir(parents=True)
+    source.write_bytes(protocol)
+    journal = staging / "transactions.tsv"
+    journal.write_text(
+        (
+            "J\t1\tapt-pre-install-v3\tstable\n"
+            f"P\t1\t{digest}\t{len(protocol)}\t"
+            "apt-pre-install-v3\tstable\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="incomplete transaction"):
+        service._collect_hook_transactions()
+
+
+def test_hook_journal_enforces_its_byte_bound_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service, project = _capture_service(tmp_path, monkeypatch)
+    journal = (
+        project.squashfs_root
+        / "var/lib/distroforge/package-evidence/transactions.tsv"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "J\t1\tapt-pre-install-v3\tstable\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        package_evidence_module,
+        "MAX_CAPTURE_JOURNAL_BYTES",
+        journal.stat().st_size - 1,
+    )
+
+    with pytest.raises(ValueError, match="journal exceeds its byte bound"):
+        service._collect_hook_transactions()
+
+
+def test_offline_journal_rejects_protocol_aggregate_before_loading_cas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        package_evidence_module,
+        "MAX_TOTAL_APT_PROTOCOL_BYTES",
+        10,
+    )
+    digest = "a" * 64
+    journal = (
+        "J\t1\tapt-pre-install-v3\tstable\n"
+        f"P\t1\t{digest}\t6\tapt-pre-install-v3\tstable\n"
+        f"F\t1\trecorder\t{digest}\t1\t/usr/lib/recorder\t\tstable\n"
+        "E\t1\tcomplete\tstable\n"
+        f"P\t2\t{digest}\t6\tapt-pre-install-v3\tstable\n"
+        f"F\t2\trecorder\t{digest}\t1\t/usr/lib/recorder\t\tstable\n"
+        "E\t2\tcomplete\tstable\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="aggregate byte bound"):
+        _parse_sealed_capture_journal(journal)
+
+
+def test_offline_journal_requires_canonical_transaction_numbers() -> None:
+    digest = "a" * 64
+    journal = (
+        "J\t1\tapt-pre-install-v3\tstable\n"
+        f"P\t01\t{digest}\t1\tapt-pre-install-v3\tstable\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="protocol record is malformed"):
+        _parse_sealed_capture_journal(journal)
+
+
+def test_hook_collector_refuses_an_oversized_blob_before_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service, project = _capture_service(tmp_path, monkeypatch)
+    staging = (
+        project.squashfs_root
+        / "var/lib/distroforge/package-evidence"
+    )
+    protocol = (
+        b"VERSION 3\n\n"
+        b"proof 1 amd64 none = 1 amd64 none **CONFIGURE**\n"
+    )
+    protocol_digest = hashlib.sha256(protocol).hexdigest()
+    protocol_store = staging / "store/protocol" / protocol_digest
+    protocol_store.parent.mkdir(parents=True)
+    protocol_store.write_bytes(protocol)
+    recorder = (
+        project.squashfs_root
+        / "usr/lib/distroforge/capture-package-inputs"
+    )
+    recorder.parent.mkdir(parents=True)
+    recorder.write_bytes(b"xx")
+    recorder_digest = hashlib.sha256(recorder.read_bytes()).hexdigest()
+    recorder_store = staging / "store/recorder" / recorder_digest
+    recorder_store.parent.mkdir(parents=True)
+    recorder_store.write_bytes(recorder.read_bytes())
+    (staging / "transactions.tsv").write_text(
+        (
+            "J\t1\tapt-pre-install-v3\tstable\n"
+            f"P\t1\t{protocol_digest}\t{len(protocol)}\t"
+            "apt-pre-install-v3\tstable\n"
+            f"F\t1\trecorder\t{recorder_digest}\t2\t"
+            "/usr/lib/distroforge/capture-package-inputs\t\tstable\n"
+            "E\t1\tcomplete\tstable\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        package_evidence_module,
+        "MAX_PACKAGE_INPUT_BLOB_BYTES",
+        1,
+    )
+
+    with pytest.raises(ValueError, match="blob bound"):
+        service._collect_hook_transactions()
+
+
+@pytest.mark.parametrize("authentic_recorder", (True, False))
+def test_offline_apt_action_validator_replays_journal_and_contract_bytes(
+    tmp_path: Path,
+    authentic_recorder: bool,
+) -> None:
+    run_id = "apt-action-offline-run"
+    run_dir = tmp_path / "run"
+    transaction_dir = run_dir / "apt" / "transactions"
+    transaction_dir.mkdir(parents=True)
+
+    def contract_record(
+        kind: str,
+        source_path: str,
+        content: bytes,
+    ) -> dict[str, object]:
+        digest = hashlib.sha256(content).hexdigest()
+        target = run_dir / "apt" / "blobs" / kind / digest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return _identity(
+            target,
+            run_dir,
+            kind=kind,
+            source_path=source_path,
+            extra="",
+        )
+
+    recorder_bytes = (
+        _capture_hook_script().encode()
+        if authentic_recorder
+        else b"#!/bin/sh\nexit 0\n"
+    )
+    records = [
+        contract_record(
+            "recorder",
+            "/usr/lib/distroforge/capture-package-inputs",
+            recorder_bytes,
+        ),
+        contract_record(
+            "config",
+            "/etc/apt/apt.conf.d/99distroforge-evidence",
+            _capture_hook_config().encode(),
+        ),
+    ]
+    transaction = {
+        "schema": PACKAGE_TRANSACTION_SCHEMA,
+        "run_id": run_id,
+        "id": "apt-0001",
+        "kind": "apt-pre-install",
+        "fresh_rootfs": True,
+        "records": records,
+        "inventory": [],
+        "complete": True,
+        "issues": [],
+    }
+    transaction_path = transaction_dir / "apt-0001.json"
+    transaction_path.write_text(
+        json.dumps(transaction, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    package_inputs = {
+        "schema": PACKAGE_INPUTS_SCHEMA,
+        "run_id": run_id,
+        "scope": "target-root",
+        "source_mode": "bootstrap",
+        "capture_mode": "dpkg-pre-install-sealed-copy",
+        "transactions": [_identity(transaction_path, run_dir)],
+        "baseline_inventory": [],
+        "final_inventory": [],
+    }
+    package_inputs_path = run_dir / "PACKAGE-INPUTS.json"
+    package_inputs_path.write_text(
+        json.dumps(package_inputs, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    protocol = (
+        b"VERSION 3\nAPT::Architecture=amd64\n\n"
+        b"proof 1 amd64 none = 1 amd64 none **CONFIGURE**\n"
+    )
+    protocol_sha = hashlib.sha256(protocol).hexdigest()
+    protocol_path = run_dir / "apt" / "protocol" / f"{protocol_sha}.v3"
+    protocol_path.parent.mkdir(parents=True)
+    protocol_path.write_bytes(protocol)
+    journal_path = run_dir / "apt" / "transactions.tsv"
+    journal_lines = [
+        "J\t1\tapt-pre-install-v3\tstable",
+        (
+            f"P\t1\t{protocol_sha}\t{len(protocol)}\t"
+            "apt-pre-install-v3\tstable"
+        ),
+    ]
+    for record in records:
+        journal_lines.append(
+            "\t".join(
+                (
+                    "F",
+                    "1",
+                    str(record["kind"]),
+                    str(record["sha256"]),
+                    str(record["size"]),
+                    str(record["source_path"]),
+                    "",
+                    "stable",
+                )
+            )
+        )
+    journal_lines.append("E\t1\tcomplete\tstable")
+    journal_path.write_text(
+        "\n".join(journal_lines) + "\n",
+        encoding="utf-8",
+    )
+
+    capture = AptProtocolCapture(
+        transaction_id="apt-0001",
+        path=f"apt/protocol/{protocol_sha}.v3",
+        size=len(protocol),
+        sha256=protocol_sha,
+        data=protocol,
+        complete=True,
+    )
+    report = build_package_apt_actions_report(
+        run_id=run_id,
+        package_inputs=package_inputs,
+        package_inputs_identity=_identity(
+            package_inputs_path,
+            run_dir,
+        ),
+        journal_identity=_identity(journal_path, run_dir),
+        transactions=[transaction],
+        captures=[capture],
+    )
+    (run_dir / PACKAGE_APT_ACTIONS_FILENAME).write_text(
+        json.dumps(report, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_package_apt_actions_evidence(
+        run_dir,
+        expected_run_id=run_id,
+    )
+
+    assert validation.ok is authentic_recorder
+    assert validation.filesystem_causality == "unverified"
+    assert validation.release_ready is False
+    if authentic_recorder:
+        assert validation.apt_actions == "self-consistent"
+        assert (
+            validation.capture_origin
+            == "unverified-mutable-target-rootfs"
+        )
+    else:
+        assert "unexpected recorder contract bytes" in validation.detail
 
 
 def test_offline_validator_recomputes_release_packages_and_deb_chain(
@@ -449,6 +1092,67 @@ def test_offline_validator_recomputes_release_packages_and_deb_chain(
     assert "1 archive .deb inputs" in validation.detail
     assert validation.filesystem_causality == "unverified"
     assert validation.release_ready is False
+
+
+def test_package_input_validator_authenticates_apt_deb_identity_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload, run_dir, _deb, _release = _valid_payload(
+        tmp_path,
+        monkeypatch,
+    )
+    refs = payload["transactions"]
+    assert isinstance(refs, list)
+    bootstrap_ref = refs[0]
+    assert isinstance(bootstrap_ref, dict)
+    bootstrap = json.loads(
+        (run_dir / str(bootstrap_ref["path"])).read_text(encoding="utf-8")
+    )
+    records = bootstrap["records"]
+    assert isinstance(records, list)
+    for record in records:
+        if isinstance(record, dict) and record.get("kind") == "deb":
+            record.update(
+                {
+                    "package": "proof-package",
+                    "version": "1.2.3-1",
+                    "architecture": "all",
+                }
+            )
+    transaction = {
+        "schema": PACKAGE_TRANSACTION_SCHEMA,
+        "run_id": "proof-run",
+        "id": "apt-0001",
+        "kind": "apt-pre-install",
+        "fresh_rootfs": True,
+        "records": records,
+        "inventory": [],
+        "complete": True,
+        "issues": [],
+    }
+    transaction_path = run_dir / "apt/transactions/apt-0001.json"
+    transaction_path.write_text(
+        json.dumps(transaction, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    refs.insert(1, _identity(transaction_path, run_dir))
+
+    assert _validate(payload, run_dir).ok is True
+
+    for record in records:
+        if isinstance(record, dict) and record.get("kind") == "deb":
+            record["version"] = "forged-version"
+    transaction_path.write_text(
+        json.dumps(transaction, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    refs[1] = _identity(transaction_path, run_dir)
+
+    validation = _validate(payload, run_dir)
+
+    assert validation.ok is False
+    assert "APT .deb action identity differs" in validation.detail
 
 
 def test_offline_validator_rejects_a_tampered_deb(

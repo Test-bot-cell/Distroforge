@@ -1,5 +1,36 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Added the bounded M3.2a APT action-transcript receipt without
+    authenticating its origin. PACKAGE-APT-ACTIONS.json uses schema
+    distroforge.package-apt-actions.v1 and recomputes the supplied
+    DPkg::Pre-Install-Pkgs version-3 framing, configuration and nine-field
+    actions against the sealed PACKAGE-INPUTS transaction records. Every
+    unpack path must bind exactly and exhaustively to one sealed .deb with the
+    same package, version and architecture; configure and remove actions do
+    not invent archive inputs. The generated APT fragment requests protocol
+    version 3 on InfoFD 0, and the hook refuses a missing APT_HOOK_INFO_FD
+    confirmation, overlapping intervals, incomplete journals, malformed
+    framing, unstable bytes and explicit size limits. However, the transcript,
+    journal and CAS remain writable target-rootfs state until the host
+    collector copies them. The receipt therefore records only
+    apt_actions=self-consistent or not-observed, always records
+    capture_origin=unverified-mutable-target-rootfs,
+    filesystem_causality=unverified and release_ready=false, and the release
+    gate rejects any stronger promotion. Provenance and the closing run
+    manifest bind the receipt after host collection, but cannot retroactively
+    prove who produced the target-rootfs bytes. A local controlled-root harness
+    really executes the generated shell pre/post state machine with synthetic
+    protocol input and controlled apt-config/apt-get helpers, including
+    missing-InfoFD, overlap, protocol, per-blob and aggregate oversize
+    refusals. Blob sizes are rejected before hashing, and the hash/copy paths
+    plus the release-gate preview are themselves bounded. It executes no real
+    APT transaction, dpkg operation, archive access, package/ISO build or boot.
+    Because apt-config is supplied by the non-Essential apt package, apt now
+    joins Build-Depends <!nocheck> and is installed explicitly in the
+    distribution-dependencies job; it was already an honest runtime Depends.
+    M3.2b must move the first write to a host-isolated one-shot witness and
+    require its acknowledgement before dpkg can run, before APT origin or
+    producer causality can be promoted.
   * Recorded and repaired the M3.1 per-push typecheck falsification without
     rewriting published history. The authorized develop-only fast-forward
     published signed commit 6017476ee081532507e6029be47ab86bd4f0a2ad;
@@ -119,11 +150,13 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     silently. Schema v1 payload_identity records enumeration coverage while
     modified, missing and ambiguous remain separate comparison counts.
     filesystem_causality therefore remains unverified, release_ready remains
-    false and publication remains blocked. M3.2 must bind APT
-    DPkg::Pre-Install-Pkgs protocol v3
-    actions to before/after deltas and account for maintainer scripts, triggers,
-    conffiles, alternatives, diversions, removals, customizers, the ISO baseline
-    and other transformations. Offline, rootless fixtures exercise M3.1; no
+    false and publication remains blocked. M3.2a now checks supplied
+    DPkg::Pre-Install-Pkgs protocol-v3 bytes for self-consistency while
+    explicitly leaving their mutable target-rootfs origin unverified. M3.2b
+    must add a host-isolated pre-dpkg acknowledgement, bind before/after deltas
+    and account for maintainer scripts, triggers, conffiles, alternatives,
+    diversions, removals, customizers, the ISO baseline and other
+    transformations. Offline, rootless fixtures exercise M3.1; no
     product/distribution Debian package, ISO or Golden-path build was run.
     The final local source/test gate passed Ruff, mypy over 256 source files,
     1,343 pytest cases with one environmental skip, ShellCheck and both embedded

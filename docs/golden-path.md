@@ -58,7 +58,14 @@ SquashFS or QEMU boot was produced while making these changes.
   requires its publication items to be `ready` before `publish-bundle`. The package item
   replays per-source signed `InRelease`/`Release` → `Packages` → `.deb`, freshness and the
   final APT command ledger offline; it is not satisfied by a field that merely says
-  validation passed. M3.1 also makes the gate recompute
+  validation passed. M3.2a additionally requires provenance and the run manifest to bind
+  `PACKAGE-APT-ACTIONS.json` (`distroforge.package-apt-actions.v1`) and recomputes the
+  supplied protocol-v3 transcript, journal and `.deb` action bindings. A non-empty
+  receipt records `apt_actions: self-consistent`, never “executed by APT”, because its
+  transcript and CAS remain mutable target-rootfs state until host collection. It
+  therefore keeps `capture_origin: unverified-mutable-target-rootfs`,
+  `filesystem_causality: unverified` and `release_ready: false`; M3.2b still needs a
+  host-isolated one-shot acknowledgement before dpkg. M3.1 also makes the gate recompute
   `PACKAGE-FILESYSTEM-CAUSALITY.json`
   (`distroforge.package-filesystem-causality.v1`) for a fresh bootstrap from the exact
   `.deb` payloads named by the sealed pre-post-host `final_inventory` snapshot and
@@ -75,12 +82,14 @@ SquashFS or QEMU boot was produced while making these changes.
   bootstrap inventory snapshot; it does not re-snapshot dpkg after post-host hooks.
   ISO-remaster mode, an exclusion or unsupported object makes it `partial`. It
   deliberately leaves `filesystem_causality` `unverified`,
-  `release_ready` false and the package item `blocked` until M3.2 binds APT protocol v3
-  actions and observed producer deltas, including maintainer scripts, triggers, conffiles,
-  other dpkg transformations and the ISO baseline. The rootfs/ISO path performs a semantic
-  manifest check, descriptor-held SquashFS round-trip and authoritative replay from the
-  final ISO, but only offline, rootless fixtures and falsification tests have exercised
-  these paths; no Golden-path or real ISO build was run for M3.1.
+  `release_ready` false and the package item `blocked`. M3.2a checks only supplied action
+  bytes for self-consistency; M3.2b must authenticate their origin, bind observed producer
+  deltas and account for maintainer scripts, triggers, conffiles, other dpkg
+  transformations and the ISO baseline. The rootfs/ISO path performs a semantic manifest
+  check, descriptor-held SquashFS round-trip and authoritative replay from the final ISO,
+  but only offline, rootless fixtures and falsification tests have exercised these paths;
+  the M3.2a shell harness uses synthetic input and controlled helpers. No real apt/apt-get
+  transaction, dpkg operation, Golden-path or ISO build was run.
 
 A push to `develop` does run the ordinary `CI` workflow because `ci.yml` listens to
 `push`. It does **not** execute `golden-path.yml`: that file deliberately has only
@@ -259,7 +268,9 @@ same suite as an unprivileged builder, which is where those tests are covered.
 
 Both jobs upload an evidence bundle. The ISO leg publishes the reports and append-only run
 directory: `SHA256SUMS`, `BUILDINFO`, provenance, `PACKAGE-INPUTS.json` and its
-content-addressed APT transactions, `ISO-BUILD.json`,
+content-addressed APT transactions, `PACKAGE-APT-ACTIONS.json`, the collected
+`apt/transactions.tsv` journal and `apt/protocol/*.v3` transcript copies,
+`ISO-BUILD.json`,
 `boot-proof.json`, `qemu-lab-report.json`, serial output, command log and run manifest.
 The ISO itself has historically been excluded because of its size. That means the bundle
 can compare available ISO bytes with the recorded digest, but cannot reproduce or recover

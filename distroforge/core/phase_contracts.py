@@ -297,7 +297,10 @@ _CONTRACT_DATA: tuple[
         BuildPhase.PACKAGE_EVIDENCE,
         "customize_target",
         ("APT transactions", "archive trust pins"),
-        ("Release/Packages/keyring/.deb closure",),
+        (
+            "Release/Packages/keyring/.deb closure",
+            "self-consistent APT protocol-v3 action receipt",
+        ),
         True,
         None,
     ),
@@ -344,7 +347,11 @@ _CONTRACT_DATA: tuple[
     (
         BuildPhase.ROOTFS_EVIDENCE_CAPTURE,
         "assemble_iso",
-        ("sanitized squashfs root", "PACKAGE-INPUTS.json"),
+        (
+            "sanitized squashfs root",
+            "PACKAGE-INPUTS.json",
+            "PACKAGE-APT-ACTIONS.json",
+        ),
         ("ROOTFS-MANIFEST.json", "PACKAGE-FILESYSTEM-CAUSALITY.json"),
         True,
         None,

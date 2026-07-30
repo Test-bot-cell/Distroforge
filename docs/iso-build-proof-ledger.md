@@ -30,8 +30,9 @@ bootloader, a kernel or a desktop session ran.
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
 | archive and package bytes | planned | the current code writes `PACKAGE-INPUTS.json` and transaction/CAS evidence, and its test fixture replays a real signed `InRelease` → `Packages` → `.deb` chain; repository policies are per-source and freshness plus the final APT argv ledger are bound, but no fresh ISO build has yet produced this closure from the distribution archive |
+| APT/dpkg action transcript | planned | M3.2a code and offline fixtures write and exactly recompute `PACKAGE-APT-ACTIONS.json` (`distroforge.package-apt-actions.v1`) from supplied protocol-v3 bytes, its journal and sealed package records. A non-empty replay is only `apt_actions: self-consistent`: the transcript and CAS remain mutable in the target rootfs until host collection, so `capture_origin` is `unverified-mutable-target-rootfs`. The local harness executes the shell pre/post state machine with synthetic input and controlled helpers; no real APT transaction or APT-produced stream has been observed |
 | package payload identity | planned | for a fresh bootstrap, M3.1 code and offline, rootless fixtures write and authoritatively replay `PACKAGE-FILESYSTEM-CAUSALITY.json` (`distroforge.package-filesystem-causality.v1`) from the exact `.deb` payloads named by the sealed pre-post-host `final_inventory` snapshot and `ROOTFS-MANIFEST.json`, classifying `exact`, `modified`, `missing`, `unattributed`, `ambiguous`, `structural`, `excluded` and `unsupported`. `payload_identity` is `verified` only for complete supported snapshot scope; M3.1 does not re-snapshot dpkg after post-host hooks. ISO-remaster mode inspects no payload blob and marks the complete manifest `unsupported`/`partial` until a semantic source baseline exists; no executing product run has emitted this map |
-| package-to-rootfs causality | blocked | M3.1 closes static `payload_identity`, not the producer action that caused each final object. APT protocol v3 actions, filesystem deltas, maintainer scripts, triggers, conffiles and other transformations remain M3.2 debt; `filesystem_causality` is `unverified` and `release_ready` is false |
+| package-to-rootfs causality | blocked | M3.1 closes static `payload_identity`; M3.2a closes only self-consistent replay of supplied action bytes and explicitly does not authenticate their origin. A host-isolated one-shot witness acknowledged before dpkg, filesystem deltas, maintainer scripts, triggers, conffiles and other transformations remain M3.2b debt; `filesystem_causality` is `unverified` and `release_ready` is false |
 | archive trust policy | planned | the reference definition retains only signer `F6ECB3762474EDA9D21B7022871920D1991BC93C`, a SHA-256 pin for the explicit archive keyring and separate release, updates/backports and security namespaces/freshness windows; no fresh archive transaction has yet exercised them |
 | APT and live packages | observed | the resulting rootfs contains apt, ca-certificates, casper, kernel, GRUB and shim packages; the staged manifest contains 400 packages |
 | executed tool entrypoints | planned | the command runner hashes and opens each recognized host/wrapper/target executable and dispatches through the held `/proc/<pid>/fd/<fd>` descriptor chain; unit tests cover atomic path replacement, but no new real build log has exercised the closure |
@@ -95,6 +96,30 @@ The current audit implements the following fail-closed contracts:
 - unsafe APT trust/date overrides, incomplete or duplicate transactions, conflicting
   bytes for one package/version/architecture, and locally built `.deb` files without a
   separate producer attestation block the closure;
+- M3.2a writes `PACKAGE-APT-ACTIONS.json`, schema
+  `distroforge.package-apt-actions.v1`. The generated fragment requests
+  `DPkg::Pre-Install-Pkgs` protocol version 3 on InfoFD 0, while the bounded parser
+  accepts the configuration framing and nine-field actions documented by
+  [apt.conf(5)](https://manpages.debian.org/testing/apt/apt.conf.5.en.html). APT's
+  [`dpkgpm.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/deb/dpkgpm.cc/) and
+  [`strutl.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/contrib/strutl.cc/)
+  are format references, not evidence that APT produced any fixture transcript;
+- the hook refuses a missing `APT_HOOK_INFO_FD` confirmation, an overlapping or
+  incomplete interval, unstable inputs and a transcript above its byte bound. The host
+  collector later copies the journal, transcript, recorder, configuration and CAS into
+  the run, and authoritative replay binds each unpack exactly and exhaustively to one
+  sealed `.deb` package/version/architecture identity. Per-stream and aggregate protocol,
+  line, configuration, action, transaction, blob, path, journal and report bounds stop
+  hostile growth before the next load or allocation;
+- that replay is deliberately not an origin attestation. Until host collection, the
+  journal, transcript and CAS are mutable target-rootfs state; a matching copied hash
+  proves only the supplied set is internally coherent. `apt_actions` is therefore
+  `self-consistent` for a non-empty replay or `not-observed` when no post-bootstrap APT
+  capture exists. Every valid M3.2a receipt fixes `capture_origin` at
+  `unverified-mutable-target-rootfs`, `filesystem_causality` at `unverified` and
+  `release_ready` at false. The post marker closes a capture interval, not dpkg success.
+  M3.2b must put the first write in a host-isolated one-shot witness and require its
+  acknowledgement before dpkg can run;
 - M3.1 writes `PACKAGE-FILESYSTEM-CAUSALITY.json`, schema
   `distroforge.package-filesystem-causality.v1`, and its authoritative fresh-bootstrap
   validator re-hashes and re-extracts the exact sealed `.deb` files named by the
@@ -124,13 +149,14 @@ The current audit implements the following fail-closed contracts:
 - `payload_identity: verified` records only that a bootstrap map enumerated,
   canonicalized and bound every supported, in-scope direct payload member of that
   inventory snapshot. It does not re-snapshot dpkg after arbitrary post-host hooks; such
-  later mutations remain M3.2 debt. ISO-remaster mode, an excluded path or an unsupported
+  later mutations remain M3.2b debt. ISO-remaster mode, an excluded path or an unsupported
   object records `partial`.
   Static equality cannot identify the action or producer that created the final object,
   so the release gate still requires
-  `filesystem_causality: unverified` and `release_ready: false`. M3.2 must bind exact APT
-  `DPkg::Pre-Install-Pkgs` protocol v3 actions to observed before/after deltas and account
-  for maintainer scripts, triggers, conffiles, alternatives, diversions, removals,
+  `filesystem_causality: unverified` and `release_ready: false`. M3.2a checks supplied
+  protocol-v3 action bytes for self-consistency only. M3.2b must authenticate their
+  origin at the pre-dpkg host boundary, bind observed before/after deltas and account for
+  maintainer scripts, triggers, conffiles, alternatives, diversions, removals,
   customizers, the ISO baseline and other transformations;
 - the final rootfs is captured as a portable semantic manifest plus a host-specific
   packing guard, rescanned around `mksquashfs`, unpacked from the descriptor-held
@@ -175,9 +201,12 @@ dist/
       commands.jsonl
       distroforge-provenance.json
       PACKAGE-INPUTS.json
+      PACKAGE-APT-ACTIONS.json
       PACKAGE-FILESYSTEM-CAUSALITY.json
       apt/
+        transactions.tsv
         transactions/*.json
+        protocol/<sha256>.v3
         blobs/<kind>/<sha256>
       ROOTFS-MANIFEST.json
       ROOTFS-PACKING-VERIFICATION.json
@@ -209,6 +238,7 @@ The current schemas are:
 - `distroforge.provenance.v2`;
 - `distroforge.package-inputs.v1`;
 - `distroforge.package-input-transaction.v1`;
+- `distroforge.package-apt-actions.v1`;
 - `distroforge.package-filesystem-causality.v1`;
 - `distroforge.rootfs-manifest.v1`;
 - `distroforge.rootfs-packing-verification.v1`;
@@ -279,18 +309,23 @@ application run report and manifest, verifies the manifest sidecar and re-hashes
 listed file. It also locates `PACKAGE-INPUTS.json` through the provenance run ID and
 replays its archive/package closure against the effective build definition's external
 source mode, per-source policies, signer fingerprints, keyring SHA-256, run instant and
-  final command ledger. It then locates `PACKAGE-FILESYSTEM-CAUSALITY.json`. For a fresh
-  bootstrap it re-extracts the exact `.deb` payloads named by the bound pre-post-host
-  `final_inventory` snapshot and recomputes their static comparison with
-  `ROOTFS-MANIFEST.json`; for an ISO remaster it recomputes
-  the deliberately all-`unsupported` map without inspecting payload blobs. It does not
-  trust the map's recorded verdict. The authoritative
+final command ledger. It then locates the provenance-bound `PACKAGE-APT-ACTIONS.json`,
+reopens the collected journal, transcripts and transaction records and recomputes their
+self-consistency. This check deliberately requires
+`capture_origin: unverified-mutable-target-rootfs`, `filesystem_causality: unverified`
+and `release_ready: false`; it cannot convert bytes copied from the mutable target rootfs
+into authenticated APT output. The gate next locates
+`PACKAGE-FILESYSTEM-CAUSALITY.json`. For a fresh bootstrap it re-extracts the exact
+`.deb` payloads named by the bound pre-post-host `final_inventory` snapshot and
+recomputes their static comparison with `ROOTFS-MANIFEST.json`; for an ISO remaster it
+recomputes the deliberately all-`unsupported` map without inspecting payload blobs. It
+does not trust either report's recorded verdict. The authoritative
 product path separately extracts the SquashFS from the descriptor-held final ISO, unpacks
 it and compares its semantic tree with that same manifest. These checks prove internal
 consistency and static `payload_identity` against the recorded local inputs, not which
 producer caused the filesystem state. Final authentication still requires a verified
 signature or trusted WORM anchor, while `filesystem_causality` remains `unverified`,
-`release_ready` remains false and package-to-rootfs causality remains blocking M3.2 debt.
+`release_ready` remains false and package-to-rootfs causality remains blocking M3.2b debt.
 
 `beginner-iso --repair-release-artifacts` may derive checksums and explanatory files from
 an existing ISO. Any provenance it creates is labelled
@@ -310,20 +345,21 @@ merely copied.
 
 No existing artifact can be retrofitted into v2 proof. M2.2 is closed at its stated
 source/test boundary by the receipt below, and M3.1 closes only a static package-payload
-identity map in code and fixtures. It is not product evidence. The next acceptable journey
-is:
+identity map in code and fixtures. M3.2a adds only a self-consistency receipt for supplied
+APT-format action bytes: their mutable target-rootfs origin remains explicitly unverified.
+Neither is product evidence. The next acceptable journey is:
 
-1. implement and test M3.2 producer causality: capture the exact APT
-   `DPkg::Pre-Install-Pkgs` protocol v3 action set, bind each executed producer to observed
+1. implement and test M3.2b producer causality: give a host-isolated one-shot witness the
+   first write of each `DPkg::Pre-Install-Pkgs` protocol-v3 stream and require its
+   acknowledgement before dpkg can run, bind each executed producer to observed
    before/after filesystem deltas, and account for maintainer scripts, triggers,
    conffiles, alternatives, diversions, removals, customizers and every other
-   transformation, including the ISO baseline, before `filesystem_causality` may become
-   `verified` and
-   `release_ready` may become true;
+   transformation, including the ISO baseline, before `capture_origin` or
+   `filesystem_causality` may be promoted and `release_ready` may become true;
 2. seal the source-ISO detached signature, verification status and exact keyring for
    offline release-gate replay, or keep ISO-remaster publication explicitly at `review`;
 3. execute a fresh minimal build with the externally pinned archive trust policy, package
-   transaction closure, corrected GRUB MBR and appended GPT ESP;
+   transaction and action receipts, corrected GRUB MBR and appended GPT ESP;
 4. replay the semantic rootfs manifest from that exact final ISO and verify every
    append-only run file and intermediate identity;
 5. review the executed command identities and explicitly account for the still-open
@@ -568,3 +604,64 @@ ISO build.
   remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`; the existing
   `debian/0.3.5-16` tag remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.
   No pull request, tag, package/ISO build or `main` movement occurred.
+
+### 2026-07-30 — M3.2a local self-consistent APT-format action receipt
+
+- Starting from signed local documentation commit
+  `b0335fcd2a4fdaa4bdf07b17f6cf1864541bc07e`, the worktree added the run-bound
+  `PACKAGE-APT-ACTIONS.json` v1 writer, host-side collection replay, provenance and
+  release-gate binding. No existing artifact was reinterpreted and no executing product
+  run emitted this schema.
+- The generated APT fragment requests `DPkg::Pre-Install-Pkgs` protocol version 3 on
+  InfoFD 0. The parser's configuration framing, percent encoding and nine-field actions
+  were checked against
+  [apt.conf(5)](https://manpages.debian.org/testing/apt/apt.conf.5.en.html) and APT's
+  [`dpkgpm.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/deb/dpkgpm.cc/) /
+  [`strutl.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/contrib/strutl.cc/).
+  These are format references only: this milestone observed no stream produced by a real
+  APT transaction.
+- A local controlled-root harness really executes the generated shell `pre` and `post`
+  modes with synthetic protocol bytes and controlled `apt-config`/`apt-get` helpers. It
+  confirms the missing-InfoFD, overlapping-interval, protocol, per-blob and aggregate
+  oversize refusals and the journal state transition. The shell checks the 32-GiB
+  per-input and 64-GiB aggregate blob budgets before hashing, and bounds both hashing and
+  copying; the non-authoritative release-gate preview also bounds the action report before
+  parsing it. It does not execute apt/apt-get package acquisition or installation, dpkg,
+  an archive transaction, a package build, an ISO build or a boot.
+- The authoritative replay applies explicit per-input and aggregate bounds, verifies the
+  copied journal, raw protocol, recorder/configuration and package-transaction identities,
+  and binds every unpack action exactly and exhaustively to one sealed `.deb`
+  package/version/architecture record. Malformed or downgraded framing, invalid encoding,
+  incomplete intervals, unexpected or duplicate captures, unmatched archives, drift and
+  forged status promotion are refusals.
+- This establishes internal consistency, not capture provenance. Before host collection,
+  the transcript, journal and CAS remain mutable below the target rootfs; copying and
+  re-hashing them later cannot prove that APT originated those bytes. A non-empty valid
+  receipt therefore records `apt_actions: self-consistent`, while no captured
+  post-bootstrap transaction records `apt_actions: not-observed`. Both require
+  `capture_origin: unverified-mutable-target-rootfs`,
+  `filesystem_causality: unverified` and `release_ready: false`. The post marker closes
+  the staged interval and does not prove dpkg success.
+- M3.2b must put the first write in a host-isolated one-shot witness and make its
+  acknowledgement a prerequisite for dpkg, then bind before/after producer deltas and
+  account for maintainer scripts, triggers, conffiles, alternatives, diversions, direct
+  dpkg calls, customizers and the bootstrap/ISO baselines.
+- The terminal local source/test receipts were:
+  - `make check`: Ruff passed; repository mypy passed over 257 source files; complete
+    pytest passed `1400` tests with one documented environmental skip; ShellCheck passed
+    for `debian/tests/gui-import`, `debian/tests/smoke` and `tools/release-tag.sh`; the
+    maintainer-payload gate compiled both embedded Python payloads and reported no
+    problem;
+  - `uvx --offline --from mypy==2.3.0 mypy --no-incremental distroforge/`: passed over
+    257 source files with the CI-pinned mypy release and no network access;
+  - focused M3.2a/package/release/policy pytest replay: `171 passed`;
+  - the generated capture-hook shell, streamed independently to `shellcheck -s sh -`:
+    passed;
+  - `pre-commit run --all-files`: all eight offline hooks passed;
+  - `git diff --check`: passed.
+  These are source, fixture and static-tool receipts only; none is a real APT/dpkg,
+  package, ISO, boot or publication receipt.
+- This local work performed no push, tag, pull request or `main` movement.
+  `origin/develop` remains `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`,
+  `origin/main` remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`, and
+  `debian/0.3.5-16` remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.

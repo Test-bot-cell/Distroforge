@@ -311,6 +311,39 @@ QEMU online/offline install smoke matrix.
    verifier inputs. Copying different values into the evidence payload cannot redefine
    trust. The release gate replays this chain from the provenance run ID.
 
+   M3.2a then writes `PACKAGE-APT-ACTIONS.json`, schema
+   `distroforge.package-apt-actions.v1`, before rootfs evidence and repacking. The
+   generated fragment requests `DPkg::Pre-Install-Pkgs` protocol version 3 on InfoFD 0,
+   and the shell hook refuses a missing `APT_HOOK_INFO_FD` confirmation. Its parser
+   implements the configuration framing and nine-field version-3 action format described
+   by [apt.conf(5)](https://manpages.debian.org/testing/apt/apt.conf.5.en.html), with the
+   encoding and emission behavior checked against APT's
+   [`dpkgpm.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/deb/dpkgpm.cc/) and
+   [`strutl.cc`](https://sources.debian.org/src/apt/3.3.1/apt-pkg/contrib/strutl.cc/).
+   Those references establish the accepted wire format; no test in this lot observed a
+   transcript produced by a real APT transaction.
+
+   The hook stages the supplied raw transcript, journal, recorder, APT configuration and
+   input CAS below `/var/lib/distroforge/package-evidence` in the target rootfs. It
+   records a pre interval and a post closure marker, but that marker does not prove that
+   dpkg succeeded. More importantly, all of those bytes remain mutable target-rootfs state
+   until the host collector copies them into the run directory. Re-hashing that copy,
+   matching the recorder/configuration bytes and binding every unpack action exactly to
+   one sealed `.deb` package/version/architecture record can prove only that the supplied
+   evidence is internally self-consistent; it cannot authenticate APT as its producer.
+
+   The resulting receipt therefore uses `apt_actions: self-consistent` for a non-empty
+   replay or `apt_actions: not-observed` when there is no post-bootstrap APT capture, and
+   always records `capture_origin: unverified-mutable-target-rootfs`,
+   `filesystem_causality: unverified` and `release_ready: false`. Per-stream, aggregate,
+   line, configuration, action, transaction, blob, path, journal and report limits are
+   enforced before the next parse or allocation. A local controlled-root test really
+   executes the generated shell pre/post state machine with synthetic protocol input and
+   controlled `apt-config`/`apt-get` helpers; it exercises InfoFD, overlap and oversize
+   refusals without running an apt/apt-get transaction or dpkg. M3.2b must instead give a
+   host-isolated one-shot witness the first write and require its acknowledgement before
+   dpkg can run.
+
    M3.1 writes `PACKAGE-FILESYSTEM-CAUSALITY.json`, schema
    `distroforge.package-filesystem-causality.v1`, before the rootfs is repacked. Its
    authoritative bootstrap validator does not trust the recorded result: it re-hashes and
@@ -360,17 +393,19 @@ QEMU online/offline install smoke matrix.
    `payload_identity: verified` means only that a bootstrap map enumerated, canonicalized
    and bound every supported, in-scope direct payload member of that inventory snapshot.
    The snapshot is sealed before arbitrary post-host hooks; M3.1 does not re-snapshot dpkg
-   state after them, so later package mutations remain unattributed M3.2 debt.
+   state after them, so later package mutations remain unattributed M3.2b debt.
    ISO-remaster mode, an excluded path or an unsupported object makes it `partial`. Even an
    all-`exact`, `verified` result is only static identity: equality of bytes and metadata
    is not evidence that a recorded APT/dpkg action or package producer caused the final
    object. M3.1 therefore keeps `filesystem_causality: unverified`,
-   `release_ready: false` and the package publication item blocked. M3.2 must add the
-   missing dynamic boundary: exact APT `DPkg::Pre-Install-Pkgs` protocol v3 actions,
-   before/after filesystem deltas tied to producers, and explicit treatment of maintainer
-   scripts, triggers, conffiles, alternatives, diversions, removals, customizers and other
-   transformations. This is a code/fixture closure tested offline and rootless; no new
-   real ISO or live-archive build was executed by the 2026-07-29 hardening lot.
+   `release_ready: false` and the package publication item blocked. M3.2a now checks a
+   bounded supplied protocol-v3 transcript for self-consistency, but its mutable
+   target-rootfs origin is explicitly unverified. M3.2b must add the host-isolated,
+   pre-dpkg acknowledgement and before/after filesystem deltas tied to producers, then
+   account explicitly for maintainer scripts, triggers, conffiles, alternatives,
+   diversions, removals, customizers and other transformations. This is a code/fixture
+   closure tested offline and rootless; no real APT transaction, dpkg operation, ISO or
+   live-archive build was executed by the hardening lot.
 7. Apply packages, snaps, drivers, desktop source builds, size reports, and CVE scanning.
 8. Create rollback snapshots around risky phases when enabled. Snapshot archives are
    written to `work/snapshots/*.tar.zst.part` and promoted to `*.tar.zst` only after
