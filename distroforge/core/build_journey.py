@@ -3,16 +3,34 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .artifact_verification import (
+    ArtifactLimits,
+    ArtifactVerificationError,
+    ArtifactVerificationSession,
+)
+from .publish_drill_baseline import validate_local_publish_drill_baseline
 from .source_starter import apply_source_starter, default_starter_for_release
 from .workflows import LEVEL_ORDER
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from .build import BuildOptions
     from .project import Project
+
+_BUNDLE_STATUS_MAX_BYTES = 16 * 1024 * 1024
+_BUNDLE_STATUS_LIMITS = ArtifactLimits(
+    max_open_files=1,
+    max_file_bytes=_BUNDLE_STATUS_MAX_BYTES,
+    max_buffered_bytes=_BUNDLE_STATUS_MAX_BYTES,
+    max_hashed_bytes=2 * _BUNDLE_STATUS_MAX_BYTES,
+    max_json_depth=256,
+    max_json_nodes=2_000_000,
+    max_path_components=64,
+    max_closing_fds=16,
+    max_inventory_entries=16,
+)
 
 
 @dataclass(frozen=True)
@@ -495,14 +513,53 @@ def _check_release_evidence(project: Project, options: BuildOptions) -> tuple[st
     return "ok", ["Release evidence is enabled for maintainer review."]
 
 
-def _bundle_status(path: Path) -> str:
-    if not path.exists():
-        return ""
+def _bundle_status(
+    path: Path,
+    *,
+    accepted_statuses: frozenset[str] | None = None,
+    validator: Callable[[dict[str, object]], str] | None = None,
+) -> str:
+    session: ArtifactVerificationSession | None = None
+    opened = False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    return str(data.get("status", "")) if isinstance(data, dict) else ""
+        session = ArtifactVerificationSession(
+            path.parent.absolute(),
+            label=f"{path.name} build-journey status",
+            limits=_BUNDLE_STATUS_LIMITS,
+        )
+        handle = session.file(
+            Path(path.name),
+            label=path.name,
+            max_bytes=_BUNDLE_STATUS_MAX_BYTES,
+        )
+        opened = True
+        data = handle.json_object()
+        raw_status = data.get("status")
+        if not isinstance(raw_status, str) or not raw_status.strip():
+            raise ArtifactVerificationError(
+                f"{path.name} does not contain a non-empty string status"
+            )
+        status = validator(data) if validator is not None else raw_status
+        if accepted_statuses is not None and status not in accepted_statuses:
+            raise ArtifactVerificationError(
+                f"{path.name} status is outside its producer contract: {status}"
+            )
+        session.seal()
+        return status
+    except (ArtifactVerificationError, ValueError) as exc:
+        return "" if not opened and _caused_by_missing_file(exc) else "unsafe"
+    finally:
+        if session is not None:
+            session.close()
+
+
+def _caused_by_missing_file(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, FileNotFoundError):
+            return True
+        current = current.__cause__
+    return False
 
 
 def _release_ritual_findings(project: Project, options: BuildOptions) -> list[str]:
@@ -512,23 +569,56 @@ def _release_ritual_findings(project: Project, options: BuildOptions) -> list[st
         findings.append(f"CVE scan: enabled (policy={options.vuln_scan.policy}).")
     else:
         findings.append("CVE scan: disabled. Enable with --vuln-scan before maintainer review.")
-    signing = _bundle_status(bundle_dir / "SIGNING-REPORT.json")
+    signing = _bundle_status(
+        bundle_dir / "SIGNING-REPORT.json",
+        accepted_statuses=frozenset({"blocked", "planned", "signed"}),
+    )
     findings.append(
-        f"Signing: {signing}. Rerun sign-release to refresh the signed manifest."
+        "Stored signing report (self-declared; not live-verified here): "
+        f"{signing}. Rerun sign-release to refresh the signed manifest."
         if signing
         else "Signing not run. sign-release writes RELEASE-MANIFEST.json and GPG-signs SHA256SUMS."
     )
-    verify = _bundle_status(bundle_dir / "VERIFY-REPORT.json")
+    verify = _bundle_status(
+        bundle_dir / "VERIFY-REPORT.json",
+        accepted_statuses=frozenset({"blocked", "review", "ready"}),
+    )
     findings.append(
-        f"Verification: {verify}. verify-release reconfirms the bundle without a rebuild."
+        "Stored verification report (self-declared; not live-verified here): "
+        f"{verify}. verify-release reconfirms the bundle without a rebuild."
         if verify
         else "Verification not run. verify-release checks manifest, SHA256SUMS, gate and signatures without a rebuild."
     )
-    findings.append(
-        "Baseline present. Run publish-drill-diff to compare against your last release."
-        if (bundle_dir / "PUBLISH-DRILL.previous.json").exists()
-        else "No baseline. Promote one with publish-drill-baseline to enable release-over-release diffs."
-    )
+    baseline_path = bundle_dir / "PUBLISH-DRILL.previous.json"
+    try:
+        baseline = validate_local_publish_drill_baseline(
+            project,
+            bundle_dir=bundle_dir,
+        )
+    except (ArtifactVerificationError, ValueError):
+        try:
+            baseline_path.lstat()
+        except FileNotFoundError:
+            baseline = ""
+        except OSError:
+            baseline = "unsafe"
+        else:
+            baseline = "unsafe"
+    if baseline == "unsafe":
+        findings.append(
+            "Local publish-drill comparison baseline is unsafe; recreate it from "
+            "a bounded drill and matching promotion receipt."
+        )
+    elif baseline:
+        findings.append(
+            "Locally receipted comparison baseline present. publish-drill-diff "
+            "can compare report structure; it does not authenticate a prior release."
+        )
+    else:
+        findings.append(
+            "No locally receipted baseline. publish-drill-baseline can create an "
+            "advisory report-comparison snapshot."
+        )
     return findings
 
 

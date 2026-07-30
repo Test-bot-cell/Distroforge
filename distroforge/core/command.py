@@ -74,6 +74,8 @@ class CommandSpec:
     stdin: str | None = None
     needs_root: bool = False
     description: str = ""
+    pass_fds: tuple[int, ...] = ()
+    pass_directory_fds: tuple[int, ...] = ()
 
     def display(self) -> str:
         return " ".join(_quote(part) for part in self.argv)
@@ -201,6 +203,7 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
+        self._validate_pass_fds(spec)
         capture = self._capture_execution_identity(spec)
         self._bind_execution_dispatch(capture, spec)
         try:
@@ -213,6 +216,7 @@ class CommandRunner:
                 check=False,
                 input=spec.stdin,
                 executable=capture.dispatch_executable,
+                pass_fds=spec.pass_fds,
             )
         except BaseException:
             self._finalize_execution_identity(capture, process_returncode=None)
@@ -265,6 +269,7 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
+        self._validate_pass_fds(spec)
         capture = self._capture_execution_identity(spec)
         self._bind_execution_dispatch(capture, spec)
         captured: list[str] = []
@@ -278,6 +283,7 @@ class CommandRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 executable=capture.dispatch_executable,
+                pass_fds=spec.pass_fds,
             ) as process:
                 if spec.stdin is not None and process.stdin is not None:
                     process.stdin.write(spec.stdin.encode())
@@ -366,6 +372,7 @@ class CommandRunner:
             self._write_event("virtual", spec, result)
             return result
 
+        self._validate_pass_fds(spec)
         capture = self._capture_execution_identity(spec)
         self._bind_execution_dispatch(capture, spec)
         process: subprocess.Popen[bytes] | None = None
@@ -386,6 +393,7 @@ class CommandRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 executable=capture.dispatch_executable,
+                pass_fds=spec.pass_fds,
             ) as process:
                 assert process.stderr is not None
                 stderr_stream = cast(io.BufferedReader, process.stderr)
@@ -501,6 +509,63 @@ class CommandRunner:
     def has_binary(name: str) -> bool:
         return shutil.which(name) is not None
 
+    @staticmethod
+    def _validate_pass_fds(spec: CommandSpec) -> None:
+        """Refuse malformed, closed or incorrectly typed inherited descriptors.
+
+        Regular artifacts remain the default.  A directory descriptor is inherited
+        only when the command explicitly lists it in ``pass_directory_fds``; pipes,
+        sockets and devices are never admitted through either contract.
+        """
+
+        seen: set[int] = set()
+        declared_directories = spec.pass_directory_fds
+        if len(set(declared_directories)) != len(declared_directories):
+            raise ValueError("command pass_directory_fds must not contain duplicates")
+        if any(
+            isinstance(descriptor, bool)
+            or not isinstance(descriptor, int)
+            or descriptor < 0
+            for descriptor in declared_directories
+        ):
+            raise ValueError(
+                "command pass_directory_fds must contain non-negative integers"
+            )
+        directory_set = set(declared_directories)
+        if not directory_set.issubset(spec.pass_fds):
+            raise ValueError(
+                "command pass_directory_fds must be a subset of pass_fds"
+            )
+        for descriptor in spec.pass_fds:
+            if (
+                isinstance(descriptor, bool)
+                or not isinstance(descriptor, int)
+                or descriptor < 0
+            ):
+                raise ValueError(
+                    "command pass_fds must contain non-negative integers"
+                )
+            if descriptor in seen:
+                raise ValueError("command pass_fds must not contain duplicates")
+            seen.add(descriptor)
+            try:
+                identity = os.fstat(descriptor)
+            except OSError as exc:
+                raise ValueError(
+                    f"command pass_fds contains a closed descriptor: {descriptor}"
+                ) from exc
+            if descriptor in directory_set:
+                if not stat.S_ISDIR(identity.st_mode):
+                    raise ValueError(
+                        "command pass_directory_fds may inherit only held "
+                        f"directories: {descriptor}"
+                    )
+            elif not stat.S_ISREG(identity.st_mode):
+                raise ValueError(
+                    "command pass_fds may inherit only held regular artifacts: "
+                    f"{descriptor}"
+                )
+
     def _write_event(
         self, event: str, spec: CommandSpec, result: CommandResult | None
     ) -> None:
@@ -516,6 +581,7 @@ class CommandRunner:
             "needs_root": spec.needs_root,
             "description": spec.description,
             "has_stdin": spec.stdin is not None,
+            "passed_fd_count": len(spec.pass_fds),
             "env_keys": sorted(spec.env),
             "env_sha256": _environment_sha256(spec.env),
             "returncode": result.returncode if result else None,
@@ -1265,18 +1331,52 @@ def _resolve_target_link(root: Path, candidate: Path) -> Path:
     return current
 
 
-def sudo(argv: Sequence[str], use_sudo: bool = True) -> tuple[str, ...]:
+def sudo(
+    argv: Sequence[str],
+    use_sudo: bool = True,
+    *,
+    preserve_fds: Sequence[int] = (),
+) -> tuple[str, ...]:
+    """Wrap a privileged command without silently dropping held artifacts.
+
+    ``sudo`` normally closes every descriptor above stderr.  ``-C max_fd+1``
+    preserves exactly the descriptors Python admits through ``pass_fds`` (regular
+    artifacts plus explicitly declared held directories; all other descriptors
+    are already closed by ``subprocess``).  Hosts whose sudo
+    policy forbids ``closefrom_override`` fail closed.  ``pkexec`` exposes no
+    equivalent contract, so a descriptor-bound command must use sudo or execute
+    directly as an already privileged process.
+    """
+
+    inherited = tuple(preserve_fds)
+    if any(
+        isinstance(descriptor, bool)
+        or not isinstance(descriptor, int)
+        or descriptor < 0
+        for descriptor in inherited
+    ):
+        raise ValueError("preserved descriptors must be non-negative integers")
+    if len(set(inherited)) != len(inherited):
+        raise ValueError("preserved descriptors must not contain duplicates")
     if use_sudo:
         backend = privilege_backend()
         if backend == "pkexec":
+            if inherited:
+                raise ValueError(
+                    "pkexec cannot preserve descriptor-bound artifact inputs; "
+                    "use sudo or an already privileged process"
+                )
             return ("pkexec", _absolute_program(argv[0]), *argv[1:])
         if backend == "none":
             return tuple(argv)
+        prefix = ["sudo"]
         if not sys.stdin.isatty():
             askpass = ensure_sudo_askpass()
             if askpass:
-                return ("sudo", "-A", *argv)
-        return ("sudo", *argv)
+                prefix.append("-A")
+        if inherited:
+            prefix.extend(("-C", str(max(inherited) + 1)))
+        return (*prefix, *argv)
     return tuple(argv)
 
 

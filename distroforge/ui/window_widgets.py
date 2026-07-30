@@ -376,6 +376,14 @@ def build_window_widgets(window) -> None:
     window.prebuild_vm_success_patterns_edit = QLineEdit("login:")
     window.artifacts_output_iso_edit = QLineEdit()
     window.artifacts_reports_dir_edit = QLineEdit()
+    window.artifacts_build_run_id_edit = QLineEdit()
+    window.artifacts_build_run_id_edit.setPlaceholderText(
+        "Immutable build run ID (auto-select only when unique)"
+    )
+    window.artifacts_boot_run_id_edit = QLineEdit()
+    window.artifacts_boot_run_id_edit.setPlaceholderText(
+        "Immutable boot run ID (derive from build when recorded)"
+    )
     window.artifacts_livefs_work_dir_edit = QLineEdit()
     window.artifacts_livefs_work_dir_edit.setToolTip(
         "Working directory for the livefs (casper) build -- scratch space where the live "

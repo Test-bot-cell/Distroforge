@@ -515,7 +515,12 @@ def test_sudo_dash_n_is_the_question_this_host_answers_no_to() -> None:
         # A host with a NOPASSWD rule, which is the case the fix exists for.
         assert completed.stdout == ""
     else:
-        assert "password" in completed.stderr.lower() or "authentication" in completed.stderr.lower()
+        refusal = completed.stderr.lower()
+        assert (
+            "password" in refusal
+            or "authentication" in refusal
+            or "no new privileges" in refusal
+        )
 
 
 def test_the_workflow_is_the_only_one_that_builds() -> None:

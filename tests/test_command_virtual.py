@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from distroforge.core.command import (
@@ -52,3 +54,103 @@ def test_vuln_scan_enforce_does_not_exec_report_marker() -> None:
     report = VulnScanService(VulnScanOptions(enabled=True)).enforce([], runner)
     assert report.ok
     assert any(spec.argv[0] == "vuln-report" for spec in runner.history)
+
+
+def test_real_runner_refuses_closed_pass_fd(tmp_path) -> None:
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"payload")
+    descriptor = os.open(artifact, os.O_RDONLY)
+    os.close(descriptor)
+
+    with pytest.raises(ValueError, match="closed descriptor"):
+        CommandRunner(dry_run=False).run(
+            CommandSpec(("/bin/true",), pass_fds=(descriptor,))
+        )
+
+
+def test_real_runner_refuses_duplicate_pass_fd(tmp_path) -> None:
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"payload")
+    descriptor = os.open(artifact, os.O_RDONLY)
+    try:
+        with pytest.raises(ValueError, match="must not contain duplicates"):
+            CommandRunner(dry_run=False).run(
+                CommandSpec(
+                    ("/bin/true",),
+                    pass_fds=(descriptor, descriptor),
+                )
+            )
+    finally:
+        os.close(descriptor)
+
+
+def test_real_runner_refuses_nonregular_pass_fd() -> None:
+    read_descriptor, write_descriptor = os.pipe()
+    try:
+        with pytest.raises(ValueError, match="only held regular artifacts"):
+            CommandRunner(dry_run=False).run(
+                CommandSpec(("/bin/true",), pass_fds=(read_descriptor,))
+            )
+    finally:
+        os.close(read_descriptor)
+        os.close(write_descriptor)
+
+
+def test_real_runner_requires_explicit_directory_fd_contract(tmp_path) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match="only held regular artifacts"):
+            CommandRunner(dry_run=False).run(
+                CommandSpec(("/bin/true",), pass_fds=(descriptor,))
+            )
+    finally:
+        os.close(descriptor)
+
+
+def test_real_runner_admits_only_explicitly_declared_directory_fd(tmp_path) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        result = CommandRunner(dry_run=False).run(
+            CommandSpec(
+                ("/bin/true",),
+                pass_fds=(descriptor,),
+                pass_directory_fds=(descriptor,),
+            )
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode == 0
+
+
+def test_real_runner_refuses_mistyped_directory_fd_contract(tmp_path) -> None:
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"payload")
+    descriptor = os.open(artifact, os.O_RDONLY)
+    try:
+        with pytest.raises(ValueError, match="only held directories"):
+            CommandRunner(dry_run=False).run(
+                CommandSpec(
+                    ("/bin/true",),
+                    pass_fds=(descriptor,),
+                    pass_directory_fds=(descriptor,),
+                )
+            )
+    finally:
+        os.close(descriptor)
+
+
+def test_real_runner_refuses_uninherited_directory_fd_declaration(
+    tmp_path,
+) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match="subset of pass_fds"):
+            CommandRunner(dry_run=False).run(
+                CommandSpec(
+                    ("/bin/true",),
+                    pass_directory_fds=(descriptor,),
+                )
+            )
+    finally:
+        os.close(descriptor)

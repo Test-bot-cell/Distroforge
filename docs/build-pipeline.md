@@ -89,6 +89,50 @@ dispatch. The current record does not independently bind that loader, every shar
 library, loader configuration, kernel or firmware. Closing that transitive runtime graph
 remains evidence debt for the toolchain milestone.
 
+### Artifact verdict sessions
+
+An authoritative artifact verdict never reuses a digest from an earlier invocation.
+`sha256_file` is deliberately cache-free; safe reuse belongs only to one
+`ArtifactVerificationSession`. The session anchors one directory descriptor, admits only
+canonical paths, opens every ancestor descriptor-relatively with `O_NOFOLLOW`, pins the
+leaf before acquiring a non-blocking read descriptor, and accepts regular files only. It
+records device, inode, complete mode, owner, link count, device number, size, mtime and
+ctime, keeps the inode open, and reuses its digest, bytes or parsed JSON only for that
+verdict.
+
+At closure the session first re-hashes the held inodes, then repeats bounded tree
+inventories as the final content observation and only afterwards repins each name from
+the leaf through its ancestors to the anchor. Hard-link aliases share one inode
+measurement but every alias path is closed independently. Before any path composition,
+every `run_id` must be one canonical strict-UTF-8 component, free of separators and
+controls and no longer than 255 encoded bytes.
+Structural budgets cover open files, closing descriptors, path depth, buffered and hashed
+bytes, JSON depth/nodes and inventory entries. The emitted counters are structural
+(`files_opened`, `bytes_hashed`, `digest_reuse`, JSON reuse and external replays), never
+wall-clock thresholds. Sessions are single-threaded; artifact verification is not
+parallelized because causal order and I/O accounting are part of the proof.
+
+Durable file and tree publication carries the same rule across the write boundary. Each
+source descriptor produces a size/SHA receipt, every staged tree file is re-hashed against
+that receipt before rename, and the published directory identity is threaded through all
+later release writers. Before publication, the bundle builder consumes an ephemeral gate
+receipt, absent from `RELEASE-GATE.json`, which binds each source identity/digest and
+every run-tree anchor/inventory exactly. Regular text and binary publication uses an anonymous
+same-filesystem `O_TMPFILE`, then one no-replace link; there is no regular temporary
+pathname to swap or clean. A post-link error retains the complete target because deleting
+it by name would reopen the substitution race. Directory staging cannot use that primitive:
+an owned tree is durably renamed to an unpredictable quarantine before a separate
+bounded, no-follow, best-effort scrub. The quarantine is always physically retained.
+`scrub_complete` proves only a finished traversal with no remaining regular-file bytes;
+detach-only replay cleanup may deliberately report residual entries and bytes. Neither
+successful unlink nor physical temporary cleanup is claimed.
+
+This establishes the bytes of the inode held during the verdict and equality at its
+opening and closing boundaries. It does not claim the metaphysical absence of a transient
+mutation that was perfectly restored between observations. A symlink, FIFO, socket,
+device, directory, invalid UTF-8, duplicate-key/non-object JSON, post-`fstat` growth or
+budget excess is a typed refusal rather than a blocking read or raw exception.
+
 Build options are governed by `commands/build_contracts.py`. Each option is assigned to
 Beginner, Power user, Maintainer, or Developer level, plus an expected GUI surface. The
 contract is tested against the parser and GUI so the build cycle remains explicit instead
@@ -98,12 +142,14 @@ Release review is exposed separately from build execution:
 
 ```bash
 distroforge artifact-paths /path/to/project
-distroforge release-readiness --iso /path/to/image.iso --output-dir /path/to/output
+distroforge release-readiness --iso /path/to/output/image.iso --output-dir /path/to/output
 distroforge qemu-smoke-plan --iso /path/to/image.iso
 ```
 
 The GUI **Artifacts** page presents the same host paths, release readiness summary, and
-QEMU online/offline install smoke matrix.
+QEMU online/offline install smoke matrix. The release product directory is always the
+canonical parent of the selected ISO; the distinct Reports field selects report/bundle
+presentation and cannot redirect the release gate to another directory.
 
 1. Resolve the source starter: skeleton, official ISO/netboot, local ISO, or previous project.
 2. Validate project, host, and option contracts.
@@ -428,11 +474,14 @@ QEMU online/offline install smoke matrix.
     SquashFS is held open, unpacked into a fresh tree and compared with the manifest.
     `ISO-ASSEMBLY.json` then binds the witnessed staged SquashFS to the exact member
     extracted from the final ISO. An authoritative release-gate refresh independently
-    opens the published ISO, extracts that member through its descriptor, opens and
-    unpacks the member through another descriptor, and compares the replayed semantic
-    tree field-for-field with `ROOTFS-MANIFEST.json`. These paths are implemented and
-    covered by round-trip and falsification tests; no new real build has yet emitted and
-    replayed this evidence.
+    binds the published ISO, assembly report, packing report and manifests in one artifact
+    session, extracts that member through the held ISO descriptor, opens and unpacks the
+    member through another held descriptor, and compares the replayed semantic tree
+    field-for-field with `ROOTFS-MANIFEST.json`. Rootfs validation and the external
+    `xorriso`/`unsquashfs` replays are reused only inside that verdict rather than repeated
+    through independent pathname opens. These paths are implemented and covered by
+    round-trip and falsification tests; no new real build has yet emitted and replayed this
+    evidence.
 12. Produce release artifacts, boot checks, screenshots, provenance, HTML report, and QA matrix.
 
 Dry-run builds should produce command history and findings only. The dry-run report checks
@@ -468,6 +517,20 @@ not on the way in: emitted first, it wrote `prebuild-vm-assert-log … rc=0` int
 journal before the wait had read a byte, so a run that never booted left a log whose last
 word was a green assertion — in the one file a maintainer opens to find out which step
 failed. A dry run still plans the line, where it is the step rather than its result.
+
+M3.2a.2 makes the bytes consumed by that lab explicit. The selected ISO is copied
+durably from a pinned regular-file descriptor into run-owned storage and QEMU receives
+the held descriptor path through `pass_fds`; the report records
+`iso.consumed_via: held-descriptor`. UEFI code, variables template and stopped variables,
+serial output, screenshots, reports, command logs, run manifests and sidecars are bounded
+and tied to held descriptors until the verdict closes. Binary copies stream source bytes
+into a synced anonymous same-directory inode while computing size and SHA-256, then create
+the target with one no-replace link and sync the parent. Failures before the link expose no
+target; failures after it may retain only the complete measured target, never a partial
+file. No pathname-based cleanup is attempted.
+The boot-proof compatibility alias is derived from the already verified proof descriptor,
+not by independently reopening the proof path. Reuse is accepted only for exact bytes;
+different aliases, links and special files block without replacement.
 
 Every QEMU command line — the lab, the boot screenshot, the interactive preview, the
 install smoke matrix, the boot-check and the QA matrix — is built from one canonical

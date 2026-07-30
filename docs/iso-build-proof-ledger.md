@@ -37,6 +37,7 @@ bootloader, a kernel or a desktop session ran.
 | APT and live packages | observed | the resulting rootfs contains apt, ca-certificates, casper, kernel, GRUB and shim packages; the staged manifest contains 400 packages |
 | executed tool entrypoints | planned | the command runner hashes and opens each recognized host/wrapper/target executable and dispatches through the held `/proc/<pid>/fd/<fd>` descriptor chain; unit tests cover atomic path replacement, but no new real build log has exercised the closure |
 | transitive ELF toolchain | planned | descriptor dispatch closes the selected executable file only; it does not by itself bind the ELF interpreter, dynamic libraries, loader configuration, scripts read after process start, kernel or firmware |
+| artifact-verdict integrity | planned | M3.2a.2 code and adversarial fixtures remove persistent pathname digest reuse, scope hash/parse/replay reuse to one descriptor-backed verdict, revalidate held inodes, paths and inventories at closure, durably copy binary/run-tree evidence and require strict checksum/signing snapshots. No product build, boot or signed release bundle has exercised this boundary |
 | rootfs semantic manifest | planned | code and tests now cover the semantic manifest, host drift guard, descriptor-held SquashFS round-trip, exact embedded-member binding and authoritative replay from the final ISO; no new real build has emitted that evidence |
 | squashfs | observed | a real zstd `mksquashfs` completed and the staged and ISO-extracted squashfs digests match |
 | ISO assembly | observed | a real `xorriso` completed; `reference-derivative-26.04.iso` is 1,348,337,664 bytes with SHA-256 `2e421cde4d3e62014c1265ce903a821777fe22820ea9677d2ff1c7dbd0e49b2a` |
@@ -48,7 +49,7 @@ bootloader, a kernel or a desktop session ran.
 | login prompt | planned | no digest-linked v2 runtime report yet binds a login marker to the rebuilt ISO |
 | BIOS runtime | planned | boot structure exists, but the exact rebuilt ISO still needs an executing BIOS proof |
 | desktop environment | planned | the reference golden-path definition deliberately excludes a desktop |
-| release signature contract | planned | code requires an executed bundle to contain exactly the three detached signatures for `SHA256SUMS`, `RELEASE-GATE.json` and `RELEASE-MANIFEST.json`, verified with an externally pinned full fingerprint and sealed keyring; no bundle from this audit has yet been signed |
+| release signature contract | planned | code requires an executed bundle to contain exactly the three detached signatures for `SHA256SUMS`, `RELEASE-GATE.json` and `RELEASE-MANIFEST.json`, verified with an externally pinned full fingerprint and sealed keyring; no product/audit artifact bundle has been signed, only a throwaway local GPG fixture |
 | reproducibility | planned | deterministic inputs are partly configurable; two independent builds have not produced and compared full artifact sets |
 
 The existing local ISO and historical Secure Boot directory remain useful diagnostic
@@ -171,8 +172,8 @@ The current audit implements the following fail-closed contracts:
 - in-process `plugin.py` loading is refused during a sealed ISO build. Project plugins
   that participate in such a build must be executable phase scripts so their executable
   bytes pass through the same command runner and descriptor evidence;
-- an executed signing report is accepted only when its state is `signed`, its mode is
-  `execute`, its signed set and actual `.asc` files are exactly the three required
+- an executed signing report is accepted only when `status == signed` and the boolean
+  `execute == true`, its signed set and actual `.asc` files are exactly the three required
   targets, and `planned` and `skipped` are empty. Partial signing is blocked, even if the
   signatures that do exist are cryptographically valid;
 - executing CLI actions propagate a blocked report as exit status 2; plan/dry-run modes
@@ -220,17 +221,23 @@ dist/
       ISO-BUILD.json
       RUN-MANIFEST.json
       RUN-MANIFEST.json.sha256
-  ISO-BUILD.json                    # atomic alias to the latest execution
-  ISO-BUILD.plan.json               # atomic alias to the latest plan
-  distroforge-provenance.json       # atomic alias to executed build provenance
+  ISO-BUILD.json                    # first no-replace execution compatibility alias
+  ISO-BUILD.plan.json               # first no-replace plan compatibility alias
+  distroforge-provenance.json       # no-replace executed-build compatibility alias
 ```
 
 The application creates files inside a run exclusively and refuses a repeated run ID.
-This is an append-only application contract, not a cryptographic or filesystem immutability
-property. A local account with write access can still alter or delete the directory and
-recompute an unsigned manifest and sidecar. Aliases are replaceable pointers and are never
-the authority. In particular, a dry-run writes `ISO-BUILD.plan.json` and cannot replace
-`ISO-BUILD.json`.
+Every producer and reader validates that identifier before composing a path: it is one
+non-empty canonical strict-UTF-8 component, neither `.` nor `..`, contains no slash,
+backslash, NUL, control/DEL or invalid Unicode, and is limited to 255 encoded bytes.
+This is an append-only application contract, not a cryptographic or filesystem
+immutability property. A local account with write access can still alter or delete the
+directory and recompute an unsigned manifest and sidecar. Compatibility aliases are
+never the authority and are published once without replacement. A later invocation
+leaves an occupied alias untouched, sets `alias_report` to null, records
+`alias_problem`, and still returns its fresh invocation-scoped report and manifest. In
+particular, a dry-run can create `ISO-BUILD.plan.json` but cannot replace either that
+prior plan alias or `ISO-BUILD.json`.
 
 The current schemas are:
 
@@ -279,7 +286,8 @@ WORM/content-addressed storage.
 
 A QEMU report is accepted only when all of these statements verify:
 
-1. the schema is `distroforge.qemu-lab.v2`, with a non-empty, unique run ID;
+1. the schema is `distroforge.qemu-lab.v2`, with a unique run ID satisfying the same
+   canonical 255-byte component contract as every other evidence producer and reader;
 2. the run is `completed` and its verdict is `passed`;
 3. the recorded ISO size and SHA-256 equal the ISO presented to the gate;
 4. an explicit named milestone was reached; the release minimum is `login_prompt`;
@@ -291,7 +299,9 @@ A QEMU report is accepted only when all of these statements verify:
 7. serial and optional screenshot sizes and SHA-256 digests still match;
 8. the QEMU executable identity is recorded; UEFI proofs also record firmware code,
    variables template and stopped-VM variables digests;
-9. the VM has stopped before the final serial scan and artifact digests are calculated.
+9. the VM has stopped before the final serial scan and artifact digests are calculated;
+10. the ISO, serial, screenshot and firmware bytes were consumed from the same held
+    regular-file descriptors whose identities and paths close the verdict.
 
 The generic marker `Reached target` is rejected because it does not identify a boot
 milestone. A structural `iso-scan` may produce a ready structural report, but it does not
@@ -301,6 +311,14 @@ satisfy the runtime release gate.
 when available, final ISO digest and reached milestone. A newer blocked executed proof
 takes precedence over any older QEMU report.
 
+M3.2a.2 makes that binding causal at the reader boundary. Boot proof copies the selected
+ISO durably from a pinned source into run-owned storage; QEMU and external ISO scanners
+consume its `/proc/<pid>/fd/<fd>` path through `pass_fds`. The QEMU report, serial,
+captures, UEFI firmware, command log, immutable proof, run manifest and sidecar remain
+bound to one invocation-scoped verification session through final parsing and closure.
+The compatibility alias is copied from the verified proof descriptor after sealing, not
+reopened as an independent source.
+
 ## Provenance and publication rules
 
 The release gate does not accept file presence as evidence. It validates the provenance
@@ -309,9 +327,10 @@ application run report and manifest, verifies the manifest sidecar and re-hashes
 listed file. It also locates `PACKAGE-INPUTS.json` through the provenance run ID and
 replays its archive/package closure against the effective build definition's external
 source mode, per-source policies, signer fingerprints, keyring SHA-256, run instant and
-final command ledger. It then locates the provenance-bound `PACKAGE-APT-ACTIONS.json`,
-reopens the collected journal, transcripts and transaction records and recomputes their
-self-consistency. This check deliberately requires
+final command ledger. One invocation-scoped artifact session binds those inputs and the
+provenance-bound `PACKAGE-APT-ACTIONS.json`; the collected journal, transcripts and
+transaction records are read from held descriptors and their self-consistency is
+recomputed without independent pathname reopens. This check deliberately requires
 `capture_origin: unverified-mutable-target-rootfs`, `filesystem_causality: unverified`
 and `release_ready: false`; it cannot convert bytes copied from the mutable target rootfs
 into authenticated APT output. The gate next locates
@@ -335,11 +354,28 @@ build provenance file is preserved rather than overwritten.
 The publish bundle includes `ISO-BUILD.json` and every referenced build, QEMU and
 boot-proof run directory. Every path component from the output root through `evidence`,
 `runs` and the run itself is checked; a file, directory or ancestor symlink is refused
-before copy, and a symlinked bundle destination is refused before its first write. The
-copier preserves rather than dereferences a link that appears during the copy, then
-refuses the result. Release signing manifests recurse through accepted directories so the
-command logs, runtime output, firmware copies and proof files are covered rather than
-merely copied.
+before copy, and a symlinked bundle destination is refused before its first write.
+`create_publish_bundle` additionally requires the gate's ephemeral
+`ArtifactVerificationReceipt`, which is deliberately absent from serialized
+`RELEASE-GATE.json`: every copied regular source must match its complete received
+identity and SHA-256, and each run tree must match its received anchor and exact
+inventory. A missing receipt, omitted source or different union of runs blocks.
+Regular files are streamed from held descriptors while size and SHA-256 are computed;
+run trees are copied descriptor-relatively with explicit file/byte budgets. A fully
+synced staging tree is exposed only by a Linux no-replace rename, so a link or special
+file appearing during the copy is a refusal rather than content preserved in a partial
+bundle. Release signing manifests recurse through accepted directories so the command
+logs, runtime output, firmware copies and proof files are covered rather than merely
+copied.
+
+Publish-signing readiness likewise no longer follows file presence. The bundle inventory
+must be exact, `SHA256SUMS` must be bounded and canonical and name the unique
+manifest-bound current ISO, the typed release-gate aggregate must agree with its non-empty
+items, the manifest and signing report must describe the same snapshot, and the pinned
+keyring plus exactly three detached signatures must verify from held descriptors. A
+standalone verification holds the manifest, gate, checksum file, ISO, runtime evidence,
+payloads, keyring and signatures in one session and requires its closing inventory to
+equal the opening snapshot.
 
 ## Next executing milestones
 
@@ -347,7 +383,12 @@ No existing artifact can be retrofitted into v2 proof. M2.2 is closed at its sta
 source/test boundary by the receipt below, and M3.1 closes only a static package-payload
 identity map in code and fixtures. M3.2a adds only a self-consistency receipt for supplied
 APT-format action bytes: their mutable target-rootfs origin remains explicitly unverified.
-Neither is product evidence. The next acceptable journey is:
+M3.2a.2 closes stale digest reuse and the descriptor-backed integrity of local artifact
+readers, copies and publication snapshots in code and hostile fixtures only. It does not
+authenticate an APT producer or any filesystem transformation. The immediate small policy
+milestone is M3.2a.3: make an unreadable CVE database blocking without mixing that policy
+change into artifact I/O. None is product evidence. The next executing product-causality
+milestone remains M3.2b:
 
 1. implement and test M3.2b producer causality: give a host-isolated one-shot witness the
    first write of each `DPkg::Pre-Install-Pkgs` protocol-v3 stream and require its
@@ -708,7 +749,7 @@ ISO build.
   call ledger contains exactly the two expected discovery calls. Supplying
   `APT_HOOK_INFO_FD=0` still exercises only the hook guard: neither the variable nor the
   closed harness authenticates the descriptor's producer.
-- The local receipts already obtained for this uncommitted hardening are:
+- The local receipts obtained before this hardening was committed were:
   - combined package-input/evidence-run pytest replay: `101 passed`;
   - one sandboxed full replay exposed only its execution boundary: `1412 passed`,
     `1 skipped`, one `sudo` failure under `no_new_privileges` and seven GPG-agent
@@ -720,11 +761,123 @@ ISO build.
   - Ruff over all five initially changed Python files and `git diff --check`: passed;
   - direct cached CI-pinned mypy 2.3.0, offline and non-incremental: passed over 257
     source files.
-  The signed commit's object ID and cryptographic verdict necessarily exist only after
-  this stanza is committed; that final post-write receipt is reported in the handoff
-  rather than self-referenced from the commit it authenticates.
+- The resulting commit is
+  `ac0bedefd4d0d8b49bdabc1f606fd3471b4ea3ea`. Local `git verify-commit` accepts its
+  signature from primary fingerprint
+  `93D942241BECDD422606C36C4C0D75219B5506CF`; this post-write metadata is recorded by the
+  later documentation lot rather than guessed by the commit about itself.
 - No real APT stream or transaction, dpkg operation, package/rootfs/ISO build, boot,
   push, tag, pull request or `main` movement occurred. `capture_origin` remains
   `unverified-mutable-target-rootfs`, `filesystem_causality` remains `unverified`,
   `release_ready` remains false, and the host-isolated one-shot ACK plus producer deltas
   remain M3.2b.
+
+### 2026-07-30 — M3.2a.2 scoped artifact-verdict integrity
+
+- Starting from signed M3.2a.1 commit
+  `ac0bedefd4d0d8b49bdabc1f606fd3471b4ea3ea`, signed commit
+  `976fa5ae11ee53ef32f46020e06cfa99c15d2a95` removes the persistent path/size/mtime
+  SHA-256 cache. Low-level digest calls now recompute from the bytes opened for that
+  invocation, so an atomically substituted same-size file with restored mtime cannot
+  inherit a prior verdict.
+- Signed commit `b7f21fa8fb181c14cb4a09948596dbb36cfb7212` adds the reusable
+  `ArtifactVerificationSession` boundary. Both commits pass local `git verify-commit`
+  with primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`.
+  A session anchors one canonical directory descriptor, opens every path component
+  without following links, accepts regular leaves only, uses non-blocking reads, records
+  complete host identity, keeps the inode held, and permits digest/bytes/JSON/replay
+  reuse only inside one verdict. At sealing it first re-hashes held inodes, repeats
+  bounded inventories as the final content observation and only then repins each name
+  from the leaf through its ancestors to the anchor before dropping cached content.
+  Every producer and reader validates `run_id` before composing a path: it must be one
+  canonical strict-UTF-8 component without separators or controls and is limited to 255
+  encoded bytes.
+- The delegated-reader lot applies that boundary to rootfs manifests and packing,
+  ISO assembly and authoritative replay, QEMU report/serial/capture/firmware evidence,
+  boot-proof reports/manifests/sidecars, release readiness/gate/signing/verification and
+  publish-bundle, drill-baseline and drill-diff inputs. External QEMU, ISO/SquashFS and
+  GPG consumers receive held descriptors through `/proc/<pid>/fd` plus `pass_fds`; alias
+  comparisons use handles held in the same session instead of reopening names
+  independently.
+- A non-blocked or ready signed gate must carry one immutable build run B and boot run C,
+  with provenance/SBOM paths under B and boot/QEMU paths under C. Terminal verification
+  requires the boot proof and boot run manifest to bind exactly `C -> B`; a missing,
+  malformed or cross-run path blocks. Pipeline, drill, acceptance, beginner, CLI and GUI
+  surfaces retain only IDs selected by that verdict. If B already embeds a valid boot run
+  D, boot proof revalidates and reuses D without VM execution or a conflicting C.
+  `iso-accept` remediation creates and consumes any new boot run in one
+  `release-pipeline` process, so no placeholder ID can enter a path.
+- Binary and tree copies now hold and revalidate the source, compute size and SHA-256
+  while writing a fully synced same-directory object and publish without replacement.
+  Regular text and binary targets use anonymous `O_TMPFILE` inodes, so there is no
+  swappable temporary pathname or pathname cleanup; an explicit idempotent collision must
+  reproduce the exact size and digest. Tree staging is re-hashed against its per-file
+  receipt before rename. Failed owned trees are durably detached into unpredictable
+  quarantine names before an independently reported bounded best-effort scrub. The
+  quarantine is always physically retained; detach-only replay retirement may report
+  residual entries and bytes. Bundle publication first consumes a non-serialized gate
+  receipt binding every source identity/digest and run-tree anchor/inventory, then returns
+  a distinct stable directory identity which every later writer must reproduce. The gate
+  evaluates the explicitly selected bundle descriptor-relatively: absence is review, but
+  a symlinked, non-directory or unreadable component is blocked, and another signed bundle
+  cannot supply its evidence. The signing gate requires an exact
+  bundle snapshot, one current manifest-bound ISO, canonical bounded `SHA256SUMS`, a
+  coherent typed release gate, a minimal public-only pinned keyring and exactly three
+  cryptographically verified descriptor-bound signatures. Presence alone cannot produce
+  `ready`; internal temporary or quarantine entries block the next preflight.
+- Standalone verification publishes a report only after its primary session, exact
+  opening/closing inventories and original bundle identity seal; an identical existing
+  report may be reused but is never replaced. Explanation reproduces that live verifier
+  result rather than trusting self-consistent JSON. After explanation, the drill repeats
+  the read-only verifier and requires an identical result, then validates the complete
+  persisted pipeline/gate/manifest/signing/keyring/verification contract through one
+  strict schema. Only that terminal result may resolve the sole pre-signing
+  `publish-signing` review. A real local Ed25519 fixture exercises the complete ready
+  pipeline while remaining non-product evidence.
+- Drill comparison remains explicitly `structural-only`: it validates and compares the
+  stored report graph but does not authenticate either release. A canonical promoted
+  baseline requires its exact in-bundle names, bundle identity and matching local
+  size/SHA receipt; that receipt is forgeable by a bundle writer, is not cryptographic
+  provenance and never contributes to `release_ready`. Promoting a `ready_to_publish`
+  drill requires an external complete signer fingerprint and identical live verification
+  before and after publication; a terminal block or exception creates no ready receipt.
+- Local pre-commit receipts gathered during closure:
+  - `make check`: Ruff passed; mypy passed over 262 source files; pytest reported
+    `2000 passed, 1 skipped`; ShellCheck passed; both embedded maintainer-script Python
+    payloads compiled with no problem;
+  - the CI-pinned offline `mypy 2.3.0 --no-incremental` replay passed over the same 262
+    source files;
+  - all eight `pre-commit run --all-files` hooks passed and `git diff --check` reported no
+    whitespace error;
+  - the non-GPG sandbox matrix reported `1915 passed, 4 skipped`; the two real GPG
+    end-to-end scenarios then passed outside the sandbox with generated Ed25519 keys;
+  - focused causal matrices reported 56 contract/run-propagation tests, 11 terminal
+    verification-session tests, 80 maintainer release tests and 21 off-thread UI tests
+    passed.
+  No precomputed green flag was substituted for these executions. The delegated-reader
+  commit identity and signature are post-write facts: they are intentionally left to the
+  completed handoff after that commit exists, rather than predicted in the commit it
+  authenticates.
+- These checks falsify same-size/same-mtime replacement, swaps after hash or parse,
+  symlink leaves and ancestors, FIFO/socket/device/directory inputs, growth/truncation,
+  invalid or excessively deep JSON, serial and firmware replacement, copy/fsync/link/
+  unlink failures, bundle clones, collisions, descriptor leaks and structural-budget
+  exhaustion. They prove the held inode's bytes and equality at observed opening/closure
+  boundaries, not the absence of a perfectly restored transient mutation. M3.2a.2 closes
+  the earlier regular-writer name window with anonymous-inode re-hashing and one
+  no-replace link; it never claims exchange, replacement or safe unlink-by-name.
+- Beginner repair remains a convenience producer, not an atomic multi-file attestation.
+  An ISO or output-directory swap clears its success list, blocks the pipeline before
+  bundle creation and may leave only complete but non-authoritative immutable files; a
+  fresh output directory is required for retry. Reconstructed provenance remains blocked.
+- This is source and hostile-fixture integrity, not an APT-origin, dpkg-execution,
+  package/rootfs/ISO-build, firmware, boot, release-signature or reproducibility receipt.
+  No promotion occurs: `capture_origin` remains
+  `unverified-mutable-target-rootfs`, `filesystem_causality` remains `unverified`, and
+  `release_ready` remains false. The blocking policy for an unreadable CVE database is
+  reserved for M3.2a.3. The host-isolated one-shot ACK and producer/filesystem deltas
+  remain M3.2b, the next executing causality milestone.
+- No push, tag, pull request or `main` movement is part of this local stanza.
+  `origin/develop` remains `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`,
+  `origin/main` remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`, and
+  `debian/0.3.5-16` remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.

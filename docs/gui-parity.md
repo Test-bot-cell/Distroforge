@@ -102,8 +102,10 @@ delegates to `release-gate` and blocks publication until ISO, SHA256SUMS, source
 boot proof and policy evidence are valid. The `publish-gate` step also weaves the maintainer
 release-confidence ritual into its check and next action — `sign-release`, `verify-release`, a
 `publish-drill-diff` against a promoted baseline, and the configured CVE scan policy — as advisory
-guidance that surfaces the real status of any existing signing, verification and baseline reports
-without blocking the gate; CLI `journey --check publish-gate` and the Start-page card **Check**
+guidance that surfaces the bounded stored status of any existing signing, verification and
+locally receipted baseline reports without blocking the gate. Those signing/verification
+labels are explicitly self-declared and not live-verified by the journey check; CLI
+`journey --check publish-gate` and the Start-page card **Check**
 render the identical findings from `core/build_journey.py`. Command Center is the auditor view that also
 includes parity and capability maps, and opens with a **What do you want to achieve?** goal hub — one
 card per product capability (`core/workflows.py`) that routes intent straight to the GUI surface the
@@ -148,9 +150,18 @@ autoinstall, explicit systemd service intent, auto drivers and rollback snapshot
 `dist/publish/` as an inspection bundle with the ISO, release evidence, boot proof when
 present, `RELEASE-GATE.json`, and `README-PUBLISH.txt`; blocked bundles are labelled as
 blocked instead of being treated as publishable.
-`sign-release PROJECT` maps to **Plan Sign Release** on Artifacts. It writes
-`RELEASE-MANIFEST.json` and `SIGNING-REPORT.json`; without `--execute` it only plans GPG
-detached signatures for `SHA256SUMS`, `RELEASE-GATE.json`, and `RELEASE-MANIFEST.json`.
+The Artifacts **Reports dir** remains distinct from the product output: the selected
+ISO's canonical parent is always the release-gate `output_dir`, while the default
+`dist/reports` selects its sibling `dist/publish` bundle. Publish, sign, verify, explain,
+drill, baseline and pipeline actions resolve that same ISO/output/bundle triple. The
+potentially long sign-plan, verify, explain, drill, comparison and baseline services run
+on a worker after their widget values are frozen on the Qt thread; only their completion
+callbacks update the UI.
+`sign-release PROJECT` maps to **Plan Sign Release** on Artifacts. The plan is read-only:
+it invokes no GPG process, returns the proposed entry snapshot and three `.asc` target
+names, and consumes neither `RELEASE-MANIFEST.json` nor `SIGNING-REPORT.json`; with
+`--execute` it writes those authoritative files and detached signatures for
+`SHA256SUMS`, `RELEASE-GATE.json`, and `RELEASE-MANIFEST.json`.
 An executed signing result is all-or-nothing: those three `.asc` files must be the exact
 signed and on-disk set, with no planned or skipped target, and verification requires the
 externally pinned full fingerprint plus the sealed verification-keyring SHA-256.
@@ -158,8 +169,10 @@ externally pinned full fingerprint plus the sealed verification-keyring SHA-256.
 bundle manifest, gate and signing report, then writes `RELEASE-NOTES.md` and
 `CHANGELOG.txt` for maintainer review.
 `verify-release PROJECT` maps to **Verify Release** on Artifacts. It checks the manifest,
-file sizes, SHA-256 digests, `SHA256SUMS`, release gate status and detached signatures when
-they are present and `gpg` is available; an executed partial signature set is blocked.
+file sizes, SHA-256 digests, `SHA256SUMS`, release gate status and the exact detached
+signature set. For executed signing, a missing or extra signature, unavailable GPG,
+missing externally pinned complete fingerprint, or mismatch with the sealed public
+keyring is blocked.
 `iso-toolchain` maps to **ISO Toolchain** on Build & Release. It checks the host tools
 needed to produce an ISO and prints the explicit apt install command.
 `iso-doctor PROJECT` maps to **ISO Doctor** on Build & Release. It diagnoses why the
@@ -179,14 +192,21 @@ because the GUI action renders the non-executing demo report; CLI `--execute` is
 to run the shortest demonstrable path toward a real ISO.
 `explain-release PROJECT` maps to **Explain Release** on Artifacts. It writes
 `RELEASE-EXPLAIN.md` with ready, review and blocked evidence, boot proof level and next
-maintainer commands.
+maintainer commands. The Artifacts GPG key/fingerprint field is passed as the external
+trust anchor; CLI parity is `--gpg-fingerprint`.
 `publish-drill PROJECT` maps to **Publish Drill** on Artifacts. It rehearses boot proof,
 release pipeline, signing plan, verification and explanation, then writes
 `PUBLISH-DRILL.json` without signing unless explicitly requested.
 `publish-drill-diff OLD NEW` maps to **Compare Drill** on Artifacts. The GUI compares
 `PUBLISH-DRILL.previous.json` and `PUBLISH-DRILL.json` in the selected publish bundle.
+The result is structural-only and does not authenticate stored signatures or either
+release.
 `publish-drill-baseline PROJECT` maps to **Promote Drill** on Artifacts. It promotes the
-current drill as the previous baseline unless that drill is blocked.
+current drill as a local comparison baseline unless that drill is blocked. This action
+does not publish a release and does not move any Git branch. A
+`ready_to_publish` promotion requires the externally pinned complete signer fingerprint
+and equal live verification before and after publication. Its local size/SHA receipt is
+not cryptographic provenance and never contributes to `release_ready`.
 `release-pipeline PROJECT` maps to **Release Pipeline** on Artifacts. It repairs derivable
 artifacts when an ISO exists, creates the publish bundle, plans or executes signing,
 writes notes, verifies the bundle and records `RELEASE-PIPELINE.json`.

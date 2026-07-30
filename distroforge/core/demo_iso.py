@@ -72,7 +72,21 @@ def run_demo_iso(root: Path, *, name: str | None = None, release: str = "26.04",
     if not doctor.blocked:
         build = run_iso_build(project, options, execute=execute, boot_proof_backend=boot_proof_backend if execute else "none")
         if execute and build.status == "built":
-            acceptance = accept_iso(project, options, iso=options.output_iso)
+            acceptance = accept_iso(
+                project,
+                options,
+                iso=options.output_iso,
+                build_run_id=build.run_id,
+                boot_run_id=(
+                    build_boot.run_id
+                    if (
+                        (build_boot := getattr(build, "boot_proof", None))
+                        is not None
+                        and build_boot.run_id
+                    )
+                    else None
+                ),
+            )
     status = _status(execute, doctor, build, acceptance)
     report = DemoIsoReport(project.root, created, options.output_iso, status, _next_command(project, execute, doctor, build, acceptance), doctor, build, acceptance)
     project.output_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +120,6 @@ def _next_command(project: Project, execute: bool, doctor: IsoDoctorReport, buil
         return f"distroforge demo-iso {root} --execute"
     if build and build.blocked:
         return f"distroforge iso-build {root} --execute --boot-proof auto"
-    if acceptance and acceptance.blocked:
+    if acceptance:
         return acceptance.next_command
     return f"distroforge publish-bundle {root} --iso {default_output_iso(project)}"

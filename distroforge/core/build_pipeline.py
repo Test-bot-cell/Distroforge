@@ -20,7 +20,7 @@ from .customize import CustomizationService
 from .debrand import DebrandService
 from .desktop_source import DesktopSourceService
 from .drivers import DriverService
-from .evidence_run import close_run_identity, evidence_run_path
+from .evidence_run import close_run_identity, evidence_run_path, is_safe_run_id
 from .fsops import FileSystemOps
 from .health import HealthService
 from .hooks import HookRunner
@@ -770,8 +770,9 @@ def assemble_iso(orch: BuildOrchestrator, services: BuildServices) -> None:
         orch.options.squashfs.compression, orch.project.release.compression
     )
     run_id = services.rootfs_evidence.run_id
-    if not isinstance(run_id, str) or not run_id:
+    if not is_safe_run_id(run_id):
         raise ValueError("Final rootfs evidence requires a sealed build run_id")
+    assert isinstance(run_id, str)
     rootfs_manifest = evidence_run_path(
         orch.project.output_dir,
         run_id,

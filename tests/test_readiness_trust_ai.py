@@ -552,9 +552,11 @@ def test_publish_gate_journey_surfaces_release_confidence_ritual(tmp_path: Path)
     assert "sign-release" in apply_note and "verify-release" in apply_note
 
 
-def test_publish_gate_journey_reflects_existing_release_reports(tmp_path: Path) -> None:
-    # When the bundle already holds signing/verification/baseline reports, the journey check
-    # reports their real status instead of generic guidance, and mirrors the CVE policy.
+def test_publish_gate_journey_labels_stored_release_statuses_as_unverified(
+    tmp_path: Path,
+) -> None:
+    # Minimal self-declared status objects are stored diagnostics, never proof that
+    # signing or verification was live-verified by this journey check.
     project = Project.create("RitualReports", tmp_path / "ritual-reports", "26.04")
     project.source_mode = "bootstrap"
     bundle = project.output_dir / "publish"
@@ -568,9 +570,17 @@ def test_publish_gate_journey_reflects_existing_release_reports(tmp_path: Path) 
     options.vuln_scan.policy = "block-high"
 
     blob = " ".join(check_journey_step(project, options, "publish-gate").findings)
-    assert "Signing: signed" in blob
-    assert "Verification: ready" in blob
-    assert "Baseline present" in blob
+    assert (
+        "Stored signing report (self-declared; not live-verified here): signed"
+        in blob
+    )
+    assert (
+        "Stored verification report (self-declared; not live-verified here): ready"
+        in blob
+    )
+    assert "Signing: signed" not in blob
+    assert "Verification: ready" not in blob
+    assert "baseline is unsafe" in blob
     assert "CVE scan: enabled (policy=block-high)" in blob
 
 
@@ -644,13 +654,14 @@ def test_beginner_iso_path_prepares_definition_dry_run_and_gate(tmp_path: Path, 
         )
         return SimpleNamespace(
             status="built",
+            run_id="build-run",
             failure=None,
             command_log=command_log,
-            report=project.output_dir / "evidence" / "runs" / "fake-run" / "ISO-BUILD.json",
+            report=project.output_dir / "evidence" / "runs" / "build-run" / "ISO-BUILD.json",
             run_manifest=project.output_dir
             / "evidence"
             / "runs"
-            / "fake-run"
+            / "build-run"
             / "RUN-MANIFEST.json",
         )
 
@@ -796,6 +807,7 @@ def test_beginner_iso_boot_proof_plans_and_gate_uses_proof_report(capsys, tmp_pa
     statuses = {item.code: item.status for item in gate.items}
     assert statuses["boot-proof"] == "blocked"
 
+    write_valid_build_evidence(project, iso)
     write_valid_boot_proof(project, iso)
     gate = __import__("distroforge.core.release_gate", fromlist=["ReleaseGateService"]).ReleaseGateService().check(project, options, iso=iso, output_dir=project.output_dir)
     assert {item.code: item.status for item in gate.items}["boot-proof"] == "ready"

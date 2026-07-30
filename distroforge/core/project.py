@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,6 +74,7 @@ class Project:
 
     @classmethod
     def load(cls, root: Path) -> Project:
+        root = Path(os.path.abspath(root))
         project_file = root / "project.json"
         if not project_file.exists():
             raise FileNotFoundError(
@@ -98,6 +100,7 @@ class Project:
 
     @classmethod
     def create(cls, name: str, root: Path, release_version: str) -> Project:
+        root = Path(os.path.abspath(root))
         project = cls(name=name, root=root, release=get_release(release_version))
         project.workdir.mkdir(parents=True, exist_ok=True)
         project.output_dir.mkdir(parents=True, exist_ok=True)

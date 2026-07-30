@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import write_valid_qemu_report
 
-from distroforge.core import boot_proof, qemu_invocation
+from distroforge.core import boot_proof, evidence_run, prebuild_vm, qemu_invocation
 from distroforge.core.artifact_paths import default_output_iso
+from distroforge.core.artifact_verification import ArtifactVerificationSession
 from distroforge.core.boot_proof import resolve_firmware, run_boot_proof
 from distroforge.core.build import BuildOptions
-from distroforge.core.command import CommandRunner
+from distroforge.core.command import CommandResult, CommandRunner, CommandSpec
 from distroforge.core.hashing import sha256_file
 from distroforge.core.prebuild_vm import (
     PrebuildVmOptions,
@@ -28,6 +32,117 @@ from distroforge.core.validate import validate_prebuild_vm_options
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _BoundedScandir:
+    def __init__(self, iterator, *, maximum_yields: int) -> None:
+        self._iterator = iterator
+        self._maximum_yields = maximum_yields
+        self.yields = 0
+
+    def __enter__(self):
+        self._iterator.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self._iterator.__exit__(exc_type, exc, traceback)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        entry = next(self._iterator)
+        self.yields += 1
+        if self.yields > self._maximum_yields:
+            pytest.fail("inventory enumerated beyond its structural budget")
+        return entry
+
+
+class _ExecutionRecorder(CommandRunner):
+    def __init__(self) -> None:
+        super().__init__(dry_run=False)
+        self.qemu_spec: CommandSpec | None = None
+        self.consumed_iso = b""
+        self.consumed_firmware_code = b""
+        self.initial_firmware_vars = b""
+
+    def run(
+        self,
+        spec: CommandSpec,
+        check: bool = True,
+    ) -> CommandResult:
+        del check
+        self.history.append(spec)
+        if spec.argv[:2] == ("mkdir", "-p"):
+            for value in spec.argv[2:]:
+                Path(value).mkdir(parents=True, exist_ok=True)
+        elif spec.argv[:2] == ("rm", "-f"):
+            for value in spec.argv[2:]:
+                Path(value).unlink(missing_ok=True)
+        elif spec.argv[:2] == ("qemu-img", "create"):
+            Path(spec.argv[4]).write_bytes(b"qcow2")
+        elif spec.argv[:1] == ("qemu-system-x86_64",):
+            self.qemu_spec = spec
+            cdrom = Path(spec.argv[spec.argv.index("-cdrom") + 1])
+            self.consumed_iso = cdrom.read_bytes()
+            for descriptor in spec.pass_fds:
+                os.fstat(descriptor)
+            pflash = [value for value in spec.argv if value.startswith("if=pflash")]
+            if pflash:
+                code = Path(
+                    next(value for value in pflash if "readonly=on" in value).rsplit("file=", 1)[1]
+                )
+                runtime = Path(
+                    next(value for value in pflash if "readonly=on" not in value).rsplit(
+                        "file=", 1
+                    )[1]
+                )
+                self.consumed_firmware_code = code.read_bytes()
+                self.initial_firmware_vars = runtime.read_bytes()
+                runtime.write_bytes(b"runtime vars after boot")
+            Path(spec.argv[spec.argv.index("-pidfile") + 1]).write_text(
+                "4242\n",
+                encoding="utf-8",
+            )
+            serial = spec.argv[spec.argv.index("-serial") + 1].removeprefix("file:")
+            Path(serial).write_text("host login: ", encoding="utf-8")
+        return CommandResult(spec, 0, "", "")
+
+
+def _execute_recorded_lab(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    output_dir: Path,
+    iso: Path,
+    options: PrebuildVmOptions | None = None,
+) -> tuple[QemuLabService, _ExecutionRecorder, Path, dict[str, object]]:
+    runner = _ExecutionRecorder()
+    selected = options or PrebuildVmOptions(
+        enabled=True,
+        screenshot=False,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        selected,
+    )
+
+    def qmp_command(name, _socket, arguments=None):
+        if name == "screendump":
+            assert isinstance(arguments, dict)
+            Path(str(arguments["filename"])).write_bytes(b"P6\n1 1\n255\n\x00\x00\x00")
+
+    monkeypatch.setattr(lab._qmp_control, "command", qmp_command)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+    lab.run()
+    immutable = output_dir / "evidence" / "runs" / lab.run_id / selected.report_name
+    payload = json.loads(immutable.read_text(encoding="utf-8"))
+    return lab, runner, immutable, payload
+
+
 def test_qemu_lab_dry_run_uses_qmp_and_writes_report(tmp_path) -> None:
     runner = CommandRunner(dry_run=True)
     iso = tmp_path / "image.iso"
@@ -43,7 +158,761 @@ def test_qemu_lab_dry_run_uses_qmp_and_writes_report(tmp_path) -> None:
     assert any(argv[:1] == ("qmp-command",) and "query-status" in argv[-1] for argv in commands)
     assert any(argv[:1] == ("qmp-command",) and "screendump" in argv[-1] for argv in commands)
     assert any(argv[:1] == ("qmp-command",) and "quit" in argv[-1] for argv in commands)
-    assert any(argv == ("write-file", str(tmp_path / "dist" / "qemu-lab-report.json")) for argv in commands)
+    assert any(
+        argv == ("write-file", str(tmp_path / "dist" / "qemu-lab-report.json")) for argv in commands
+    )
+
+
+def test_qemu_runtime_outputs_are_confined_to_one_new_run_scratch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    iso = output_dir / "image.iso"
+    output_dir.mkdir()
+    iso.write_bytes(b"pinned ISO")
+    options = PrebuildVmOptions(
+        enabled=True,
+        screenshot=True,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+
+    lab, runner, immutable, payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+        options=options,
+    )
+
+    expected_scratch = tmp_path / "work" / "prebuild-vm" / "runs" / lab.run_id
+    artifacts = lab._artifacts()
+    assert lab.workdir == expected_scratch
+    assert artifacts.serial_log.parent == expected_scratch
+    assert artifacts.screenshot.parent == expected_scratch
+    assert artifacts.disk.parent == expected_scratch
+    assert not (output_dir / options.serial_log).exists()
+    assert not (output_dir / options.screenshot_name).exists()
+    assert (immutable.parent / "qemu" / "serial.log").is_file()
+    assert (immutable.parent / "qemu" / "screenshot.ppm").is_file()
+    assert payload["artifacts"]["serial_log"]["path"] == "qemu/serial.log"
+    assert payload["artifacts"]["screenshot"]["path"] == "qemu/screenshot.ppm"
+    assert not any(spec.argv[:2] == ("rm", "-f") for spec in runner.history)
+
+
+def test_qemu_iso_leaf_collision_is_refused_before_cleanup(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = output_dir / "protected.iso"
+    original = b"the ISO must survive"
+    iso.write_bytes(original)
+    options = PrebuildVmOptions(
+        enabled=True,
+        serial_log=iso.name,
+        screenshot=False,
+    )
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        options,
+    )
+
+    with pytest.raises(ValueError, match="collide with managed artifacts"):
+        lab.run()
+
+    assert iso.read_bytes() == original
+    assert runner.history == []
+    assert not (tmp_path / "work" / "prebuild-vm").exists()
+
+
+def test_qemu_integrity_leaf_cannot_overwrite_the_input_iso(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = output_dir / "PREBUILD-VM-INTEGRITY"
+    original = b"ISO bytes under a managed leaf"
+    iso.write_bytes(original)
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        PrebuildVmOptions(enabled=True, screenshot=False),
+    )
+
+    with pytest.raises(ValueError, match="collide with the input ISO path"):
+        lab.run()
+
+    assert iso.read_bytes() == original
+    assert runner.history == []
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("serial_log", "SHA256SUMS"),
+        ("qmp_socket", "qemu-lab.qcow2"),
+        ("report_name", "QEMU-REPORT-ALIAS-PUBLICATION.json"),
+    ),
+)
+def test_qemu_validation_refuses_managed_namespace_collisions(
+    tmp_path,
+    field_name: str,
+    value: str,
+) -> None:
+    options = PrebuildVmOptions(enabled=True)
+    setattr(options, field_name, value)
+
+    issues = validate_prebuild_vm_options(options)
+
+    assert any(issue.code == "prebuild-vm-artifact-collision" for issue in issues)
+    with pytest.raises(ValueError, match="collide with managed artifacts"):
+        QemuLabService(
+            CommandRunner(dry_run=True),
+            tmp_path / "image.iso",
+            tmp_path / "work",
+            tmp_path / "dist",
+            options,
+        ).run()
+
+
+def test_qemu_validation_refuses_control_output_leaf_aliasing(
+    tmp_path,
+) -> None:
+    options = PrebuildVmOptions(
+        enabled=True,
+        qmp_socket="shared-runtime-leaf",
+        serial_log="shared-runtime-leaf",
+    )
+
+    assert any(
+        issue.code == "prebuild-vm-artifact-collision"
+        for issue in validate_prebuild_vm_options(options)
+    )
+    with pytest.raises(ValueError, match="must all be different"):
+        QemuLabService(
+            CommandRunner(dry_run=True),
+            tmp_path / "image.iso",
+            tmp_path / "work",
+            tmp_path / "dist",
+            options,
+        ).run()
+
+
+def test_qemu_refuses_a_symlinked_scratch_ancestor_before_commands(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "dist"
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"untouched")
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "prebuild-vm").symlink_to(outside, target_is_directory=True)
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        work,
+        output_dir,
+        PrebuildVmOptions(enabled=True, screenshot=False),
+    )
+
+    with pytest.raises(OSError):
+        lab.run()
+
+    assert runner.history == []
+    assert sentinel.read_bytes() == b"untouched"
+
+
+def test_qemu_refuses_to_reuse_an_existing_run_scratch(
+    tmp_path,
+) -> None:
+    run_id = "already-reserved"
+    scratch = tmp_path / "work" / "prebuild-vm" / "runs" / run_id
+    scratch.mkdir(parents=True)
+    sentinel = scratch / "sentinel"
+    sentinel.write_bytes(b"foreign runtime state")
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned")
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        tmp_path / "dist",
+        PrebuildVmOptions(enabled=True, screenshot=False),
+        run_id=run_id,
+    )
+
+    with pytest.raises(ValueError, match="refuses to reuse"):
+        lab.run()
+
+    assert runner.history == []
+    assert sentinel.read_bytes() == b"foreign runtime state"
+
+
+def test_boot_proof_inventory_stops_enumerating_at_total_entry_budget(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for index in range(100):
+        (run_dir / f"empty-{index:03d}").mkdir()
+    original_scandir = os.scandir
+    observed: list[_BoundedScandir] = []
+
+    def bounded_scandir(path):
+        iterator = _BoundedScandir(
+            original_scandir(path),
+            maximum_yields=3,
+        )
+        observed.append(iterator)
+        return iterator
+
+    monkeypatch.setattr(boot_proof, "_BOOT_INVENTORY_MAX_ENTRIES", 2)
+    monkeypatch.setattr(boot_proof.os, "scandir", bounded_scandir)
+
+    with pytest.raises(
+        prebuild_vm.ArtifactVerificationError,
+        match="inventory entry limit",
+    ):
+        boot_proof._inventory_run_directory(run_dir)
+
+    assert observed[0].yields == 3
+
+
+def test_qemu_run_inventory_counts_empty_directories_before_sorting(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for index in range(100):
+        (run_dir / f"empty-{index:03d}").mkdir()
+    original_scandir = os.scandir
+    observed: list[_BoundedScandir] = []
+
+    def bounded_scandir(path):
+        iterator = _BoundedScandir(
+            original_scandir(path),
+            maximum_yields=3,
+        )
+        observed.append(iterator)
+        return iterator
+
+    monkeypatch.setattr(prebuild_vm.os, "scandir", bounded_scandir)
+
+    with pytest.raises(
+        prebuild_vm.ArtifactVerificationError,
+        match="2 total entries",
+    ):
+        prebuild_vm._inventory_regular_tree(
+            run_dir,
+            excluded=set(),
+            max_entries=2,
+        )
+
+    assert observed[0].yields == 3
+
+
+def test_qemu_lab_execution_consumes_the_held_iso_descriptor(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+    runner = _ExecutionRecorder()
+    options = PrebuildVmOptions(
+        enabled=True,
+        screenshot=False,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        tmp_path / "dist",
+        options,
+    )
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+
+    lab.run()
+
+    assert runner.consumed_iso == b"pinned ISO"
+    assert runner.qemu_spec is not None
+    assert runner.qemu_spec.pass_fds
+    cdrom = runner.qemu_spec.argv[runner.qemu_spec.argv.index("-cdrom") + 1]
+    assert cdrom.startswith(f"/proc/{os.getpid()}/fd/")
+    report = json.loads((tmp_path / "dist" / options.report_name).read_text(encoding="utf-8"))
+    run_dir = tmp_path / "dist" / "evidence" / "runs" / report["run_id"]
+    manifest = run_dir / "RUN-MANIFEST.json"
+    assert (run_dir / "RUN-MANIFEST.json.sha256").read_text(
+        encoding="utf-8"
+    ) == f"{sha256_file(manifest)}  RUN-MANIFEST.json\n"
+
+
+def test_repeated_qemu_runs_preserve_the_first_alias_and_manifest_each_receipt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = output_dir / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+
+    first_lab, _first_runner, first_report, first_payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+    )
+    alias = output_dir / first_lab.options.report_name
+    first_alias_bytes = alias.read_bytes()
+    first_receipt = json.loads(
+        (first_report.parent / prebuild_vm.QEMU_REPORT_ALIAS_PUBLICATION_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    second_lab, second_runner, second_report, second_payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+    )
+    second_receipt_path = second_report.parent / prebuild_vm.QEMU_REPORT_ALIAS_PUBLICATION_NAME
+    second_receipt = json.loads(second_receipt_path.read_text(encoding="utf-8"))
+    manifest_path = second_report.parent / "RUN-MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert first_lab.run_id != second_lab.run_id
+    assert first_payload["verdict"] == "passed"
+    assert second_payload["verdict"] == "passed"
+    assert first_receipt["status"] == "matched"
+    assert second_receipt["status"] == "collision-preserved"
+    assert alias.read_bytes() == first_alias_bytes
+    assert second_report.read_bytes() != first_alias_bytes
+    assert any(
+        item["path"] == str(second_receipt_path)
+        and item["sha256"] == sha256_file(second_receipt_path)
+        for item in manifest["files"]
+    )
+    assert (second_report.parent / "RUN-MANIFEST.json.sha256").read_text(
+        encoding="utf-8"
+    ) == f"{sha256_file(manifest_path)}  RUN-MANIFEST.json\n"
+    assert second_runner.qemu_spec is not None
+    for descriptor in second_runner.qemu_spec.pass_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.parametrize("collision_kind", ("symlink", "fifo"))
+def test_qemu_report_alias_special_file_collision_cannot_change_verdict(
+    tmp_path,
+    monkeypatch,
+    collision_kind: str,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+    alias = output_dir / "qemu-lab-report.json"
+    outside = tmp_path / "outside-report"
+    if collision_kind == "symlink":
+        outside.write_bytes(b"foreign")
+        alias.symlink_to(outside)
+    else:
+        os.mkfifo(alias)
+
+    _lab, _runner, immutable, payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+    )
+    receipt = json.loads(
+        (immutable.parent / prebuild_vm.QEMU_REPORT_ALIAS_PUBLICATION_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["verdict"] == "passed"
+    assert receipt["status"] == "collision-preserved"
+    if collision_kind == "symlink":
+        assert alias.is_symlink()
+        assert outside.read_bytes() == b"foreign"
+    else:
+        assert stat.S_ISFIFO(os.lstat(alias).st_mode)
+
+
+def test_qemu_report_alias_race_is_preserved_without_blocking_sealed_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+    original = evidence_run.write_text_alias
+    raced = False
+
+    def collide_before_link(path, content, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            path.write_bytes(b"racing publisher")
+        return original(path, content, **kwargs)
+
+    monkeypatch.setattr(evidence_run, "write_text_alias", collide_before_link)
+
+    _lab, _runner, immutable, payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+    )
+    receipt = json.loads(
+        (immutable.parent / prebuild_vm.QEMU_REPORT_ALIAS_PUBLICATION_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert raced
+    assert payload["verdict"] == "passed"
+    assert receipt["status"] == "collision-preserved"
+    assert (output_dir / "qemu-lab-report.json").read_bytes() == b"racing publisher"
+
+
+def test_qemu_report_alias_fsync_failure_is_unconfirmed_not_a_qemu_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+
+    def fail_alias_fsync(*args, **kwargs):
+        raise OSError("simulated alias fsync failure")
+
+    monkeypatch.setattr(evidence_run, "write_text_alias", fail_alias_fsync)
+
+    _lab, _runner, immutable, payload = _execute_recorded_lab(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        iso=iso,
+    )
+    receipt_path = immutable.parent / prebuild_vm.QEMU_REPORT_ALIAS_PUBLICATION_NAME
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    manifest = json.loads((immutable.parent / "RUN-MANIFEST.json").read_text(encoding="utf-8"))
+
+    assert payload["verdict"] == "passed"
+    assert receipt["status"] == "unconfirmed"
+    assert "fsync" in receipt["detail"]
+    assert any(item["path"] == str(receipt_path) for item in manifest["files"])
+
+
+def test_qemu_iso_witness_allows_proven_sibling_outputs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = output_dir / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        PrebuildVmOptions(
+            enabled=True,
+            screenshot=False,
+            success_patterns=["login:"],
+            timeout_seconds=1,
+        ),
+    )
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+
+    lab.run()
+
+    assert runner.consumed_iso == b"pinned ISO"
+    assert (
+        json.loads((output_dir / "qemu-lab-report.json").read_text(encoding="utf-8"))["verdict"]
+        == "passed"
+    )
+
+
+def test_qemu_lab_execution_pins_and_seals_every_uefi_input(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    iso = output_dir / "image.iso"
+    code = output_dir / "OVMF_CODE_4M.fd"
+    template = output_dir / "OVMF_VARS_4M.fd"
+    iso.write_bytes(b"pinned ISO")
+    code.write_bytes(b"held firmware code")
+    template.write_bytes(b"held vars template")
+    runner = _ExecutionRecorder()
+    options = PrebuildVmOptions(
+        enabled=True,
+        firmware="uefi",
+        ovmf_code=str(code),
+        ovmf_vars=str(template),
+        screenshot=False,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        options,
+    )
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+
+    lab.run()
+
+    assert runner.consumed_firmware_code == b"held firmware code"
+    assert runner.initial_firmware_vars == b"held vars template"
+    assert runner.qemu_spec is not None
+    assert len(runner.qemu_spec.pass_fds) == 4
+    report = json.loads((output_dir / options.report_name).read_text(encoding="utf-8"))
+    firmware = report["execution"]["firmware"]
+    assert firmware["consumption"] == {
+        "code": "held-descriptor",
+        "vars_template": "held-copy-source",
+        "vars_runtime": "held-descriptor",
+    }
+    runtime = output_dir / "evidence" / "runs" / report["run_id"] / firmware["vars_runtime"]["path"]
+    assert runtime.read_bytes() == b"runtime vars after boot"
+    assert firmware["vars_runtime"]["sha256"] == sha256_file(runtime)
+
+
+def test_qemu_lab_blocks_firmware_path_swap_around_consumption(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    code = tmp_path / "OVMF_CODE_4M.fd"
+    template = tmp_path / "OVMF_VARS_4M.fd"
+    iso.write_bytes(b"pinned ISO")
+    code.write_bytes(b"original firmware")
+    template.write_bytes(b"vars template")
+
+    class FirmwareSwappingRecorder(_ExecutionRecorder):
+        def run(
+            self,
+            spec: CommandSpec,
+            check: bool = True,
+        ) -> CommandResult:
+            if spec.argv[:1] == ("qemu-system-x86_64",):
+                replacement = code.with_name("replacement-code.fd")
+                replacement.write_bytes(b"replaced firmware")
+                replacement.replace(code)
+            return super().run(spec, check=check)
+
+    runner = FirmwareSwappingRecorder()
+    options = PrebuildVmOptions(
+        enabled=True,
+        firmware="uefi",
+        ovmf_code=str(code),
+        ovmf_vars=str(template),
+        screenshot=False,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        tmp_path / "dist",
+        options,
+    )
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="runtime artifact sealing failed"):
+        lab.run()
+
+    assert runner.consumed_firmware_code == b"original firmware"
+    report = json.loads((tmp_path / "dist" / options.report_name).read_text(encoding="utf-8"))
+    assert report["verdict"] == "failed"
+    assert "OVMF code" in report["error"]
+
+
+def test_qemu_lab_blocks_serial_path_swap_around_consumption(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"pinned ISO")
+    output_dir = tmp_path / "dist"
+    serial: Path
+
+    class SerialSwappingRecorder(_ExecutionRecorder):
+        def run(
+            self,
+            spec: CommandSpec,
+            check: bool = True,
+        ) -> CommandResult:
+            if spec.argv[:1] == ("qemu-system-x86_64",):
+                replacement = serial.with_name("serial-replacement.log")
+                replacement.write_text("host login: ", encoding="utf-8")
+                replacement.replace(serial)
+            return super().run(spec, check=check)
+
+    runner = SerialSwappingRecorder()
+    options = PrebuildVmOptions(
+        enabled=True,
+        screenshot=False,
+        success_patterns=["login:"],
+        timeout_seconds=1,
+    )
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        output_dir,
+        options,
+    )
+    serial = lab._artifacts().serial_log
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="runtime artifact sealing failed"):
+        lab.run()
+
+    assert runner.qemu_spec is not None
+    serial_argument = runner.qemu_spec.argv[runner.qemu_spec.argv.index("-serial") + 1]
+    assert serial_argument.startswith(f"file:/proc/{os.getpid()}/fd/")
+    report = json.loads((output_dir / options.report_name).read_text(encoding="utf-8"))
+    assert report["verdict"] == "failed"
+    assert "serial path" in report["error"]
+
+
+def test_qemu_cleanup_failure_still_closes_every_artifact_fd(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    code = tmp_path / "OVMF_CODE_4M.fd"
+    template = tmp_path / "OVMF_VARS_4M.fd"
+    iso.write_bytes(b"pinned ISO")
+    code.write_bytes(b"firmware")
+    template.write_bytes(b"vars")
+    runner = _ExecutionRecorder()
+    lab = QemuLabService(
+        runner,
+        iso,
+        tmp_path / "work",
+        tmp_path / "dist",
+        PrebuildVmOptions(
+            enabled=True,
+            firmware="uefi",
+            ovmf_code=str(code),
+            ovmf_vars=str(template),
+            screenshot=False,
+            success_patterns=["login:"],
+            timeout_seconds=1,
+        ),
+    )
+    monkeypatch.setattr(lab._qmp_control, "command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prebuild_vm, "stop_by_pidfile", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        lab,
+        "_stop_tpm",
+        lambda artifacts: (_ for _ in ()).throw(RuntimeError("cleanup fault")),
+    )
+
+    with pytest.raises(ValueError, match="cleanup fault"):
+        lab.run()
+
+    assert runner.qemu_spec is not None
+    for descriptor in runner.qemu_spec.pass_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_qemu_run_manifest_blocks_same_size_same_mtime_inventory_swap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "dist"
+    run_id = "manifest-swap"
+    run_dir = output_dir / "evidence" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    evidence = run_dir / "commands.jsonl"
+    evidence.write_bytes(b"AAAA")
+    lab = QemuLabService(
+        CommandRunner(dry_run=False),
+        tmp_path / "image.iso",
+        tmp_path / "work",
+        output_dir,
+        PrebuildVmOptions(enabled=True),
+        run_id=run_id,
+    )
+    original_inventory = prebuild_vm._inventory_regular_tree
+    inventories = 0
+
+    def swap_before_post_publish_inventory(
+        root: Path,
+        *,
+        excluded: set[Path],
+        max_files: int = 4096,
+        max_depth: int = 64,
+    ):
+        nonlocal inventories
+        inventories += 1
+        if inventories == 2:
+            timestamp = evidence.stat().st_mtime_ns
+            replacement = evidence.with_name("commands.swap")
+            replacement.write_bytes(b"BBBB")
+            os.utime(replacement, ns=(timestamp, timestamp))
+            replacement.replace(evidence)
+        return original_inventory(
+            root,
+            excluded=excluded,
+            max_files=max_files,
+            max_depth=max_depth,
+        )
+
+    monkeypatch.setattr(
+        prebuild_vm,
+        "_inventory_regular_tree",
+        swap_before_post_publish_inventory,
+    )
+
+    with pytest.raises(
+        prebuild_vm.ArtifactVerificationError,
+        match="changed while RUN-MANIFEST",
+    ):
+        lab._write_run_manifest()
+
+    assert (run_dir / "RUN-MANIFEST.json").is_file()
+    assert not (run_dir / "RUN-MANIFEST.json.sha256").exists()
 
 
 # The serial-log assertion, and when the journal is allowed to say it passed. Emitted
@@ -58,9 +927,11 @@ def _validating_lab(tmp_path, serial_text: str | None, *, dry_run: bool = False)
     options = PrebuildVmOptions(enabled=True, success_patterns=["login:"], timeout_seconds=1)
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
-    if serial_text is not None:
-        (dist / options.serial_log).write_text(serial_text, encoding="utf-8")
     lab = QemuLabService(runner, tmp_path / "image.iso", tmp_path / "work", dist, options)
+    if serial_text is not None:
+        serial = lab._artifacts().serial_log
+        serial.parent.mkdir(parents=True, exist_ok=True)
+        serial.write_text(serial_text, encoding="utf-8")
     return runner, lab
 
 
@@ -111,6 +982,37 @@ def test_a_serial_log_that_never_carries_the_marker_records_no_passing_assertion
         lab._validate_serial_log()
 
     assert _asserted(runner) == []
+
+
+def test_runtime_serial_reader_refuses_a_fifo_without_waiting(tmp_path) -> None:
+    _runner, lab = _validating_lab(tmp_path, None)
+    serial = lab._artifacts().serial_log
+    serial.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(serial)
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        lab._validate_serial_log()
+
+
+def test_runtime_serial_reader_requires_strict_utf8(tmp_path) -> None:
+    _runner, lab = _validating_lab(tmp_path, None)
+    serial = lab._artifacts().serial_log
+    serial.parent.mkdir(parents=True, exist_ok=True)
+    serial.write_bytes(b"host login: \xff")
+
+    with pytest.raises(ValueError, match="strict UTF-8"):
+        lab._validate_serial_log()
+
+
+def test_runtime_serial_reader_enforces_its_byte_budget(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(prebuild_vm, "_QEMU_SERIAL_MAX_BYTES", 4)
+    _runner, lab = _validating_lab(tmp_path, "login:")
+
+    with pytest.raises(ValueError, match="4-byte limit"):
+        lab._validate_serial_log()
 
 
 def test_a_firmware_that_gave_up_is_quoted_instead_of_waited_out(tmp_path) -> None:
@@ -166,6 +1068,100 @@ def test_qemu_report_validator_rejects_empty_json_and_changed_evidence(tmp_path)
     assert "different ISO bytes" in validate_qemu_report(report, iso).detail
 
 
+def test_qemu_report_validator_rejects_path_only_iso_claim(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["iso"].pop("consumed_via")
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    immutable = tmp_path / "evidence" / "runs" / payload["run_id"] / report.name
+    immutable.write_text(content, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "consumed ISO" in validation.detail
+
+
+def test_qemu_report_validator_rejects_path_only_serial_claim(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["artifacts"]["serial_log"].pop("consumed_via")
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    immutable = tmp_path / "evidence" / "runs" / payload["run_id"] / report.name
+    immutable.write_text(content, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "serial evidence" in validation.detail
+
+
+@pytest.mark.parametrize(
+    ("section", "replacement"),
+    (
+        ("iso", "/proc/4242/fd/70"),
+        ("serial", "/proc/4242/fd/80"),
+    ),
+)
+def test_qemu_report_validator_rejects_descriptor_claim_not_used_by_argv(
+    tmp_path,
+    section: str,
+    replacement: str,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    if section == "iso":
+        payload["iso"]["descriptor_path"] = replacement
+    else:
+        payload["artifacts"]["serial_log"]["descriptor_path"] = replacement
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    immutable = tmp_path / "evidence" / "runs" / payload["run_id"] / report.name
+    immutable.write_text(content, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "argv is not bound" in validation.detail
+
+
+@pytest.mark.parametrize(
+    "forged_path",
+    (
+        "qemu//serial.log",
+        "qemu/./serial.log",
+        "qemu\\serial.log",
+        "qemu/\x00serial.log",
+    ),
+)
+def test_qemu_report_validator_rejects_noncanonical_artifact_paths(
+    tmp_path,
+    forged_path: str,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["artifacts"]["serial_log"]["path"] = forged_path
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    immutable = tmp_path / "evidence" / "runs" / payload["run_id"] / report.name
+    immutable.write_text(content, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "escapes its run" in validation.detail
+
+
 def test_qemu_report_validator_rejects_a_modified_serial_log(tmp_path) -> None:
     iso = tmp_path / "image.iso"
     iso.write_bytes(b"iso")
@@ -194,13 +1190,7 @@ def test_qemu_report_validator_derives_milestone_from_the_marker(tmp_path) -> No
     payload["boot"]["reached_milestone"] = "graphical_session"
     forged = json.dumps(payload, indent=2) + "\n"
     report.write_text(forged, encoding="utf-8")
-    immutable = (
-        tmp_path
-        / "evidence"
-        / "runs"
-        / payload["run_id"]
-        / report.name
-    )
+    immutable = tmp_path / "evidence" / "runs" / payload["run_id"] / report.name
     immutable.write_text(forged, encoding="utf-8")
 
     validation = validate_qemu_report(report, iso)
@@ -261,6 +1251,261 @@ def test_qemu_report_validator_rejects_a_symlinked_runs_ancestor(tmp_path) -> No
 
     assert not validation.ok
     assert "unsafe symlink" in validation.detail
+
+
+def test_qemu_report_validator_rejects_invalid_serial_utf8(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    run_dir = tmp_path / "evidence" / "runs" / payload["run_id"]
+    serial = run_dir / payload["artifacts"]["serial_log"]["path"]
+    serial.write_bytes(b"host login: \xff")
+    payload["artifacts"]["serial_log"].update(
+        {
+            "size": serial.stat().st_size,
+            "sha256": sha256_file(serial),
+        }
+    )
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    (run_dir / report.name).write_text(content, encoding="utf-8")
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "strict UTF-8" in validation.detail
+
+
+def test_qemu_report_validator_refuses_fifo_without_opening_its_stream(
+    tmp_path,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = tmp_path / "qemu-lab-report.json"
+    os.mkfifo(report)
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "not a regular file" in validation.detail
+
+
+def test_qemu_report_validator_bounds_the_report_before_parsing(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = tmp_path / "qemu-lab-report.json"
+    report.write_bytes(b" " * (8 * 1024 * 1024 + 1))
+
+    validation = validate_qemu_report(report, iso)
+
+    assert not validation.ok
+    assert "8388608-byte limit" in validation.detail
+
+
+def test_qemu_report_validator_blocks_same_size_same_mtime_serial_swap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    serial = (
+        tmp_path
+        / "evidence"
+        / "runs"
+        / payload["run_id"]
+        / payload["artifacts"]["serial_log"]["path"]
+    )
+    original_marker_check = prebuild_vm.marker_line_proves_milestone
+    swapped = False
+
+    def swap_after_serial_capture(pattern: str, line: str) -> bool:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            timestamp = serial.stat().st_mtime_ns
+            replacement = serial.with_name("serial.swap")
+            replacement.write_bytes(serial.read_bytes())
+            os.utime(replacement, ns=(timestamp, timestamp))
+            replacement.replace(serial)
+        return original_marker_check(pattern, line)
+
+    monkeypatch.setattr(
+        prebuild_vm,
+        "marker_line_proves_milestone",
+        swap_after_serial_capture,
+    )
+
+    validation = validate_qemu_report(report, iso)
+
+    assert swapped
+    assert not validation.ok
+    assert "descriptor closure blocked" in validation.detail
+
+
+def test_qemu_report_validator_blocks_alias_swap_after_json_parse(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    original_scan = prebuild_vm.first_symlink_in_confined_tree
+    swapped = False
+
+    def swap_after_report_parse(anchor: Path, target: Path) -> Path | None:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            timestamp = report.stat().st_mtime_ns
+            replacement = report.with_name("report.swap")
+            replacement.write_bytes(report.read_bytes())
+            os.utime(replacement, ns=(timestamp, timestamp))
+            replacement.replace(report)
+        return original_scan(anchor, target)
+
+    monkeypatch.setattr(
+        prebuild_vm,
+        "first_symlink_in_confined_tree",
+        swap_after_report_parse,
+    )
+
+    validation = validate_qemu_report(report, iso)
+
+    assert swapped
+    assert not validation.ok
+    assert "descriptor closure blocked" in validation.detail
+
+
+def test_qemu_report_validator_blocks_iso_swap_after_digest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"old")
+    report = write_valid_qemu_report(tmp_path, iso)
+    original_milestone = prebuild_vm.milestone_for_marker
+    swapped = False
+
+    def swap_after_iso_digest(pattern: str) -> str:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            timestamp = iso.stat().st_mtime_ns
+            replacement = iso.with_name("image.swap")
+            replacement.write_bytes(b"new")
+            os.utime(replacement, ns=(timestamp, timestamp))
+            replacement.replace(iso)
+        return original_milestone(pattern)
+
+    monkeypatch.setattr(
+        prebuild_vm,
+        "milestone_for_marker",
+        swap_after_iso_digest,
+    )
+
+    validation = validate_qemu_report(report, iso)
+
+    assert swapped
+    assert not validation.ok
+    assert "descriptor closure blocked" in validation.detail
+
+
+def test_qemu_report_reuses_one_session_parse_and_serial_capture(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+
+    with ArtifactVerificationSession(tmp_path) as session:
+        validation = validate_qemu_report(report, iso, session=session)
+        metrics = session.metrics
+
+    assert validation.ok
+    assert metrics.json_parses == 1
+    assert metrics.json_reuse == 0
+    assert metrics.digest_reuse >= 2
+
+
+def test_qemu_report_requires_descriptor_bound_uefi_consumption(tmp_path) -> None:
+    iso = tmp_path / "image.iso"
+    iso.write_bytes(b"iso")
+    report = write_valid_qemu_report(tmp_path, iso)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    run_dir = tmp_path / "evidence" / "runs" / payload["run_id"]
+    firmware: dict[str, object] = {}
+    for name in ("code", "vars_template", "vars_runtime"):
+        relative = Path("qemu") / f"{name}.fd"
+        artifact = run_dir / relative
+        artifact.write_bytes(name.encode("ascii"))
+        firmware[name] = {
+            "path": relative.as_posix(),
+            "size": artifact.stat().st_size,
+            "sha256": sha256_file(artifact),
+        }
+    firmware["consumption"] = {
+        "code": "not-held",
+        "vars_template": "not-held",
+        "vars_runtime": "not-held",
+    }
+    payload["boot"]["firmware"] = "uefi"
+    payload["execution"]["firmware"] = firmware
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    (run_dir / report.name).write_text(content, encoding="utf-8")
+
+    unpinned = validate_qemu_report(report, iso)
+
+    assert not unpinned.ok
+    assert "does not bind consumed firmware" in unpinned.detail
+
+    firmware["consumption"] = {
+        "code": "held-descriptor",
+        "vars_template": "held-copy-source",
+        "vars_runtime": "held-descriptor",
+    }
+    code_descriptor = "/proc/4242/fd/9"
+    template_descriptor = "/proc/4242/fd/10"
+    runtime_descriptor = "/proc/4242/fd/11"
+    firmware["code"]["descriptor_path"] = code_descriptor
+    firmware["vars_template"]["source_descriptor_path"] = template_descriptor
+    firmware["vars_runtime"]["descriptor_path"] = runtime_descriptor
+    payload["execution"]["argv"].extend(
+        [
+            "-drive",
+            f"if=pflash,format=raw,readonly=on,file={code_descriptor}",
+            "-drive",
+            f"if=pflash,format=raw,file={runtime_descriptor}",
+        ]
+    )
+    payload["execution"]["entrypoint"]["argv"] = payload["execution"]["argv"]
+    content = json.dumps(payload, indent=2) + "\n"
+    report.write_text(content, encoding="utf-8")
+    (run_dir / report.name).write_text(content, encoding="utf-8")
+
+    assert validate_qemu_report(report, iso).ok
+
+
+def test_command_runner_passes_a_pinned_artifact_fd(tmp_path) -> None:
+    source = tmp_path / "image.iso"
+    source.write_bytes(b"pinned ISO bytes")
+    with source.open("rb") as handle:
+        descriptor_path = f"/proc/{os.getpid()}/fd/{handle.fileno()}"
+        result = CommandRunner(dry_run=False).run(
+            CommandSpec(
+                argv=(
+                    sys.executable,
+                    "-c",
+                    "import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text())",
+                    descriptor_path,
+                ),
+                pass_fds=(handle.fileno(),),
+                description="Consume held ISO descriptor",
+            )
+        )
+
+    assert result.stdout.strip() == "pinned ISO bytes"
 
 
 def test_a_per_option_load_failure_is_not_treated_as_a_verdict(tmp_path) -> None:
@@ -336,7 +1581,8 @@ def test_the_lab_accelerates_when_the_host_can_and_records_it(tmp_path, monkeypa
     lab._write_report(artifacts)
 
     assert "-enable-kvm" in lab._qemu_argv(artifacts)
-    assert json.loads(artifacts.report.read_text(encoding="utf-8"))["accelerated"] is True
+    immutable = lab.output_dir / "evidence" / "runs" / lab.run_id / lab.options.report_name
+    assert json.loads(immutable.read_text(encoding="utf-8"))["accelerated"] is True
 
 
 def test_an_emulating_host_still_runs_and_the_report_says_which_it_was(tmp_path) -> None:
@@ -349,14 +1595,17 @@ def test_an_emulating_host_still_runs_and_the_report_says_which_it_was(tmp_path)
     lab._write_report(artifacts)
 
     assert "-enable-kvm" not in lab._qemu_argv(artifacts)
-    assert json.loads(artifacts.report.read_text(encoding="utf-8"))["accelerated"] is False
+    immutable = lab.output_dir / "evidence" / "runs" / lab.run_id / lab.options.report_name
+    assert json.loads(immutable.read_text(encoding="utf-8"))["accelerated"] is False
 
 
 def test_qemu_lab_uefi_tpm_artifacts_are_explicit(tmp_path) -> None:
     runner = CommandRunner(dry_run=True)
     options = PrebuildVmOptions(enabled=True, firmware="uefi", secure_boot=True, tpm=True)
 
-    QemuLabService(runner, tmp_path / "image.iso", tmp_path / "work", tmp_path / "dist", options).run()
+    QemuLabService(
+        runner, tmp_path / "image.iso", tmp_path / "work", tmp_path / "dist", options
+    ).run()
 
     commands = [spec.argv for spec in runner.history]
     qemu = next(argv for argv in commands if argv and argv[0] == "qemu-system-x86_64")
@@ -399,10 +1648,15 @@ def test_qemu_screenshot_uses_qmp_not_stdio_monitor(tmp_path) -> None:
     qemu = next(argv for argv in commands if argv and argv[0] == "qemu-system-x86_64")
     assert "-qmp" in qemu
     assert "-monitor" not in qemu
-    screendump = next(argv for argv in commands if argv[:1] == ("qmp-command",) and "screendump" in argv[-1])
+    screendump = next(
+        argv for argv in commands if argv[:1] == ("qmp-command",) and "screendump" in argv[-1]
+    )
     assert '"execute": "screendump"' in screendump[-1]
     assert '"filename"' in screendump[-1] and "qemu-boot.ppm" in screendump[-1]
-    assert any(argv[:1] == ("qmp-command",) and argv[-1] == '{"execute": "quit", "arguments": {}}' for argv in commands)
+    assert any(
+        argv[:1] == ("qmp-command",) and argv[-1] == '{"execute": "quit", "arguments": {}}'
+        for argv in commands
+    )
 
 
 # validate_prebuild_vm_options had no test at all, which is how a firmware default
@@ -449,7 +1703,9 @@ def test_secure_boot_accepts_the_enrolled_pair(tmp_path) -> None:
 def test_a_disabled_lab_is_never_asked_about_firmware(tmp_path) -> None:
     # The gate must stay on `enabled`: a project that never runs a VM must not fail
     # validation because the build host has no ovmf installed.
-    options = PrebuildVmOptions(enabled=False, firmware="uefi", ovmf_code=str(tmp_path / "absent.fd"))
+    options = PrebuildVmOptions(
+        enabled=False, firmware="uefi", ovmf_code=str(tmp_path / "absent.fd")
+    )
 
     assert validate_prebuild_vm_options(options) == []
 
@@ -483,7 +1739,11 @@ def _installed_firmware(tmp_path: Path, *, secure: bool) -> tuple[Path, Path]:
     whether /usr/share/OVMF carries the Secure Boot build decides the assertion, and a
     CI runner has no ovmf at all.
     """
-    names = ("OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.ms.fd") if secure else ("OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd")
+    names = (
+        ("OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.ms.fd")
+        if secure
+        else ("OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd")
+    )
     code, store = (tmp_path / name for name in names)
     code.write_bytes(b"")
     store.write_bytes(b"")
@@ -500,7 +1760,9 @@ def _firmware_options(tmp_path: Path, *, secure: bool, **overrides) -> BuildOpti
     return options
 
 
-def _plan_boot_proof(monkeypatch, project: Project, iso: Path, *, options: BuildOptions | None = None, **request):
+def _plan_boot_proof(
+    monkeypatch, project: Project, iso: Path, *, options: BuildOptions | None = None, **request
+):
     """Plan a QEMU boot proof, and hand back the report *and* the argv it planned.
 
     The service builds its own runner, so a recorder is swapped in rather than injected.
@@ -531,7 +1793,9 @@ def test_the_firmware_flag_reaches_qemu_and_not_only_the_report(tmp_path, monkey
     project, iso = _proof_project(tmp_path, "ProofUefi")
     options = _firmware_options(tmp_path, secure=False)
 
-    report, commands = _plan_boot_proof(monkeypatch, project, iso, options=options, backend="qemu", firmware="uefi")
+    report, commands = _plan_boot_proof(
+        monkeypatch, project, iso, options=options, backend="qemu", firmware="uefi"
+    )
     qemu = _qemu_argv(commands)
 
     assert any("if=pflash" in part and options.prebuild_vm.ovmf_code in part for part in qemu)
@@ -540,12 +1804,20 @@ def test_the_firmware_flag_reaches_qemu_and_not_only_the_report(tmp_path, monkey
     assert report.secure_boot is False
 
 
-def test_secure_boot_asks_for_the_enrolled_pair_and_makes_the_firmware_enforce_it(tmp_path, monkeypatch) -> None:
+def test_secure_boot_asks_for_the_enrolled_pair_and_makes_the_firmware_enforce_it(
+    tmp_path, monkeypatch
+) -> None:
     project, iso = _proof_project(tmp_path, "ProofSecure")
     options = _firmware_options(tmp_path, secure=True)
 
     report, commands = _plan_boot_proof(
-        monkeypatch, project, iso, options=options, backend="qemu", firmware="uefi", secure_boot=True
+        monkeypatch,
+        project,
+        iso,
+        options=options,
+        backend="qemu",
+        firmware="uefi",
+        secure_boot=True,
     )
     qemu = _qemu_argv(commands)
 
@@ -562,7 +1834,9 @@ def test_secure_boot_asks_for_the_enrolled_pair_and_makes_the_firmware_enforce_i
 def test_secure_boot_on_bios_is_refused_before_any_machine_starts(tmp_path, monkeypatch) -> None:
     project, iso = _proof_project(tmp_path, "ProofSbBios")
 
-    report, commands = _plan_boot_proof(monkeypatch, project, iso, backend="qemu", firmware="bios", secure_boot=True)
+    report, commands = _plan_boot_proof(
+        monkeypatch, project, iso, backend="qemu", firmware="bios", secure_boot=True
+    )
 
     assert report.status == "blocked"
     assert any("prebuild-vm-secure-boot" in note for note in report.notes)
@@ -576,14 +1850,18 @@ def test_a_firmware_image_that_is_not_installed_blocks_the_proof(tmp_path, monke
     options = BuildOptions()
     options.prebuild_vm.ovmf_code = str(tmp_path / "absent.fd")
 
-    report, commands = _plan_boot_proof(monkeypatch, project, iso, options=options, backend="qemu", firmware="uefi")
+    report, commands = _plan_boot_proof(
+        monkeypatch, project, iso, options=options, backend="qemu", firmware="uefi"
+    )
 
     assert report.status == "blocked"
     assert any("prebuild-vm-ovmf-missing" in note for note in report.notes)
     assert not any(argv and argv[0] == "qemu-system-x86_64" for argv in commands)
 
 
-def test_a_project_that_already_describes_uefi_keeps_it_without_any_flag(tmp_path, monkeypatch) -> None:
+def test_a_project_that_already_describes_uefi_keeps_it_without_any_flag(
+    tmp_path, monkeypatch
+) -> None:
     project, iso = _proof_project(tmp_path, "ProofInherited")
     options = _firmware_options(tmp_path, secure=False, firmware="uefi")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -10,16 +11,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .artifact_paths import default_artifact_paths
+from .artifact_verification import (
+    ArtifactHandle,
+    ArtifactIdentity,
+    ArtifactLimits,
+    ArtifactTreeInventory,
+    ArtifactVerificationError,
+    ArtifactVerificationReceipt,
+    ArtifactVerificationSession,
+)
 from .build import BuildOptions
-from .command import VIRTUAL_COMMANDS
+from .command import VIRTUAL_COMMANDS, CommandError, CommandRunner
 from .diff_preview import DiffPreviewService
 from .evidence_run import (
     IDENTITY_CLOSURE_SCHEMA,
     canonical_sha256,
-    first_symlink_in_confined_tree,
+    is_safe_run_id,
     observed_executable_counts,
 )
-from .hashing import sha256_file, sha256_from_sums
+from .hashing import parse_sha256_sums, sha256_file, sha256_from_sums_bytes
 from .iso_evidence import (
     ISO_ASSEMBLY_FILENAME,
     ISO_ASSEMBLY_SCHEMA,
@@ -47,8 +57,23 @@ from .packaging import packaging_policy_report
 from .prebuild_vm import validate_qemu_report
 from .project import Project
 from .provenance import CYCLONEDX_FILENAME, SPDX_FILENAME
+from .release_contract import (
+    release_gate_code_problem,
+    release_gate_report_problem,
+    release_manifest_problem,
+    release_signing_report_problem,
+)
 from .release_readiness import ReleaseReadinessService
+from .release_run import ExecutedReleaseRun, select_executed_release_run
+from .release_signing import (
+    OPERATIONAL_BUNDLE_FILES,
+    SIGN_TARGETS,
+    SIGNING_KEYRING,
+    full_fingerprint,
+    verify_detached_signature,
+)
 from .rootfs_evidence import (
+    MAX_ROOTFS_MANIFEST_JSON_NODES,
     ROOTFS_PACKING_VERIFICATION_SCHEMA,
     validate_rootfs_evidence,
 )
@@ -59,6 +84,16 @@ MAX_PROVENANCE_JSON_BYTES = 128 * 1024 * 1024
 MAX_RELEASE_EVIDENCE_JSON_BYTES = 128 * 1024 * 1024
 MAX_COMMAND_LOG_BYTES = 128 * 1024 * 1024
 MAX_SHA256_SIDECAR_BYTES = 4096
+_RELEASE_SESSION_LIMITS = ArtifactLimits(
+    max_open_files=1024,
+    max_file_bytes=64 * 1024 * 1024 * 1024,
+    max_buffered_bytes=1024 * 1024 * 1024,
+    max_hashed_bytes=512 * 1024 * 1024 * 1024,
+    max_json_depth=256,
+    max_json_nodes=MAX_ROOTFS_MANIFEST_JSON_NODES,
+    max_path_components=256,
+    max_closing_fds=4096,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +101,139 @@ class _ProvenanceSnapshot:
     raw: bytes | None
     data: dict[str, object] | None
     error: str | None
+
+
+@dataclass(frozen=True)
+class _GateContext:
+    session: ArtifactVerificationSession
+    output_dir: Path
+    iso: Path
+    project_root: Path
+    verify_checksums: bool
+
+    def handle(
+        self,
+        path: Path,
+        *,
+        max_bytes: int,
+        label: str,
+        allow_empty: bool = False,
+    ) -> ArtifactHandle:
+        return self.session.file_path(
+            path.absolute(),
+            max_bytes=max_bytes,
+            label=label,
+            allow_empty=allow_empty,
+        )
+
+    def read_bytes(self, path: Path, *, max_bytes: int, label: str) -> bytes:
+        return self.handle(path, max_bytes=max_bytes, label=label).read_bytes()
+
+    def read_json(self, path: Path, *, max_bytes: int, label: str) -> object:
+        return self.handle(path, max_bytes=max_bytes, label=label).json()
+
+    def digest(
+        self,
+        path: Path,
+        *,
+        label: str | None = None,
+        max_bytes: int | None = None,
+    ) -> str:
+        return self.handle(
+            path,
+            max_bytes=max_bytes or self.session.limits.max_file_bytes,
+            label=label or path.name,
+        ).digest()
+
+    def size(self, path: Path, *, label: str | None = None) -> int:
+        return self.handle(
+            path,
+            max_bytes=self.session.limits.max_file_bytes,
+            label=label or path.name,
+        ).identity.size
+
+    def checksum_entry(self, sums: Path, name: str) -> str | None:
+        data = self.read_bytes(
+            sums,
+            max_bytes=MAX_SHA256_SIDECAR_BYTES,
+            label="SHA256SUMS",
+        )
+        return sha256_from_sums_bytes(data, name)
+
+    def inventory(
+        self,
+        directory: Path,
+        *,
+        label: str,
+    ) -> ArtifactTreeInventory:
+        return self.session.tree_inventory_path(
+            directory.absolute(),
+            label=label,
+        )
+
+
+def _tree_inventory(
+    directory: Path,
+    *,
+    context: _GateContext | None,
+    label: str,
+) -> ArtifactTreeInventory:
+    if context is not None:
+        return context.inventory(directory, label=label)
+    session = ArtifactVerificationSession(
+        Path("/"),
+        label=f"{label} artifact session",
+        limits=_RELEASE_SESSION_LIMITS,
+    )
+    try:
+        inventory = session.tree_inventory_path(
+            directory.absolute(),
+            label=label,
+        )
+        session.seal()
+        return inventory
+    except BaseException:
+        session.close()
+        raise
+
+
+def _unsafe_inventory_entries(
+    inventory: ArtifactTreeInventory,
+) -> list[str]:
+    return sorted(
+        name
+        for name, identity in inventory.entries
+        if not stat.S_ISDIR(identity.mode) and not stat.S_ISREG(identity.mode)
+    )
+
+
+def _tree_safety_problem(
+    directory: Path,
+    *,
+    context: _GateContext | None,
+    label: str,
+) -> str | None:
+    try:
+        inventory = _tree_inventory(
+            directory,
+            context=context,
+            label=label,
+        )
+    except (ArtifactVerificationError, OSError, ValueError) as exc:
+        return f"{label} has unsafe symlink, special-file, or unstable inventory evidence: {exc}"
+    unsafe = _unsafe_inventory_entries(inventory)
+    if unsafe:
+        return f"{label} contains unsafe symlink or special entries: {', '.join(unsafe)}"
+    return None
+
+
+def _expected_inventory_entries(files: set[str]) -> set[str]:
+    expected = set(files)
+    for name in files:
+        path = Path(name)
+        for index in range(1, len(path.parts)):
+            expected.add(Path(*path.parts[:index]).as_posix())
+    return expected
 
 
 @dataclass(frozen=True)
@@ -84,6 +252,38 @@ class ReleaseGateReport:
     iso: Path
     output_dir: Path
     items: list[ReleaseGateItem] = field(default_factory=list)
+    artifact_receipt: ArtifactVerificationReceipt | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    build_run_id: str | None = field(default=None, repr=False, compare=False)
+    boot_run_id: str | None = field(default=None, repr=False, compare=False)
+    immutable_iso_build: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    immutable_provenance: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    immutable_boot_proof: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    immutable_qemu_report: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    immutable_sbom: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def status(self) -> str:
@@ -102,6 +302,23 @@ class ReleaseGateReport:
             "project": str(self.project),
             "iso": str(self.iso),
             "output_dir": str(self.output_dir),
+            "build_run_id": self.build_run_id,
+            "boot_run_id": self.boot_run_id,
+            "immutable_iso_build": (
+                str(self.immutable_iso_build) if self.immutable_iso_build is not None else None
+            ),
+            "immutable_provenance": (
+                str(self.immutable_provenance) if self.immutable_provenance is not None else None
+            ),
+            "immutable_boot_proof": (
+                str(self.immutable_boot_proof) if self.immutable_boot_proof is not None else None
+            ),
+            "immutable_qemu_report": (
+                str(self.immutable_qemu_report) if self.immutable_qemu_report is not None else None
+            ),
+            "immutable_sbom": (
+                str(self.immutable_sbom) if self.immutable_sbom is not None else None
+            ),
             "status": self.status,
             "blocked": self.blocked,
             "items": [item.to_dict() for item in self.items],
@@ -131,7 +348,11 @@ class ReleaseGateService:
         *,
         iso: Path | None = None,
         output_dir: Path | None = None,
+        bundle_dir: Path | None = None,
         verify_checksums: bool = True,
+        capture_artifact_receipt: bool = False,
+        build_run_id: str | None = None,
+        boot_run_id: str | None = None,
     ) -> ReleaseGateReport:
         """Report the maintainer publish gate for ``project``.
 
@@ -142,58 +363,203 @@ class ReleaseGateService:
         every authoritative path (``distroforge release-gate``, the Artifacts
         page, ``check_journey_step``), so the gate is never self-confirming
         where its verdict is the answer.
+
+        ``capture_artifact_receipt`` is reserved for an immediate immutable
+        bundle copy. It hashes every opened or inventoried product file and must
+        stay disabled for the status-only UI path.
+
+        ``build_run_id`` selects one audited ``evidence/runs`` directory.
+        Without it the gate requires exactly one immutable executed run matching
+        the canonical project and ISO; top-level build/provenance aliases never
+        select or authorize a release. ``boot_run_id`` may select a standalone
+        immutable boot run only when the selected build report does not embed
+        one. An embedded boot run remains authoritative and an incompatible
+        explicit value is blocked.
         """
         paths = default_artifact_paths(project)
         iso = iso or options.output_iso or paths.output_iso
         output_dir = output_dir or iso.parent
+        bundle_dir = Path(os.path.abspath(bundle_dir or project.output_dir / "publish"))
         report = ReleaseGateReport(project.root, iso, output_dir)
-        provenance_snapshot = _load_provenance_snapshot(
-            output_dir / "distroforge-provenance.json"
+        session = ArtifactVerificationSession(
+            Path("/"),
+            label="release gate artifact session",
+            limits=_RELEASE_SESSION_LIMITS,
         )
-        package_inputs = _package_inputs_item(
-            output_dir,
-            project,
-            options,
-            verify=verify_checksums,
-            provenance_snapshot=provenance_snapshot,
+        context = _GateContext(
+            session=session,
+            output_dir=output_dir.absolute(),
+            iso=iso.absolute(),
+            project_root=project.root.absolute(),
+            verify_checksums=verify_checksums,
         )
-        _check_source_trust(report, project, options, package_inputs)
-        report.items.append(package_inputs)
-        report.items.append(
-            _rootfs_evidence_item(
+        try:
+            selected_run: ExecutedReleaseRun | None = None
+            selection_error: str | None = None
+            try:
+                selected_run = select_executed_release_run(
+                    project,
+                    context.iso,
+                    context.output_dir,
+                    session,
+                    build_run_id=build_run_id,
+                    verify_iso=verify_checksums,
+                )
+            except (
+                ArtifactVerificationError,
+                OSError,
+                UnicodeError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                RecursionError,
+            ) as exc:
+                selection_error = str(exc)
+                provenance_snapshot = _ProvenanceSnapshot(
+                    None,
+                    None,
+                    "Immutable executed build run selection failed: " + selection_error,
+                )
+            else:
+                report.build_run_id = selected_run.run_id
+                report.immutable_iso_build = selected_run.iso_build_path
+                report.immutable_provenance = selected_run.provenance_path
+                provenance_snapshot = _ProvenanceSnapshot(
+                    selected_run.provenance.read_bytes(),
+                    selected_run.provenance_payload,
+                    None,
+                )
+            package_inputs = _package_inputs_item(
                 output_dir,
+                project,
+                options,
                 verify=verify_checksums,
                 provenance_snapshot=provenance_snapshot,
+                context=context,
             )
-        )
-        report.items.append(
-            _iso_assembly_item(
-                output_dir,
+            _check_source_trust(report, project, options, package_inputs)
+            report.items.append(package_inputs)
+            report.items.append(
+                _rootfs_evidence_item(
+                    output_dir,
+                    verify=verify_checksums,
+                    provenance_snapshot=provenance_snapshot,
+                    context=context,
+                )
+            )
+            report.items.append(
+                _iso_assembly_item(
+                    output_dir,
+                    iso,
+                    project=project,
+                    verify=verify_checksums,
+                    provenance_snapshot=provenance_snapshot,
+                    context=context,
+                )
+            )
+            _check_vuln_policy(report, project, options)
+            _check_iso_and_checksums(
+                report,
                 iso,
-                project=project,
-                verify=verify_checksums,
+                output_dir,
+                verify_checksums,
+                context=context,
+            )
+            _check_boot_proof(
+                report,
+                iso,
+                output_dir,
+                options,
+                selected_run=selected_run,
+                requested_boot_run_id=boot_run_id,
+                context=context,
+            )
+            _check_release_files(
+                report,
+                iso,
+                output_dir,
+                options,
                 provenance_snapshot=provenance_snapshot,
+                context=context,
+                verify=verify_checksums,
+                selected_run=selected_run,
+                selection_error=selection_error,
             )
-        )
-        _check_vuln_policy(report, project, options)
-        _check_iso_and_checksums(report, iso, output_dir, verify_checksums)
-        _check_release_files(
-            report,
-            iso,
-            output_dir,
-            options,
-            provenance_snapshot=provenance_snapshot,
-        )
-        _check_boot_proof(report, iso, output_dir, options)
-        _check_release_readiness(report, iso, output_dir, verify_checksums)
-        _check_packaging_policy(report, project.root)
-        _check_publish_signing(report, project.root, options)
-        report.items.append(
-            _provenance_snapshot_closure_item(
-                output_dir / "distroforge-provenance.json",
-                provenance_snapshot,
+            _check_release_readiness(
+                report,
+                iso,
+                output_dir,
+                verify_checksums,
+                context=context,
+                qemu_report=report.immutable_qemu_report,
             )
-        )
+            _check_packaging_policy(report, project.root)
+            _check_publish_signing(
+                report,
+                project.root,
+                options,
+                project_name=project.name,
+                context=context,
+                bundle_dir=bundle_dir,
+            )
+            report.items.append(
+                _provenance_snapshot_closure_item(
+                    (
+                        selected_run.provenance_path
+                        if selected_run is not None
+                        else output_dir
+                        / "evidence"
+                        / "runs"
+                        / (build_run_id or "<unselected>")
+                        / "distroforge-provenance.json"
+                    ),
+                    provenance_snapshot,
+                    context=context,
+                )
+            )
+        except (
+            ArtifactVerificationError,
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
+            report.items.append(
+                ReleaseGateItem(
+                    "artifact-session",
+                    "blocked",
+                    f"Artifact verification stopped safely: {exc}",
+                )
+            )
+        try:
+            if capture_artifact_receipt:
+                report.artifact_receipt = session.seal_with_receipt()
+                metrics = session.metrics
+            else:
+                metrics = session.seal()
+        except ArtifactVerificationError as exc:
+            if not any(item.code == "artifact-session" for item in report.items):
+                report.items.append(
+                    ReleaseGateItem(
+                        "artifact-session",
+                        "blocked",
+                        f"Artifact verification did not seal: {exc}",
+                    )
+                )
+        else:
+            report.items.append(
+                ReleaseGateItem(
+                    "artifact-session",
+                    "ready",
+                    "Scoped evidence I/O sealed "
+                    f"(files_opened={metrics.files_opened}, "
+                    f"bytes_hashed={metrics.bytes_hashed}, "
+                    f"digest_reuse={metrics.digest_reuse}, "
+                    f"replays={metrics.replays}).",
+                )
+            )
         return report
 
 
@@ -214,9 +580,7 @@ def _check_source_trust(
         )
         if not trust.ok:
             failures = [
-                f"{check.code}: {check.message}"
-                for check in trust.checks
-                if check.level == "error"
+                f"{check.code}: {check.message}" for check in trust.checks if check.level == "error"
             ]
             report.items.append(
                 ReleaseGateItem(
@@ -259,25 +623,29 @@ def _package_inputs_item(
     *,
     verify: bool,
     provenance_snapshot: _ProvenanceSnapshot | None = None,
+    context: _GateContext | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    snapshot = provenance_snapshot or _load_provenance_snapshot(
+        provenance,
+        context=context,
+    )
     if snapshot.error is not None:
         return ReleaseGateItem(
             "package-inputs",
             "blocked",
-            "Cannot locate a package-input run without provenance: "
-            + snapshot.error,
+            "Cannot locate a package-input run without provenance: " + snapshot.error,
         )
     assert snapshot.data is not None
     provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+    if not is_safe_run_id(run_id):
         return ReleaseGateItem(
             "package-inputs",
             "blocked",
             "Provenance has no safe run identity for package inputs.",
         )
+    assert isinstance(run_id, str)
     run = provenance_data.get("run")
     verification_time = run.get("created_at") if isinstance(run, dict) else None
     if not isinstance(verification_time, str) or not verification_time:
@@ -308,22 +676,75 @@ def _package_inputs_item(
             "blocked",
             "The current run has no static package/filesystem identity map.",
         )
+    if context is not None:
+        try:
+            package_run_inventory = context.inventory(
+                run_dir,
+                label="package validation run inventory",
+            )
+            unsafe_package_entries = _unsafe_inventory_entries(package_run_inventory)
+            if unsafe_package_entries:
+                return ReleaseGateItem(
+                    "package-inputs",
+                    "blocked",
+                    "Package validation run contains non-regular entries: "
+                    + ", ".join(unsafe_package_entries),
+                )
+            # Bind and strictly parse the three primary reports before any
+            # delegated validator reopens subsidiary evidence.  The tree snapshot
+            # then makes every delegated read part of this gate session: a swap or
+            # in-place mutation anywhere in the run changes the closing inventory.
+            for report_path, byte_limit, report_label in (
+                (evidence, MAX_PACKAGE_INPUTS_BYTES, "PACKAGE-INPUTS"),
+                (
+                    action_evidence,
+                    MAX_REPORT_JSON_BYTES,
+                    "APT action report",
+                ),
+                (
+                    causality_evidence,
+                    MAX_PACKAGE_CAUSALITY_JSON_BYTES,
+                    "package/filesystem causality report",
+                ),
+            ):
+                context.handle(
+                    report_path,
+                    max_bytes=byte_limit,
+                    label=report_label,
+                ).json_object()
+        except (
+            ArtifactVerificationError,
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
+            return ReleaseGateItem(
+                "package-inputs",
+                "blocked",
+                f"Package-input evidence cannot be session-bound: {exc}",
+            )
     if not verify:
         try:
             payload = _read_bounded_json_file(
                 evidence,
                 max_bytes=MAX_PACKAGE_INPUTS_BYTES,
                 label="PACKAGE-INPUTS",
+                context=context,
             )
             action_payload = _read_bounded_json_file(
                 action_evidence,
                 max_bytes=MAX_REPORT_JSON_BYTES,
                 label="APT action report",
+                context=context,
             )
             causality_payload = _read_bounded_json_file(
                 causality_evidence,
                 max_bytes=MAX_PACKAGE_CAUSALITY_JSON_BYTES,
                 label="package/filesystem causality report",
+                context=context,
             )
         except (
             OSError,
@@ -342,6 +763,7 @@ def _package_inputs_item(
             action_payload,
             run_dir,
             run_id,
+            context=context,
         )
         if action_boundary_error is not None:
             return ReleaseGateItem(
@@ -351,11 +773,9 @@ def _package_inputs_item(
             )
         if (
             not isinstance(causality_payload, dict)
-            or causality_payload.get("schema")
-            != PACKAGE_FILESYSTEM_CAUSALITY_SCHEMA
+            or causality_payload.get("schema") != PACKAGE_FILESYSTEM_CAUSALITY_SCHEMA
             or causality_payload.get("run_id") != run_id
-            or causality_payload.get("payload_identity")
-            not in {"partial", "verified"}
+            or causality_payload.get("payload_identity") not in {"partial", "verified"}
             or causality_payload.get("filesystem_causality") != "unverified"
             or causality_payload.get("release_ready") is not False
         ):
@@ -397,7 +817,10 @@ def _package_inputs_item(
             "payload identity separate from unverified filesystem causality.",
         )
     try:
-        command_argv = _command_argv_ledger(run_dir / "commands.jsonl")
+        command_argv = _command_argv_ledger(
+            run_dir / "commands.jsonl",
+            context=context,
+        )
     except ValueError as exc:
         return ReleaseGateItem(
             "package-inputs",
@@ -454,10 +877,7 @@ def _package_inputs_item(
             )
             else "blocked"
         ),
-        (
-            f"{validation.detail}; {action_validation.detail}; "
-            f"{causality_validation.detail}"
-        ),
+        (f"{validation.detail}; {action_validation.detail}; {causality_validation.detail}"),
     )
 
 
@@ -466,9 +886,15 @@ def _read_bounded_json_file(
     *,
     max_bytes: int,
     label: str,
+    context: _GateContext | None = None,
 ) -> object:
     """Read one regular JSON file through a stable, size-bounded descriptor."""
 
+    if context is not None:
+        try:
+            return context.read_json(path, max_bytes=max_bytes, label=label)
+        except ArtifactVerificationError as exc:
+            raise ValueError(str(exc)) from exc
     data = _read_bounded_file(
         path,
         max_bytes=max_bytes,
@@ -489,9 +915,15 @@ def _read_bounded_file(
     *,
     max_bytes: int,
     label: str,
+    context: _GateContext | None = None,
 ) -> bytes:
     """Read one regular file without following links or blocking on a FIFO."""
 
+    if context is not None:
+        try:
+            return context.read_bytes(path, max_bytes=max_bytes, label=label)
+        except ArtifactVerificationError as exc:
+            raise ValueError(str(exc)) from exc
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
@@ -503,11 +935,7 @@ def _read_bounded_file(
         raise
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_size <= 0
-            or before.st_size > max_bytes
-        ):
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0 or before.st_size > max_bytes:
             raise ValueError(f"{label} exceeds its byte bound")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             data = stream.read(max_bytes + 1)
@@ -531,17 +959,38 @@ def _read_bounded_file(
     return data
 
 
-def _load_provenance_snapshot(path: Path) -> _ProvenanceSnapshot:
+def _load_provenance_snapshot(
+    path: Path,
+    *,
+    context: _GateContext | None = None,
+) -> _ProvenanceSnapshot:
     try:
-        raw = _read_bounded_file(
-            path,
-            max_bytes=MAX_PROVENANCE_JSON_BYTES,
-            label="provenance",
-        )
-        data = _decode_json(raw, label="provenance")
-        if not isinstance(data, dict):
+        if context is not None:
+            handle = context.handle(
+                path,
+                max_bytes=MAX_PROVENANCE_JSON_BYTES,
+                label="provenance",
+            )
+            raw = handle.read_bytes()
+            parsed = handle.json()
+        else:
+            with ArtifactVerificationSession(
+                Path("/"),
+                label="provenance snapshot",
+                limits=_RELEASE_SESSION_LIMITS,
+            ) as session:
+                handle = session.file_path(
+                    path.absolute(),
+                    max_bytes=MAX_PROVENANCE_JSON_BYTES,
+                    label="provenance",
+                )
+                raw = handle.read_bytes()
+                parsed = handle.json()
+        if not isinstance(parsed, dict):
             raise ValueError("provenance is not a JSON object")
+        data = parsed
     except (
+        ArtifactVerificationError,
         OSError,
         UnicodeError,
         TypeError,
@@ -556,6 +1005,8 @@ def _load_provenance_snapshot(path: Path) -> _ProvenanceSnapshot:
 def _provenance_snapshot_closure_item(
     path: Path,
     opening: _ProvenanceSnapshot,
+    *,
+    context: _GateContext | None = None,
 ) -> ReleaseGateItem:
     if opening.error is not None or opening.raw is None:
         return ReleaseGateItem(
@@ -563,15 +1014,20 @@ def _provenance_snapshot_closure_item(
             "blocked",
             "No valid opening provenance snapshot was available.",
         )
-    closing = _load_provenance_snapshot(path)
-    if closing.error is not None or closing.raw is None:
+    try:
+        closing_raw = _read_bounded_file(
+            path,
+            max_bytes=MAX_PROVENANCE_JSON_BYTES,
+            label="provenance",
+            context=context,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
         return ReleaseGateItem(
             "provenance-snapshot",
             "blocked",
-            "Provenance could not be closed against its opening snapshot: "
-            + (closing.error or "missing bytes"),
+            "Provenance could not be closed against its opening snapshot: " + str(exc),
         )
-    if closing.raw != opening.raw:
+    if closing_raw != opening.raw:
         return ReleaseGateItem(
             "provenance-snapshot",
             "blocked",
@@ -588,53 +1044,50 @@ def _package_apt_actions_boundary_error(
     payload: object,
     run_dir: Path,
     run_id: str,
+    *,
+    context: _GateContext | None = None,
 ) -> str | None:
     if (
         not isinstance(payload, dict)
         or payload.get("schema") != PACKAGE_APT_ACTIONS_SCHEMA
         or payload.get("run_id") != run_id
-        or payload.get("scope")
-        != "apt-dpkg-pre-install-pkgs-v3-planned-actions-m3.2a"
-        or payload.get("capture_origin")
-        != "unverified-mutable-target-rootfs"
+        or payload.get("scope") != "apt-dpkg-pre-install-pkgs-v3-planned-actions-m3.2a"
+        or payload.get("capture_origin") != "unverified-mutable-target-rootfs"
         or payload.get("filesystem_causality") != "unverified"
         or payload.get("release_ready") is not False
-        or payload.get("apt_actions")
-        not in {"self-consistent", "not-observed"}
+        or payload.get("apt_actions") not in {"self-consistent", "not-observed"}
     ):
-        return (
-            "The APT action receipt does not preserve the M3.2a "
-            "proof boundary."
-        )
+        return "The APT action receipt does not preserve the M3.2a proof boundary."
     for identity_field, expected_path in (
         ("package_inputs", "PACKAGE-INPUTS.json"),
         ("capture_journal", "apt/transactions.tsv"),
     ):
         identity = payload.get(identity_field)
         if not isinstance(identity, dict):
-            return (
-                "The APT action receipt has no valid "
-                f"{identity_field} identity."
-            )
+            return f"The APT action receipt has no valid {identity_field} identity."
         artifact = run_dir / expected_path
         if (
             identity.get("path") != expected_path
             or artifact.is_symlink()
             or not artifact.is_file()
-            or identity.get("size") != artifact.stat().st_size
-            or identity.get("sha256") != sha256_file(artifact)
-        ):
-            return (
-                "The APT action receipt is not bound to this run's "
-                f"{expected_path}."
+            or identity.get("size")
+            != (
+                context.size(artifact, label=expected_path)
+                if context is not None
+                else artifact.stat().st_size
             )
+            or identity.get("sha256")
+            != (
+                context.digest(artifact, label=expected_path)
+                if context is not None
+                else sha256_file(artifact)
+            )
+        ):
+            return f"The APT action receipt is not bound to this run's {expected_path}."
     transactions = payload.get("transactions")
     if not isinstance(transactions, list):
         return "The APT action receipt transaction list is malformed."
-    if (
-        payload.get("apt_actions") == "self-consistent"
-        and not transactions
-    ) or (
+    if (payload.get("apt_actions") == "self-consistent" and not transactions) or (
         payload.get("apt_actions") == "not-observed" and transactions
     ):
         return "The APT action status contradicts its transaction list."
@@ -660,15 +1113,16 @@ def _package_apt_actions_boundary_error(
             or not isinstance(transaction.get("recorder"), dict)
             or not isinstance(transaction.get("configuration"), dict)
         ):
-            return (
-                "The APT action receipt contains an invalid protocol-v3 "
-                "transaction."
-            )
+            return "The APT action receipt contains an invalid protocol-v3 transaction."
         transaction_ids.add(transaction_id)
     return None
 
 
-def _command_argv_ledger(path: Path) -> tuple[tuple[str, ...], ...]:
+def _command_argv_ledger(
+    path: Path,
+    *,
+    context: _GateContext | None = None,
+) -> tuple[tuple[str, ...], ...]:
     """Load every dispatched argv from the final immutable run log.
 
     ``PACKAGE-INPUTS.json`` is written before packing and ISO assembly.  Reading
@@ -677,24 +1131,12 @@ def _command_argv_ledger(path: Path) -> tuple[tuple[str, ...], ...]:
     trusting the earlier aggregate.
     """
 
-    commands: list[tuple[str, ...]] = []
     try:
-        text = _read_bounded_file(
-            path,
-            max_bytes=MAX_COMMAND_LOG_BYTES,
-            label="commands.jsonl",
-        ).decode("utf-8", errors="strict")
+        events = _command_jsonl_events(path, context=context)
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"commands.jsonl is unreadable: {exc}") from exc
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
-            raise ValueError(
-                f"commands.jsonl line {line_number} is not valid JSON"
-            ) from exc
+    commands: list[tuple[str, ...]] = []
+    for line_number, event in enumerate(events, start=1):
         if not isinstance(event, dict):
             raise ValueError(f"commands.jsonl line {line_number} is not an event")
         if event.get("event") != "start":
@@ -705,11 +1147,117 @@ def _command_argv_ledger(path: Path) -> tuple[tuple[str, ...], ...]:
             or not argv
             or not all(isinstance(token, str) and token for token in argv)
         ):
-            raise ValueError(
-                f"commands.jsonl line {line_number} has malformed argv"
-            )
+            raise ValueError(f"commands.jsonl line {line_number} has malformed argv")
         commands.append(tuple(argv))
     return tuple(commands)
+
+
+def _command_jsonl_events(
+    path: Path,
+    *,
+    context: _GateContext | None = None,
+) -> tuple[object, ...]:
+    """Parse one bounded command ledger once per gate verdict."""
+
+    def parse() -> tuple[object, ...]:
+        data = _read_bounded_file(
+            path,
+            max_bytes=MAX_COMMAND_LOG_BYTES,
+            label="commands.jsonl",
+            context=context,
+        )
+        if b"\r" in data or (data and not data.endswith(b"\n")):
+            raise ValueError("commands.jsonl must use LF records and end with a final LF")
+        try:
+            text = data.decode("utf-8", errors="strict")
+        except UnicodeError as exc:
+            raise ValueError("commands.jsonl is not strict UTF-8") from exc
+        events: list[object] = []
+        node_count = 0
+        node_limit = (
+            context.session.limits.max_json_nodes
+            if context is not None
+            else _RELEASE_SESSION_LIMITS.max_json_nodes
+        )
+        depth_limit = (
+            context.session.limits.max_json_depth
+            if context is not None
+            else _RELEASE_SESSION_LIMITS.max_json_depth
+        )
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(
+                    line,
+                    object_pairs_hook=_unique_json_pairs,
+                    parse_constant=_reject_json_constant,
+                )
+                node_count = _validate_json_value(
+                    event,
+                    initial_nodes=node_count,
+                    max_nodes=node_limit,
+                    max_depth=depth_limit,
+                )
+            except (
+                json.JSONDecodeError,
+                UnicodeError,
+                RecursionError,
+                OverflowError,
+                ValueError,
+            ) as exc:
+                raise ValueError(
+                    f"commands.jsonl line {line_number} is not bounded canonical JSON"
+                ) from exc
+            events.append(event)
+        return tuple(events)
+
+    if context is None:
+        return parse()
+    return context.session.memo(
+        ("commands-jsonl", str(path.absolute())),
+        parse,
+    )
+
+
+def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _validate_json_value(
+    value: object,
+    *,
+    initial_nodes: int,
+    max_nodes: int,
+    max_depth: int,
+) -> int:
+    nodes = initial_nodes
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes:
+            raise ValueError(f"JSONL exceeds {max_nodes} nodes")
+        if depth > max_depth:
+            raise ValueError(f"JSONL exceeds depth {max_depth}")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for pair in current.items() for item in pair)
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+        elif isinstance(current, float) and not math.isfinite(current):
+            raise ValueError("JSONL contains a non-finite number")
+        elif isinstance(current, str):
+            current.encode("utf-8", errors="strict")
+    return nodes
 
 
 def _rootfs_evidence_item(
@@ -717,25 +1265,29 @@ def _rootfs_evidence_item(
     *,
     verify: bool,
     provenance_snapshot: _ProvenanceSnapshot | None = None,
+    context: _GateContext | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    snapshot = provenance_snapshot or _load_provenance_snapshot(
+        provenance,
+        context=context,
+    )
     if snapshot.error is not None:
         return ReleaseGateItem(
             "rootfs-identity",
             "blocked",
-            "Cannot locate rootfs evidence without provenance: "
-            + snapshot.error,
+            "Cannot locate rootfs evidence without provenance: " + snapshot.error,
         )
     assert snapshot.data is not None
     provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+    if not is_safe_run_id(run_id):
         return ReleaseGateItem(
             "rootfs-identity",
             "blocked",
             "Provenance has no safe run identity for rootfs evidence.",
         )
+    assert isinstance(run_id, str)
     run_dir = output_dir / "evidence" / "runs" / run_id
     manifest = run_dir / "ROOTFS-MANIFEST.json"
     verification = run_dir / "ROOTFS-PACKING-VERIFICATION.json"
@@ -751,6 +1303,7 @@ def _rootfs_evidence_item(
                 verification,
                 max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
                 label="rootfs packing verification",
+                context=context,
             )
         except (
             OSError,
@@ -790,6 +1343,7 @@ def _rootfs_evidence_item(
     validation = validate_rootfs_evidence(
         run_dir,
         expected_run_id=run_id,
+        session=context.session if context is not None else None,
     )
     return ReleaseGateItem(
         "rootfs-identity",
@@ -805,25 +1359,29 @@ def _iso_assembly_item(
     project: Project,
     verify: bool,
     provenance_snapshot: _ProvenanceSnapshot | None = None,
+    context: _GateContext | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    snapshot = provenance_snapshot or _load_provenance_snapshot(
+        provenance,
+        context=context,
+    )
     if snapshot.error is not None:
         return ReleaseGateItem(
             "iso-assembly",
             "blocked",
-            "Cannot locate ISO assembly evidence without provenance: "
-            + snapshot.error,
+            "Cannot locate ISO assembly evidence without provenance: " + snapshot.error,
         )
     assert snapshot.data is not None
     provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+    if not is_safe_run_id(run_id):
         return ReleaseGateItem(
             "iso-assembly",
             "blocked",
             "Provenance has no safe run identity for ISO assembly evidence.",
         )
+    assert isinstance(run_id, str)
     run_dir = output_dir / "evidence" / "runs" / run_id
     evidence = run_dir / ISO_ASSEMBLY_FILENAME
     if not evidence.is_file():
@@ -838,6 +1396,7 @@ def _iso_assembly_item(
                 evidence,
                 max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
                 label="ISO assembly evidence",
+                context=context,
             )
         except (
             OSError,
@@ -874,11 +1433,8 @@ def _iso_assembly_item(
         run_dir,
         expected_run_id=run_id,
         output_iso_path=iso,
-        staged_squashfs_path=(
-            project.iso_root
-            / project.release.livefs
-            / "filesystem.squashfs"
-        ),
+        staged_squashfs_path=(project.iso_root / project.release.livefs / "filesystem.squashfs"),
+        session=context.session if context is not None else None,
     )
     return ReleaseGateItem(
         "iso-assembly",
@@ -912,20 +1468,64 @@ def _check_vuln_policy(report: ReleaseGateReport, project: Project, options: Bui
 
 
 def _check_iso_and_checksums(
-    report: ReleaseGateReport, iso: Path, output_dir: Path, verify_checksums: bool = True
+    report: ReleaseGateReport,
+    iso: Path,
+    output_dir: Path,
+    verify_checksums: bool = True,
+    *,
+    context: _GateContext | None = None,
 ) -> None:
-    if not iso.exists():
+    try:
+        iso.lstat()
+    except FileNotFoundError:
         report.items.append(ReleaseGateItem("iso", "blocked", "Final ISO is missing."))
         report.items.append(
             ReleaseGateItem("sha256", "blocked", "Cannot verify SHA256 without an ISO.")
         )
         return
-    report.items.append(ReleaseGateItem("iso", "ready", f"{iso.stat().st_size} bytes"))
+    except OSError as exc:
+        report.items.append(
+            ReleaseGateItem("iso", "blocked", f"Final ISO cannot be inspected: {exc}")
+        )
+        report.items.append(
+            ReleaseGateItem("sha256", "blocked", "Cannot verify SHA256 without a safe ISO.")
+        )
+        return
+    try:
+        size = context.size(iso, label="final ISO") if context is not None else iso.stat().st_size
+    except (ArtifactVerificationError, OSError, ValueError) as exc:
+        report.items.append(ReleaseGateItem("iso", "blocked", f"Final ISO is unsafe: {exc}"))
+        report.items.append(
+            ReleaseGateItem("sha256", "blocked", "Cannot verify SHA256 without a safe ISO.")
+        )
+        return
+    report.items.append(ReleaseGateItem("iso", "ready", f"{size} bytes"))
     sums = output_dir / "SHA256SUMS"
-    if not sums.exists():
+    try:
+        sums.lstat()
+    except FileNotFoundError:
         report.items.append(ReleaseGateItem("sha256", "blocked", "SHA256SUMS is missing."))
         return
-    expected = sha256_from_sums(sums, iso.name)
+    except OSError as exc:
+        report.items.append(
+            ReleaseGateItem("sha256", "blocked", f"SHA256SUMS cannot be inspected: {exc}")
+        )
+        return
+    try:
+        if context is not None:
+            expected = context.checksum_entry(sums, iso.name)
+        else:
+            expected = sha256_from_sums_bytes(
+                _read_bounded_file(
+                    sums,
+                    max_bytes=MAX_SHA256_SIDECAR_BYTES,
+                    label="SHA256SUMS",
+                ),
+                iso.name,
+            )
+    except (OSError, UnicodeError, ValueError, ArtifactVerificationError) as exc:
+        report.items.append(ReleaseGateItem("sha256", "blocked", f"SHA256SUMS is invalid: {exc}"))
+        return
     if not verify_checksums:
         # Status-only pass: SHA256SUMS must cover the ISO, but the bytes are not
         # re-read. Whoever needs the verdict itself asks with the default.
@@ -936,7 +1536,7 @@ def _check_iso_and_checksums(
             return
         report.items.append(ReleaseGateItem("sha256", "ready", expected))
         return
-    actual = sha256_file(iso)
+    actual = context.digest(iso, label="final ISO") if context is not None else sha256_file(iso)
     if expected != actual:
         report.items.append(
             ReleaseGateItem("sha256", "blocked", "SHA256SUMS does not match the ISO.")
@@ -952,8 +1552,19 @@ def _check_release_files(
     options: BuildOptions,
     *,
     provenance_snapshot: _ProvenanceSnapshot,
+    context: _GateContext | None = None,
+    verify: bool = True,
+    selected_run: ExecutedReleaseRun | None = None,
+    selection_error: str | None = None,
 ) -> None:
-    sbom_format = options.provenance.sbom_format
+    recorded_sbom_format = (
+        selected_run.provenance_payload.get("sbom_format") if selected_run is not None else None
+    )
+    sbom_format = (
+        recorded_sbom_format
+        if isinstance(recorded_sbom_format, str)
+        else options.provenance.sbom_format
+    )
     sbom_filename = (
         SPDX_FILENAME
         if sbom_format == "spdx"
@@ -961,19 +1572,106 @@ def _check_release_files(
         if sbom_format == "cyclonedx"
         else None
     )
+    embedded_boot_paths: set[Path] = set()
+    embedded_boot = (
+        selected_run.iso_build_payload.get("boot_proof") if selected_run is not None else None
+    )
+    if isinstance(embedded_boot, dict) and is_safe_run_id(embedded_boot.get("run_id")):
+        embedded_boot_run_id = str(embedded_boot["run_id"])
+        embedded_boot_dir = (output_dir / "evidence" / "runs" / embedded_boot_run_id).absolute()
+        embedded_boot_paths.add(embedded_boot_dir / "boot-proof.json")
+        embedded_qemu_name = embedded_boot.get("qemu_report")
+        if (
+            isinstance(embedded_qemu_name, str)
+            and embedded_qemu_name
+            and Path(embedded_qemu_name).name == embedded_qemu_name
+            and embedded_qemu_name not in {".", ".."}
+            and "\x00" not in embedded_qemu_name
+        ):
+            embedded_boot_paths.add(embedded_boot_dir / embedded_qemu_name)
+    allowed_release_paths = frozenset(
+        {
+            *embedded_boot_paths,
+            *(
+                (output_dir / filename).absolute()
+                for filename in (
+                    "BUILDINFO",
+                    "SHA256SUMS",
+                    options.html_report.filename,
+                )
+                if filename is not None
+            ),
+        }
+    )
     for code, filename, enabled in (
         ("buildinfo", "BUILDINFO", options.release_artifacts.enabled),
         ("provenance", "distroforge-provenance.json", options.provenance.enabled),
         ("sbom", sbom_filename, options.provenance.enabled and sbom_filename is not None),
         ("html-report", options.html_report.filename, options.html_report.enabled),
     ):
+        if (
+            code == "sbom"
+            and selected_run is not None
+            and recorded_sbom_format not in {"native", "spdx", "cyclonedx"}
+        ):
+            report.items.append(
+                ReleaseGateItem(
+                    code,
+                    "blocked",
+                    "Immutable build provenance has an absent or unsupported sbom_format.",
+                )
+            )
+            continue
         if filename is None:
             report.items.append(
                 ReleaseGateItem(code, "review", "Standard-format SBOM export is not enabled.")
             )
             continue
-        path = output_dir / filename
-        if code == "provenance" and path.exists():
+        path = (
+            selected_run.provenance_path
+            if code == "provenance" and selected_run is not None
+            else selected_run.run_dir / filename
+            if code == "sbom" and selected_run is not None
+            else output_dir / filename
+        )
+        if code == "provenance" and selected_run is None:
+            report.items.append(
+                ReleaseGateItem(
+                    code,
+                    "blocked",
+                    "No immutable executed build provenance was selected: "
+                    + (selection_error or "selection did not return a run"),
+                )
+            )
+            continue
+        if code == "sbom" and selected_run is None:
+            report.items.append(
+                ReleaseGateItem(
+                    code,
+                    "blocked",
+                    "No immutable executed build run was selected for the SBOM: "
+                    + (selection_error or "selection did not return a run"),
+                )
+            )
+            continue
+        if code == "sbom":
+            report.immutable_sbom = path
+        if code == "provenance":
+            if not verify:
+                status = "review" if provenance_snapshot.error is None else "blocked"
+                report.items.append(
+                    ReleaseGateItem(
+                        code,
+                        status,
+                        (
+                            "Provenance opening snapshot is structurally readable; "
+                            "the authoritative gate will bind every artifact."
+                            if status == "review"
+                            else "Provenance opening snapshot is unreadable."
+                        ),
+                    )
+                )
+                continue
             report.items.append(
                 _validate_build_provenance(
                     path,
@@ -981,14 +1679,26 @@ def _check_release_files(
                     output_dir,
                     use_sudo=options.use_sudo,
                     provenance_snapshot=provenance_snapshot,
+                    context=context,
+                    allowed_release_paths=allowed_release_paths,
                 )
             )
             continue
         if path.exists():
+            if not verify:
+                report.items.append(
+                    ReleaseGateItem(
+                        code,
+                        "review",
+                        f"{filename} exists; authoritative binding is deferred.",
+                    )
+                )
+                continue
             if code in {"buildinfo", "sbom", "html-report"} and not _build_manifest_binds(
                 output_dir,
                 path,
                 provenance_snapshot=provenance_snapshot,
+                context=context,
             ):
                 report.items.append(
                     ReleaseGateItem(
@@ -1012,21 +1722,25 @@ def _build_manifest_binds(
     artifact: Path,
     *,
     provenance_snapshot: _ProvenanceSnapshot | None = None,
+    context: _GateContext | None = None,
 ) -> bool:
     snapshot = provenance_snapshot or _load_provenance_snapshot(
-        output_dir / "distroforge-provenance.json"
+        output_dir / "distroforge-provenance.json",
+        context=context,
     )
     if snapshot.error is not None or snapshot.data is None:
         return False
     data = snapshot.data
     try:
         run_id = data.get("run_id")
-        if not isinstance(run_id, str) or Path(run_id).name != run_id:
+        if not is_safe_run_id(run_id):
             return False
+        assert isinstance(run_id, str)
         manifest = _read_bounded_json_file(
             output_dir / "evidence" / "runs" / run_id / "RUN-MANIFEST.json",
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="run manifest",
+            context=context,
         )
     except (
         OSError,
@@ -1040,11 +1754,16 @@ def _build_manifest_binds(
     files = manifest.get("files") if isinstance(manifest, dict) else None
     if not isinstance(files, list) or not artifact.is_file():
         return False
+    try:
+        artifact_size = context.size(artifact) if context is not None else artifact.stat().st_size
+        artifact_digest = context.digest(artifact) if context is not None else sha256_file(artifact)
+    except (ArtifactVerificationError, OSError, ValueError):
+        return False
     return any(
         isinstance(item, dict)
         and item.get("path") == str(artifact)
-        and item.get("size") == artifact.stat().st_size
-        and item.get("sha256") == sha256_file(artifact)
+        and item.get("size") == artifact_size
+        and item.get("sha256") == artifact_digest
         for item in files
     )
 
@@ -1053,9 +1772,8 @@ def _identity_closure_problem(run: dict[str, object]) -> str | None:
     component_names = ("builder_source", "definition", "source_iso", "toolchain")
     opening = {name: run.get(name) for name in component_names}
     recorded_opening_sha256 = run.get("opening_identity_sha256")
-    if (
-        not _is_sha256(recorded_opening_sha256)
-        or recorded_opening_sha256 != canonical_sha256(opening)
+    if not _is_sha256(recorded_opening_sha256) or recorded_opening_sha256 != canonical_sha256(
+        opening
     ):
         return "the opening identity digest is absent or inconsistent"
 
@@ -1069,10 +1787,7 @@ def _identity_closure_problem(run: dict[str, object]) -> str | None:
     ):
         return "the structured closing proof is absent, blocked, or inconsistent"
     checks = closure.get("checks")
-    if (
-        not isinstance(checks, list)
-        or closure.get("checks_sha256") != canonical_sha256(checks)
-    ):
+    if not isinstance(checks, list) or closure.get("checks_sha256") != canonical_sha256(checks):
         return "the closing-check digest is absent or inconsistent"
     by_name = {
         check.get("name"): check
@@ -1106,8 +1821,7 @@ def _git_builder_publication_problem(builder: dict[str, object]) -> str | None:
         value = builder.get(object_field)
         if (
             not isinstance(value, str)
-            or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value)
-            is None
+            or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value) is None
         ):
             return f"{object_field} is not a complete Git object ID"
     if builder.get("dirty") is not False:
@@ -1119,8 +1833,7 @@ def _git_builder_publication_problem(builder: dict[str, object]) -> str | None:
     if not _is_sha256(builder.get("worktree_sha256")):
         return "the worktree aggregate SHA256 is absent or malformed"
     if (
-        builder.get("tracked_diff_sha256")
-        != "e3b0c44298fc1c149afbf4c8996fb924"
+        builder.get("tracked_diff_sha256") != "e3b0c44298fc1c149afbf4c8996fb924"
         "27ae41e4649b934ca495991b7852b855"
     ):
         return "the recorded clean worktree has a non-empty tracked diff"
@@ -1158,8 +1871,20 @@ def _validate_build_provenance(
     *,
     use_sudo: bool = True,
     provenance_snapshot: _ProvenanceSnapshot | None = None,
+    context: _GateContext | None = None,
+    allowed_release_paths: frozenset[Path] = frozenset(),
 ) -> ReleaseGateItem:
-    snapshot = provenance_snapshot or _load_provenance_snapshot(path)
+    snapshot = provenance_snapshot or _load_provenance_snapshot(
+        path,
+        context=context,
+    )
+
+    def digest_file(candidate: Path) -> str:
+        return context.digest(candidate) if context is not None else sha256_file(candidate)
+
+    def size_file(candidate: Path) -> int:
+        return context.size(candidate) if context is not None else candidate.stat().st_size
+
     if snapshot.error is not None:
         return ReleaseGateItem(
             "provenance",
@@ -1177,20 +1902,20 @@ def _validate_build_provenance(
         return ReleaseGateItem(
             "provenance", "blocked", "Reconstructed provenance is not build evidence."
         )
-    if not iso.is_file() or data.get("output_iso_sha256") != sha256_file(iso):
+    if not iso.is_file() or data.get("output_iso_sha256") != digest_file(iso):
         return ReleaseGateItem(
             "provenance", "blocked", "Provenance belongs to different ISO bytes."
         )
     run_id = data.get("run_id")
     run = data.get("run")
     if (
-        not isinstance(run_id, str)
-        or not run_id
+        not is_safe_run_id(run_id)
         or not isinstance(run, dict)
         or run.get("run_id") != run_id
         or run.get("mode") != "execute"
     ):
         return ReleaseGateItem("provenance", "blocked", "Provenance run identity is incomplete.")
+    assert isinstance(run_id, str)
     closure_problem = _identity_closure_problem(run)
     if closure_problem:
         return ReleaseGateItem(
@@ -1231,8 +1956,7 @@ def _validate_build_provenance(
         return ReleaseGateItem(
             "provenance",
             "blocked",
-            "Builder Git identity is not publication-grade: "
-            + builder_publication_problem,
+            "Builder Git identity is not publication-grade: " + builder_publication_problem,
         )
     if data.get("commands_sha256") != canonical_sha256(command_records):
         return ReleaseGateItem(
@@ -1417,20 +2141,22 @@ def _validate_build_provenance(
             + ", ".join(uncaptured_roles),
         )
     immutable_dir = output_dir / "evidence" / "runs" / run_id
-    unsafe_symlink = first_symlink_in_confined_tree(output_dir, immutable_dir)
-    if unsafe_symlink is not None:
+    inventory_problem = _tree_safety_problem(
+        immutable_dir,
+        context=context,
+        label="immutable provenance run",
+    )
+    if inventory_problem is not None:
         return ReleaseGateItem(
             "provenance",
             "blocked",
-            f"Immutable run contains unsafe symlink: {unsafe_symlink}.",
+            inventory_problem,
         )
     immutable = immutable_dir / "distroforge-provenance.json"
     iso_report = immutable_dir / "ISO-BUILD.json"
     package_inputs = immutable_dir / "PACKAGE-INPUTS.json"
     package_apt_actions = immutable_dir / PACKAGE_APT_ACTIONS_FILENAME
-    package_filesystem_causality = (
-        immutable_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
-    )
+    package_filesystem_causality = immutable_dir / PACKAGE_FILESYSTEM_CAUSALITY_FILENAME
     rootfs_manifest = immutable_dir / "ROOTFS-MANIFEST.json"
     rootfs_verification = immutable_dir / "ROOTFS-PACKING-VERIFICATION.json"
     iso_assembly = immutable_dir / ISO_ASSEMBLY_FILENAME
@@ -1455,17 +2181,19 @@ def _validate_build_provenance(
             "blocked",
             f"Immutable run evidence is incomplete: {', '.join(missing)}",
         )
-    if sha256_file(immutable) != hashlib.sha256(snapshot.raw).hexdigest():
+    if digest_file(immutable) != hashlib.sha256(snapshot.raw).hexdigest():
         return ReleaseGateItem(
-            "provenance", "blocked", "Provenance alias differs from immutable evidence."
+            "provenance",
+            "blocked",
+            "Selected immutable provenance differs from its opening snapshot.",
         )
     package_identity = data.get("package_inputs")
     if (
         not isinstance(package_identity, dict)
         or package_identity.get("path") != str(package_inputs)
         or package_identity.get("role") != "package-input-closure"
-        or package_identity.get("size") != package_inputs.stat().st_size
-        or package_identity.get("sha256") != sha256_file(package_inputs)
+        or package_identity.get("size") != size_file(package_inputs)
+        or package_identity.get("sha256") != digest_file(package_inputs)
     ):
         return ReleaseGateItem(
             "provenance",
@@ -1475,32 +2203,25 @@ def _validate_build_provenance(
     package_apt_actions_identity = data.get("package_apt_actions")
     if (
         not isinstance(package_apt_actions_identity, dict)
-        or package_apt_actions_identity.get("path")
-        != str(package_apt_actions)
+        or package_apt_actions_identity.get("path") != str(package_apt_actions)
         or package_apt_actions_identity.get("role") != "package-apt-actions"
-        or package_apt_actions_identity.get("size")
-        != package_apt_actions.stat().st_size
-        or package_apt_actions_identity.get("sha256")
-        != sha256_file(package_apt_actions)
+        or package_apt_actions_identity.get("size") != size_file(package_apt_actions)
+        or package_apt_actions_identity.get("sha256") != digest_file(package_apt_actions)
     ):
         return ReleaseGateItem(
             "provenance",
             "blocked",
             "Provenance does not bind this run's APT protocol-v3 action receipt.",
         )
-    package_filesystem_causality_identity = data.get(
-        "package_filesystem_causality"
-    )
+    package_filesystem_causality_identity = data.get("package_filesystem_causality")
     if (
         not isinstance(package_filesystem_causality_identity, dict)
-        or package_filesystem_causality_identity.get("path")
-        != str(package_filesystem_causality)
-        or package_filesystem_causality_identity.get("role")
-        != "package-filesystem-causality"
+        or package_filesystem_causality_identity.get("path") != str(package_filesystem_causality)
+        or package_filesystem_causality_identity.get("role") != "package-filesystem-causality"
         or package_filesystem_causality_identity.get("size")
-        != package_filesystem_causality.stat().st_size
+        != size_file(package_filesystem_causality)
         or package_filesystem_causality_identity.get("sha256")
-        != sha256_file(package_filesystem_causality)
+        != digest_file(package_filesystem_causality)
     ):
         return ReleaseGateItem(
             "provenance",
@@ -1521,8 +2242,8 @@ def _validate_build_provenance(
             not isinstance(identity, dict)
             or identity.get("path") != str(artifact)
             or identity.get("role") != role
-            or identity.get("size") != artifact.stat().st_size
-            or identity.get("sha256") != sha256_file(artifact)
+            or identity.get("size") != size_file(artifact)
+            or identity.get("sha256") != digest_file(artifact)
         ):
             return ReleaseGateItem(
                 "provenance",
@@ -1532,6 +2253,7 @@ def _validate_build_provenance(
     rootfs_validation = validate_rootfs_evidence(
         immutable_dir,
         expected_run_id=run_id,
+        session=context.session if context is not None else None,
     )
     if not rootfs_validation.ok:
         return ReleaseGateItem(
@@ -1549,6 +2271,7 @@ def _validate_build_provenance(
         expected_run_id=run_id,
         output_iso_path=iso,
         replay_use_sudo=use_sudo,
+        session=context.session if context is not None else None,
     )
     if not iso_assembly_validation.ok:
         return ReleaseGateItem(
@@ -1561,6 +2284,7 @@ def _validate_build_provenance(
             iso_assembly,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="ISO assembly evidence",
+            context=context,
         )
     except (
         OSError,
@@ -1608,8 +2332,8 @@ def _validate_build_provenance(
         or not staged_artifact_path.is_file()
         or staged_artifact.get("size") != staged_identity.get("size")
         or staged_artifact.get("sha256") != staged_identity.get("sha256")
-        or staged_artifact.get("size") != staged_artifact_path.stat().st_size
-        or staged_artifact.get("sha256") != sha256_file(staged_artifact_path)
+        or staged_artifact.get("size") != size_file(staged_artifact_path)
+        or staged_artifact.get("sha256") != digest_file(staged_artifact_path)
     ):
         return ReleaseGateItem(
             "provenance",
@@ -1621,11 +2345,13 @@ def _validate_build_provenance(
             iso_report,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="ISO build report",
+            context=context,
         )
         run_manifest = _read_bounded_json_file(
             manifest,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="run manifest",
+            context=context,
         )
     except (
         OSError,
@@ -1643,7 +2369,7 @@ def _validate_build_provenance(
         or build.get("status") != "built"
         or build.get("execute") is not True
         or build.get("output_exists") is not True
-        or build.get("output_sha256") != sha256_file(iso)
+        or build.get("output_sha256") != digest_file(iso)
     ):
         return ReleaseGateItem(
             "provenance", "blocked", "ISO build report does not bind this run and ISO."
@@ -1658,20 +2384,22 @@ def _validate_build_provenance(
         return ReleaseGateItem(
             "provenance", "blocked", "Run manifest identity does not match provenance."
         )
-    expected_manifest_line = f"{sha256_file(manifest)}  {manifest.name}"
     try:
-        manifest_sum_text = _read_bounded_file(
+        manifest_sum_bytes = _read_bounded_file(
             manifest_sum,
             max_bytes=MAX_SHA256_SIDECAR_BYTES,
             label="run manifest SHA256 sidecar",
-        ).decode("utf-8", errors="strict")
+            context=context,
+        )
+        manifest_sum_entries = parse_sha256_sums(manifest_sum_bytes)
+        recorded_manifest_digest = manifest_sum_entries.get(manifest.name)
     except (OSError, UnicodeError, ValueError) as exc:
         return ReleaseGateItem(
             "provenance",
             "blocked",
             f"Run manifest SHA256 sidecar is unreadable: {exc}",
         )
-    if manifest_sum_text.strip() != expected_manifest_line:
+    if len(manifest_sum_entries) != 1 or recorded_manifest_digest != digest_file(manifest):
         return ReleaseGateItem(
             "provenance", "blocked", "Run manifest SHA256 sidecar does not match."
         )
@@ -1679,6 +2407,19 @@ def _validate_build_provenance(
     if not isinstance(files, list):
         return ReleaseGateItem("provenance", "blocked", "Run manifest has no file identities.")
     recorded: dict[str, str] = {}
+    non_authoritative_aliases = {
+        (output_dir / "ISO-BUILD.json").absolute(),
+        (output_dir / "distroforge-provenance.json").absolute(),
+        (output_dir / SPDX_FILENAME).absolute(),
+        (output_dir / CYCLONEDX_FILENAME).absolute(),
+    }
+    allowed_external = {
+        iso.absolute(),
+        staged_artifact_path.absolute(),
+        path.absolute(),
+        *allowed_release_paths,
+        *non_authoritative_aliases,
+    }
     for item in files:
         if not isinstance(item, dict):
             return ReleaseGateItem(
@@ -1692,11 +2433,40 @@ def _validate_build_provenance(
                 "blocked",
                 "Run manifest contains an empty or duplicate artifact path.",
             )
+        artifact_absolute = artifact_path.absolute()
+        try:
+            inside_run = artifact_absolute.is_relative_to(immutable_dir.absolute())
+        except (OSError, ValueError):
+            inside_run = False
+        if not inside_run and artifact_absolute not in allowed_external:
+            return ReleaseGateItem(
+                "provenance",
+                "blocked",
+                f"Run manifest path is outside the artifact allowlist: {artifact_path}",
+            )
+        if artifact_absolute in non_authoritative_aliases:
+            # Historical manifests may list the top-level convenience aliases.
+            # They are deliberately excluded from the release verdict: only the
+            # selected immutable run files above are held and measured.
+            if (
+                not isinstance(item.get("size"), int)
+                or isinstance(item.get("size"), bool)
+                or int(item["size"]) < 0
+                or not _is_sha256(item.get("sha256"))
+            ):
+                return ReleaseGateItem(
+                    "provenance",
+                    "blocked",
+                    "Run manifest contains a malformed non-authoritative "
+                    f"alias identity: {artifact_path}",
+                )
+            recorded[artifact_key] = str(item.get("sha256"))
+            continue
         if (
             artifact_path.is_symlink()
             or not artifact_path.is_file()
-            or item.get("size") != artifact_path.stat().st_size
-            or item.get("sha256") != sha256_file(artifact_path)
+            or item.get("size") != size_file(artifact_path)
+            or item.get("sha256") != digest_file(artifact_path)
         ):
             return ReleaseGateItem(
                 "provenance",
@@ -1704,24 +2474,45 @@ def _validate_build_provenance(
                 f"Run artifact changed or disappeared: {artifact_path}",
             )
         recorded[artifact_key] = str(item.get("sha256"))
-    unrecorded_run_files = [
-        path
-        for path in immutable_dir.rglob("*")
-        if path.is_file() and path not in {manifest, manifest_sum} and str(path) not in recorded
-    ]
-    if unrecorded_run_files:
-        return ReleaseGateItem(
-            "provenance",
-            "blocked",
-            "Immutable run contains unmanifested files: "
-            + ", ".join(path.name for path in unrecorded_run_files),
+    try:
+        run_inventory = _tree_inventory(
+            immutable_dir,
+            context=context,
+            label="immutable run inventory",
         )
-    alias_report = output_dir / "ISO-BUILD.json"
-    if not alias_report.is_file() or sha256_file(alias_report) != sha256_file(iso_report):
+    except ArtifactVerificationError as exc:
         return ReleaseGateItem(
             "provenance",
             "blocked",
-            "ISO-BUILD.json alias differs from immutable build evidence.",
+            f"Immutable run cannot be inventoried safely: {exc}",
+        )
+    unsafe_run_entries = _unsafe_inventory_entries(run_inventory)
+    if unsafe_run_entries:
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            "Immutable run contains non-regular entries: " + ", ".join(unsafe_run_entries),
+        )
+    recorded_run_files = {
+        Path(key).absolute().relative_to(immutable_dir.absolute()).as_posix()
+        for key in recorded
+        if Path(key).absolute().is_relative_to(immutable_dir.absolute())
+    }
+    recorded_run_files.update(
+        {
+            manifest.relative_to(immutable_dir).as_posix(),
+            manifest_sum.relative_to(immutable_dir).as_posix(),
+        }
+    )
+    unexpected_run_entries = set(run_inventory.by_name()) - _expected_inventory_entries(
+        recorded_run_files
+    )
+    if unexpected_run_entries:
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            "Immutable run contains unmanifested entries: "
+            + ", ".join(sorted(unexpected_run_entries)),
         )
     for artifact in (
         immutable,
@@ -1744,7 +2535,7 @@ def _validate_build_provenance(
                 "blocked",
                 f"Required build artifact is missing: {artifact.name}.",
             )
-        if recorded.get(str(artifact)) != sha256_file(artifact):
+        if recorded.get(str(artifact)) != digest_file(artifact):
             return ReleaseGateItem(
                 "provenance",
                 "blocked",
@@ -1754,6 +2545,7 @@ def _validate_build_provenance(
         immutable_dir / "commands.jsonl",
         command_records,
         executed_entrypoints,
+        context=context,
     )
     if command_log_error:
         return ReleaseGateItem(
@@ -1764,7 +2556,7 @@ def _validate_build_provenance(
     return ReleaseGateItem(
         "provenance",
         "ready",
-        f"immutable build run {run_id} matches ISO SHA256 {sha256_file(iso)}",
+        f"immutable build run {run_id} matches ISO SHA256 {digest_file(iso)}",
     )
 
 
@@ -1777,10 +2569,7 @@ def _provenance_is_bootstrap(project_data: object) -> bool:
     though none of those commands belonged to the executed path.
     """
 
-    return (
-        isinstance(project_data, dict)
-        and project_data.get("source_mode") == "bootstrap"
-    )
+    return isinstance(project_data, dict) and project_data.get("source_mode") == "bootstrap"
 
 
 def _is_sha256(value: object) -> bool:
@@ -1998,18 +2787,11 @@ def _command_log_error(
     path: Path,
     command_records: list[object],
     executed_entrypoints: list[object],
+    *,
+    context: _GateContext | None = None,
 ) -> str | None:
     try:
-        command_log = _read_bounded_file(
-            path,
-            max_bytes=MAX_COMMAND_LOG_BYTES,
-            label="commands.jsonl",
-        ).decode("utf-8", errors="strict")
-        events = []
-        for line in command_log.splitlines():
-            if not line.strip():
-                continue
-            events.append(json.loads(line))
+        events = _command_jsonl_events(path, context=context)
     except (
         OSError,
         UnicodeError,
@@ -2064,43 +2846,105 @@ def _check_boot_proof(
     report: ReleaseGateReport,
     iso: Path,
     output_dir: Path,
-    options: BuildOptions,
+    _options: BuildOptions,
+    *,
+    selected_run: ExecutedReleaseRun | None,
+    requested_boot_run_id: str | None,
+    context: _GateContext | None = None,
 ) -> None:
-    qemu_report = output_dir / options.prebuild_vm.report_name
-    proof = output_dir / "boot-proof.json"
-    if proof.exists():
-        report.items.append(_validate_boot_proof(proof, iso))
-    elif qemu_report.exists():
-        validation = validate_qemu_report(qemu_report, iso)
-        binding_error = (
-            _qemu_run_binding_error(
-                output_dir,
-                iso,
-                qemu_report.name,
-                validation.payload,
-            )
-            if validation.ok
-            else None
-        )
-        report.items.append(
-            ReleaseGateItem(
-                "boot-proof",
-                "ready" if validation.ok and binding_error is None else "blocked",
-                binding_error or validation.detail,
-            )
-        )
-    elif options.prebuild_vm.enabled or options.bootcheck.enabled or options.qa.scenarios:
+    """Bind boot authority to one immutable run, never to a top-level alias."""
+
+    if selected_run is None:
         report.items.append(
             ReleaseGateItem(
                 "boot-proof",
                 "blocked",
-                "Boot proof is configured but no executed proof report exists.",
+                "No immutable executed build run was selected, so no boot run "
+                "can be bound to the release.",
             )
         )
-    else:
+        return
+
+    embedded = selected_run.iso_build_payload.get("boot_proof")
+    embedded_run_id: str | None = None
+    if isinstance(embedded, dict):
+        candidate = embedded.get("run_id")
+        if not is_safe_run_id(candidate):
+            report.items.append(
+                ReleaseGateItem(
+                    "boot-proof",
+                    "blocked",
+                    "The selected immutable ISO-BUILD embeds a boot proof without a safe run_id.",
+                )
+            )
+            return
+        assert isinstance(candidate, str)
+        embedded_run_id = candidate
+        if requested_boot_run_id is not None and requested_boot_run_id != embedded_run_id:
+            report.items.append(
+                ReleaseGateItem(
+                    "boot-proof",
+                    "blocked",
+                    "Explicit boot run "
+                    f"{requested_boot_run_id!r} conflicts with the run embedded "
+                    f"by build {selected_run.run_id!r}: {embedded_run_id!r}.",
+                )
+            )
+            return
+
+    chosen_run_id = embedded_run_id or requested_boot_run_id
+    if chosen_run_id is None:
         report.items.append(
-            ReleaseGateItem("boot-proof", "blocked", "No QEMU, bootcheck or QA proof configured.")
+            ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                "The selected build has no embedded boot run. Select one "
+                "standalone immutable proof explicitly with --boot-run-id RUN_ID.",
+            )
         )
+        return
+    if not is_safe_run_id(chosen_run_id):
+        report.items.append(
+            ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                "Explicit boot run id is unsafe; pass the exact canonical run id.",
+            )
+        )
+        return
+
+    proof = (
+        Path(os.path.abspath(output_dir)) / "evidence" / "runs" / chosen_run_id / "boot-proof.json"
+    )
+    report.boot_run_id = chosen_run_id
+    report.immutable_boot_proof = proof
+    validation = _validate_boot_proof(
+        proof,
+        context.iso if context is not None else Path(os.path.abspath(iso)),
+        expected_boot_run_id=chosen_run_id,
+        expected_build_run_id=selected_run.run_id,
+        context=context,
+    )
+    try:
+        report.immutable_qemu_report = _immutable_boot_qemu_path(
+            proof,
+            expected_boot_run_id=chosen_run_id,
+            context=context,
+        )
+    except (
+        ArtifactVerificationError,
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ):
+        # The validator below already turns the malformed path/payload into the
+        # single typed boot-proof blocker. Do not manufacture an unverified path
+        # merely for report metadata.
+        report.immutable_qemu_report = None
+    report.items.append(validation)
 
 
 def _qemu_run_binding_error(
@@ -2108,16 +2952,29 @@ def _qemu_run_binding_error(
     iso: Path,
     report_name: str,
     payload: dict[str, object] | None,
+    *,
+    context: _GateContext | None = None,
 ) -> str | None:
+    def digest_file(candidate: Path) -> str:
+        return context.digest(candidate) if context is not None else sha256_file(candidate)
+
+    def size_file(candidate: Path) -> int:
+        return context.size(candidate) if context is not None else candidate.stat().st_size
+
     if not isinstance(payload, dict):
         return "QEMU report payload is missing."
     run_id = payload.get("run_id")
-    if not isinstance(run_id, str) or Path(run_id).name != run_id:
+    if not is_safe_run_id(run_id):
         return "QEMU report has no safe run identity."
+    assert isinstance(run_id, str)
     run_dir = output_dir / "evidence" / "runs" / run_id
-    unsafe_symlink = first_symlink_in_confined_tree(output_dir, run_dir)
-    if unsafe_symlink is not None:
-        return f"QEMU run contains unsafe symlink: {unsafe_symlink}."
+    inventory_problem = _tree_safety_problem(
+        run_dir,
+        context=context,
+        label="QEMU run",
+    )
+    if inventory_problem is not None:
+        return inventory_problem
     manifest_path = run_dir / "RUN-MANIFEST.json"
     sidecar = run_dir / "RUN-MANIFEST.json.sha256"
     try:
@@ -2125,12 +2982,16 @@ def _qemu_run_binding_error(
             manifest_path,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="QEMU run manifest",
+            context=context,
         )
-        sidecar_text = _read_bounded_file(
+        sidecar_bytes = _read_bounded_file(
             sidecar,
             max_bytes=MAX_SHA256_SIDECAR_BYTES,
             label="QEMU run manifest SHA256 sidecar",
-        ).decode("utf-8", errors="strict").strip()
+            context=context,
+        )
+        sidecar_entries = parse_sha256_sums(sidecar_bytes)
+        sidecar_digest = sidecar_entries.get(manifest_path.name)
     except (
         OSError,
         UnicodeError,
@@ -2152,7 +3013,7 @@ def _qemu_run_binding_error(
         or manifest.get("mode") != "execute"
     ):
         return "QEMU run manifest identity is inconsistent."
-    if sidecar_text != f"{sha256_file(manifest_path)}  {manifest_path.name}":
+    if len(sidecar_entries) != 1 or sidecar_digest != digest_file(manifest_path):
         return "QEMU run manifest sidecar does not match."
     files = manifest.get("files")
     if not isinstance(files, list):
@@ -2163,39 +3024,122 @@ def _qemu_run_binding_error(
             return "QEMU run manifest contains a malformed entry."
         path = Path(str(item.get("path", "")))
         key = str(path)
+        absolute = path.absolute()
+        if not absolute.is_relative_to(run_dir.absolute()) and absolute != iso.absolute():
+            return f"QEMU run manifest path is outside the allowlist: {path}"
         if (
             not key
             or key in recorded
             or path.is_symlink()
             or not path.is_file()
-            or item.get("size") != path.stat().st_size
-            or item.get("sha256") != sha256_file(path)
+            or item.get("size") != size_file(path)
+            or item.get("sha256") != digest_file(path)
         ):
             return f"QEMU run artifact changed or disappeared: {path}"
         recorded[key] = str(item.get("sha256"))
     immutable_report = run_dir / report_name
     command_log = run_dir / "commands.jsonl"
     for required in (immutable_report, command_log, iso):
-        if not required.is_file() or recorded.get(str(required)) != sha256_file(required):
+        if not required.is_file() or recorded.get(str(required)) != digest_file(required):
             return f"QEMU run manifest does not bind {required.name}."
-    unrecorded = [
-        path
-        for path in run_dir.rglob("*")
-        if path.is_file() and path not in {manifest_path, sidecar} and str(path) not in recorded
-    ]
-    if unrecorded:
-        return "QEMU run contains unmanifested files: " + ", ".join(
-            path.name for path in unrecorded
+    try:
+        run_inventory = _tree_inventory(
+            run_dir,
+            context=context,
+            label="QEMU run inventory",
+        )
+    except ArtifactVerificationError as exc:
+        return f"QEMU run cannot be inventoried safely: {exc}"
+    unsafe_run_entries = _unsafe_inventory_entries(run_inventory)
+    if unsafe_run_entries:
+        return "QEMU run contains non-regular entries: " + ", ".join(unsafe_run_entries)
+    recorded_run_files = {
+        Path(key).absolute().relative_to(run_dir.absolute()).as_posix()
+        for key in recorded
+        if Path(key).absolute().is_relative_to(run_dir.absolute())
+    }
+    recorded_run_files.update({manifest_path.name, sidecar.name})
+    unexpected_run_entries = set(run_inventory.by_name()) - _expected_inventory_entries(
+        recorded_run_files
+    )
+    if unexpected_run_entries:
+        return "QEMU run contains unmanifested entries: " + ", ".join(
+            sorted(unexpected_run_entries)
         )
     return None
 
 
-def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
+def _immutable_boot_qemu_path(
+    path: Path,
+    *,
+    expected_boot_run_id: str,
+    context: _GateContext | None,
+) -> Path:
+    data = _read_bounded_json_file(
+        path,
+        max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+        label="immutable boot proof",
+        context=context,
+    )
+    if not isinstance(data, dict) or data.get("run_id") != expected_boot_run_id:
+        raise ArtifactVerificationError("immutable boot proof does not bind the selected boot run")
+    qemu_name = data.get("qemu_report")
+    if (
+        not isinstance(qemu_name, str)
+        or not qemu_name
+        or Path(qemu_name).name != qemu_name
+        or qemu_name in {".", ".."}
+        or "\x00" in qemu_name
+    ):
+        raise ArtifactVerificationError(
+            "immutable boot proof does not name one strict QEMU report leaf"
+        )
+    qemu_path = path.parent / qemu_name
+    immutable_value = data.get("immutable_qemu_report")
+    if immutable_value is not None:
+        if (
+            not isinstance(immutable_value, str)
+            or Path(immutable_value) != qemu_path
+            or Path(immutable_value) != Path(os.path.abspath(immutable_value))
+        ):
+            raise ArtifactVerificationError(
+                "immutable boot proof QEMU path differs from its selected run"
+            )
+    return qemu_path
+
+
+def _validate_boot_proof(
+    path: Path,
+    iso: Path,
+    *,
+    expected_boot_run_id: str,
+    expected_build_run_id: str,
+    context: _GateContext | None = None,
+) -> ReleaseGateItem:
+    def digest_file(candidate: Path) -> str:
+        if (
+            context is not None
+            and not context.verify_checksums
+            and candidate.absolute() == context.iso
+        ):
+            recorded = context.checksum_entry(
+                context.output_dir / "SHA256SUMS",
+                context.iso.name,
+            )
+            if recorded is None:
+                raise ArtifactVerificationError("SHA256SUMS has no status-only ISO digest")
+            return recorded
+        return context.digest(candidate) if context is not None else sha256_file(candidate)
+
+    def size_file(candidate: Path) -> int:
+        return context.size(candidate) if context is not None else candidate.stat().st_size
+
     try:
         data = _read_bounded_json_file(
             path,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="boot proof",
+            context=context,
         )
     except (
         OSError,
@@ -2219,22 +3163,50 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             "blocked",
             f"Boot proof report is not ready: {status} via {backend}.",
         )
-    if not iso.is_file() or data.get("iso_sha256") != sha256_file(iso):
+    if data.get("iso") != str(iso) or data.get("iso_sha256") != digest_file(iso):
         return ReleaseGateItem(
             "boot-proof", "blocked", "Boot proof belongs to different ISO bytes."
         )
     run_id = data.get("run_id")
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
-        return ReleaseGateItem("boot-proof", "blocked", "Boot proof has no immutable run_id.")
-    immutable_dir = path.parent / "evidence" / "runs" / run_id
-    unsafe_symlink = first_symlink_in_confined_tree(path.parent, immutable_dir)
-    if unsafe_symlink is not None:
+    if run_id != expected_boot_run_id or not is_safe_run_id(run_id):
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
-            f"Boot run contains unsafe symlink: {unsafe_symlink}.",
+            "Boot proof run_id differs from the selected immutable boot run.",
         )
-    immutable_proof = immutable_dir / "boot-proof.json"
+    if data.get("build_run_id") != expected_build_run_id:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            "Boot proof build_run_id differs from the selected immutable build run.",
+        )
+    assert isinstance(run_id, str)
+    immutable_dir = path.parent
+    expected_path = (
+        (context.output_dir if context is not None else immutable_dir.parents[2])
+        / "evidence"
+        / "runs"
+        / run_id
+        / "boot-proof.json"
+    )
+    if path.absolute() != expected_path.absolute():
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            "Boot proof path is not the exact selected immutable run report.",
+        )
+    inventory_problem = _tree_safety_problem(
+        immutable_dir,
+        context=context,
+        label="boot run",
+    )
+    if inventory_problem is not None:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            inventory_problem,
+        )
+    immutable_proof = path
     run_manifest_path = immutable_dir / "RUN-MANIFEST.json"
     run_manifest_sum = immutable_dir / "RUN-MANIFEST.json.sha256"
     for required in (immutable_proof, run_manifest_path, run_manifest_sum):
@@ -2244,13 +3216,10 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
                 "blocked",
                 f"Immutable boot run evidence is missing: {required.name}.",
             )
-    if sha256_file(immutable_proof) != sha256_file(path):
-        return ReleaseGateItem(
-            "boot-proof",
-            "blocked",
-            "Boot-proof alias differs from immutable evidence.",
-        )
-    if data.get("immutable_proof") != immutable_proof.name:
+    if data.get("immutable_proof") not in {
+        immutable_proof.name,
+        str(immutable_proof),
+    }:
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
@@ -2261,6 +3230,7 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             run_manifest_path,
             max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
             label="boot run manifest",
+            context=context,
         )
     except (
         OSError,
@@ -2279,6 +3249,7 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
         not isinstance(run_manifest, dict)
         or run_manifest.get("schema") != "distroforge.boot-proof-run-manifest.v1"
         or run_manifest.get("run_id") != run_id
+        or run_manifest.get("build_run_id") != expected_build_run_id
         or run_manifest.get("mode") != "execute"
         or run_manifest.get("status") != status
     ):
@@ -2287,20 +3258,22 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             "blocked",
             "Boot run manifest identity or status is inconsistent.",
         )
-    expected_manifest_line = f"{sha256_file(run_manifest_path)}  {run_manifest_path.name}"
     try:
-        run_manifest_sum_text = _read_bounded_file(
+        run_manifest_sum_bytes = _read_bounded_file(
             run_manifest_sum,
             max_bytes=MAX_SHA256_SIDECAR_BYTES,
             label="boot run manifest SHA256 sidecar",
-        ).decode("utf-8", errors="strict")
+            context=context,
+        )
+        run_manifest_sum_entries = parse_sha256_sums(run_manifest_sum_bytes)
+        run_manifest_digest = run_manifest_sum_entries.get(run_manifest_path.name)
     except (OSError, UnicodeError, ValueError) as exc:
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
             f"Boot run manifest SHA256 sidecar is unreadable: {exc}",
         )
-    if run_manifest_sum_text.strip() != expected_manifest_line:
+    if len(run_manifest_sum_entries) != 1 or run_manifest_digest != digest_file(run_manifest_path):
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
@@ -2313,6 +3286,103 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             "blocked",
             "Boot run manifest has no file identities.",
         )
+    if proof_level != "runtime" or backend != "qemu":
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            f"{proof_level} proof via {backend} does not satisfy the runtime release gate.",
+        )
+    try:
+        qemu_path = _immutable_boot_qemu_path(
+            path,
+            expected_boot_run_id=run_id,
+            context=context,
+        )
+    except (
+        ArtifactVerificationError,
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            f"Boot proof does not bind its immutable QEMU report: {exc}",
+        )
+    quick_status = context is not None and not context.verify_checksums
+    if quick_status:
+        try:
+            qemu_payload = _read_bounded_json_file(
+                qemu_path,
+                max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+                label="QEMU status preview",
+                context=context,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
+            return ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                f"QEMU status preview is unreadable: {exc}",
+            )
+        if (
+            not isinstance(qemu_payload, dict)
+            or qemu_payload.get("schema") != "distroforge.qemu-lab.v2"
+            or qemu_payload.get("run_id") != run_id
+            or qemu_payload.get("status") != "completed"
+            or qemu_payload.get("verdict") != "passed"
+        ):
+            return ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                "QEMU status preview is not a completed runtime proof.",
+            )
+        qemu_iso = qemu_payload.get("iso")
+        if (
+            not isinstance(qemu_iso, dict)
+            or qemu_iso.get("sha256") != digest_file(iso)
+            or qemu_iso.get("size") != size_file(iso)
+            or qemu_iso.get("consumed_via") != "held-descriptor"
+        ):
+            return ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                "QEMU status preview belongs to different ISO bytes.",
+            )
+        validation_detail = (
+            "Status-only runtime proof preview matches the recorded ISO checksum; "
+            "authoritative byte verification remains deferred."
+        )
+    else:
+        validation = validate_qemu_report(
+            qemu_path,
+            iso,
+            session=context.session if context is not None else None,
+        )
+        if not validation.ok:
+            return ReleaseGateItem("boot-proof", "blocked", validation.detail)
+        if validation.payload and validation.payload.get("run_id") != run_id:
+            return ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                "Boot proof and QEMU report use different run IDs.",
+            )
+        validation_detail = validation.detail
+    if data.get("qemu_report_sha256") != digest_file(qemu_path):
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            "Boot proof does not match its QEMU report SHA256.",
+        )
     recorded: dict[str, str] = {}
     for item in files:
         if not isinstance(item, dict):
@@ -2323,13 +3393,20 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             )
         artifact = Path(str(item.get("path", "")))
         artifact_key = str(artifact)
+        absolute = artifact.absolute()
+        if not absolute.is_relative_to(immutable_dir.absolute()) and absolute != iso.absolute():
+            return ReleaseGateItem(
+                "boot-proof",
+                "blocked",
+                f"Boot run manifest path is outside the allowlist: {artifact}.",
+            )
         if (
             not artifact_key
             or artifact_key in recorded
             or artifact.is_symlink()
             or not artifact.is_file()
-            or item.get("size") != artifact.stat().st_size
-            or item.get("sha256") != sha256_file(artifact)
+            or item.get("size") != size_file(artifact)
+            or item.get("sha256") != digest_file(artifact)
         ):
             return ReleaseGateItem(
                 "boot-proof",
@@ -2337,71 +3414,78 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
                 f"Boot run artifact changed, disappeared or is duplicated: {artifact}.",
             )
         recorded[artifact_key] = str(item.get("sha256"))
-    unrecorded = [
-        item
-        for item in immutable_dir.rglob("*")
-        if item.is_file()
-        and item not in {run_manifest_path, run_manifest_sum}
-        and str(item) not in recorded
-    ]
-    if unrecorded:
+    try:
+        run_inventory = _tree_inventory(
+            immutable_dir,
+            context=context,
+            label="boot run inventory",
+        )
+    except ArtifactVerificationError as exc:
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
-            "Boot run contains unmanifested files: " + ", ".join(item.name for item in unrecorded),
+            f"Boot run cannot be inventoried safely: {exc}",
         )
-    for required in (immutable_proof, iso):
-        if recorded.get(str(required)) != sha256_file(required):
+    unsafe_run_entries = _unsafe_inventory_entries(run_inventory)
+    if unsafe_run_entries:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            "Boot run contains non-regular entries: " + ", ".join(unsafe_run_entries),
+        )
+    recorded_run_files = {
+        Path(key).absolute().relative_to(immutable_dir.absolute()).as_posix()
+        for key in recorded
+        if Path(key).absolute().is_relative_to(immutable_dir.absolute())
+    }
+    recorded_run_files.update({run_manifest_path.name, run_manifest_sum.name})
+    unexpected_run_entries = set(run_inventory.by_name()) - _expected_inventory_entries(
+        recorded_run_files
+    )
+    if unexpected_run_entries:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            "Boot run contains unmanifested entries: " + ", ".join(sorted(unexpected_run_entries)),
+        )
+    for required in (immutable_proof, qemu_path, iso):
+        if recorded.get(str(required)) != digest_file(required):
             return ReleaseGateItem(
                 "boot-proof",
                 "blocked",
                 f"Boot run manifest does not bind {required.name}.",
             )
-    if proof_level != "runtime" or backend != "qemu":
-        return ReleaseGateItem(
-            "boot-proof",
-            "blocked",
-            f"{proof_level} proof via {backend} does not satisfy the runtime release gate.",
-        )
-    qemu_path_value = data.get("qemu_report")
-    if (
-        not isinstance(qemu_path_value, str)
-        or not qemu_path_value
-        or Path(qemu_path_value).name != qemu_path_value
-    ):
-        return ReleaseGateItem("boot-proof", "blocked", "Boot proof does not name its QEMU report.")
-    qemu_path = immutable_dir / qemu_path_value
-    if not qemu_path.is_file():
-        return ReleaseGateItem("boot-proof", "blocked", f"QEMU report is missing: {qemu_path}")
-    if data.get("qemu_report_sha256") != sha256_file(qemu_path):
-        return ReleaseGateItem(
-            "boot-proof", "blocked", "Boot proof does not match its QEMU report SHA256."
-        )
-    validation = validate_qemu_report(qemu_path, iso)
-    if not validation.ok:
-        return ReleaseGateItem("boot-proof", "blocked", validation.detail)
-    if validation.payload and validation.payload.get("run_id") != run_id:
-        return ReleaseGateItem(
-            "boot-proof", "blocked", "Boot proof and QEMU report use different run IDs."
-        )
     command_log = immutable_dir / "commands.jsonl"
     if (
         data.get("command_log") != command_log.name
         or not command_log.is_file()
-        or recorded.get(str(command_log)) != sha256_file(command_log)
+        or recorded.get(str(command_log)) != digest_file(command_log)
     ):
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
             "Boot proof has no sealed command log for the QEMU invocation.",
         )
-    return ReleaseGateItem("boot-proof", "ready", validation.detail)
+    return ReleaseGateItem("boot-proof", "ready", validation_detail)
 
 
 def _check_release_readiness(
-    report: ReleaseGateReport, iso: Path, output_dir: Path, verify_checksums: bool = True
+    report: ReleaseGateReport,
+    iso: Path,
+    output_dir: Path,
+    verify_checksums: bool = True,
+    *,
+    context: _GateContext | None = None,
+    qemu_report: Path | None = None,
 ) -> None:
-    readiness = ReleaseReadinessService().check(iso, output_dir, verify_checksum=verify_checksums)
+    readiness = ReleaseReadinessService().check(
+        iso,
+        output_dir,
+        verify_checksum=verify_checksums,
+        session=context.session if context is not None else None,
+        qemu_report=qemu_report,
+        use_default_qemu_alias=False,
+    )
     report.items.append(
         ReleaseGateItem(
             "release-readiness",
@@ -2434,28 +3518,496 @@ def _check_packaging_policy(report: ReleaseGateReport, root: Path) -> None:
     )
 
 
-def _check_publish_signing(report: ReleaseGateReport, root: Path, options: BuildOptions) -> None:
+def _check_publish_signing(
+    report: ReleaseGateReport,
+    root: Path,
+    options: BuildOptions,
+    *,
+    project_name: str,
+    context: _GateContext | None = None,
+    bundle_dir: Path | None = None,
+) -> None:
     if not options.release_artifacts.sign:
         return
-    bundle = root / "dist" / "publish"
+    bundle = Path(os.path.abspath(bundle_dir or root / "dist" / "publish"))
     required = (
         "RELEASE-MANIFEST.json",
         "SIGNING-REPORT.json",
+        "SHA256SUMS",
+        "RELEASE-GATE.json",
+        SIGNING_KEYRING,
         "SHA256SUMS.asc",
         "RELEASE-GATE.json.asc",
         "RELEASE-MANIFEST.json.asc",
     )
-    missing = [name for name in required if not (bundle / name).exists()]
-    if missing:
+    try:
+        bundle_exists = _publish_bundle_directory_exists(bundle)
+    except (ArtifactVerificationError, OSError) as exc:
+        report.items.append(
+            ReleaseGateItem(
+                "publish-signing",
+                "blocked",
+                f"Cannot anchor publish signing bundle safely: {exc}",
+            )
+        )
+        return
+    if not bundle_exists:
         report.items.append(
             ReleaseGateItem(
                 "publish-signing",
                 "review",
-                f"Missing publish signing evidence: {', '.join(missing)}",
+                f"Missing publish signing evidence: {', '.join(required)}",
             )
         )
-    else:
-        report.items.append(ReleaseGateItem("publish-signing", "ready", str(bundle)))
+        return
+
+    session = context.session if context is not None else None
+    owned_session = session is None
+    if session is None:
+        session = ArtifactVerificationSession(
+            Path("/"),
+            label="publish signing artifact session",
+            limits=_RELEASE_SESSION_LIMITS,
+        )
+
+    def handle(name: str, *, max_bytes: int, label: str) -> ArtifactHandle:
+        assert session is not None
+        return session.file_path(
+            (bundle / name).absolute(),
+            max_bytes=max_bytes,
+            label=label,
+        )
+
+    try:
+        bundle_inventory = session.tree_inventory_path(
+            bundle,
+            label="publish bundle inventory",
+        )
+        unsafe_bundle_entries = _unsafe_inventory_entries(bundle_inventory)
+        if unsafe_bundle_entries:
+            report.items.append(
+                ReleaseGateItem(
+                    "publish-signing",
+                    "blocked",
+                    "Publish bundle contains non-regular entries: "
+                    + ", ".join(unsafe_bundle_entries),
+                )
+            )
+            return
+        inventory_names = bundle_inventory.by_name()
+        missing = [name for name in required if name not in inventory_names]
+        if missing:
+            report.items.append(
+                ReleaseGateItem(
+                    "publish-signing",
+                    "review",
+                    f"Missing publish signing evidence: {', '.join(missing)}",
+                )
+            )
+            return
+        current_iso_path = context.iso if context is not None else Path(os.path.abspath(report.iso))
+        current_iso_handle = session.file_path(
+            current_iso_path,
+            max_bytes=session.limits.max_file_bytes,
+            label="current release-gate ISO",
+        )
+        manifest_handle = handle(
+            "RELEASE-MANIFEST.json",
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="release manifest",
+        )
+        signing_handle = handle(
+            "SIGNING-REPORT.json",
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="signing report",
+        )
+        sums_handle = handle(
+            "SHA256SUMS",
+            max_bytes=MAX_SHA256_SIDECAR_BYTES,
+            label="publish SHA256SUMS",
+        )
+        keyring_handle = handle(
+            SIGNING_KEYRING,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="release verification keyring",
+        )
+        target_handles = {
+            name: handle(
+                name,
+                max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+                label=f"signed payload {name}",
+            )
+            for name in SIGN_TARGETS
+        }
+        signature_handles = {
+            f"{name}.asc": handle(
+                f"{name}.asc",
+                max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+                label=f"detached signature {name}.asc",
+            )
+            for name in SIGN_TARGETS
+        }
+        manifest = manifest_handle.json_object()
+        signing = signing_handle.json_object()
+        gate = target_handles["RELEASE-GATE.json"].json_object()
+        sums_entries = parse_sha256_sums(sums_handle.read_bytes())
+        problem = _publish_signing_contract_problem(
+            bundle,
+            root,
+            project_name,
+            manifest,
+            signing,
+            gate,
+            sums_entries,
+            keyring_handle,
+            target_handles,
+            options,
+            session,
+            bundle_inventory,
+            current_iso_handle,
+        )
+        if problem is not None:
+            report.items.append(ReleaseGateItem("publish-signing", "blocked", problem))
+            return
+        expected = full_fingerprint(options.release_artifacts.gpg_key)
+        assert expected is not None
+        if not CommandRunner.has_binary("gpg"):
+            report.items.append(
+                ReleaseGateItem(
+                    "publish-signing",
+                    "blocked",
+                    "Executed publish signing cannot be verified because gpg is missing.",
+                )
+            )
+            return
+        runner = CommandRunner(dry_run=False)
+        for name in SIGN_TARGETS:
+            signature_name = f"{name}.asc"
+            signature = signature_handles[signature_name]
+            payload = target_handles[name]
+            verify_detached_signature(
+                runner,
+                bundle / signature_name,
+                bundle / name,
+                bundle / SIGNING_KEYRING,
+                expected,
+                signature_fd=signature.fileno,
+                payload_fd=payload.fileno,
+                keyring_fd=keyring_handle.fileno,
+            )
+        report.items.append(
+            ReleaseGateItem(
+                "publish-signing",
+                "ready",
+                "The release snapshot, strict SHA256SUMS, pinned keyring and exactly "
+                "three detached signatures are descriptor-bound and cryptographically "
+                f"verified for {expected}.",
+            )
+        )
+    except (
+        ArtifactVerificationError,
+        CommandError,
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        report.items.append(
+            ReleaseGateItem(
+                "publish-signing",
+                "blocked",
+                f"Publish signing evidence is invalid: {exc}",
+            )
+        )
+    finally:
+        if owned_session:
+            try:
+                session.seal()
+            except ArtifactVerificationError as exc:
+                if not any(
+                    item.code == "publish-signing" and item.status == "blocked"
+                    for item in report.items
+                ):
+                    report.items.append(
+                        ReleaseGateItem(
+                            "publish-signing",
+                            "blocked",
+                            f"Publish signing evidence did not seal: {exc}",
+                        )
+                    )
+
+
+def _publish_bundle_directory_exists(bundle: Path) -> bool:
+    """Observe one absolute bundle path without following any component."""
+
+    if not bundle.is_absolute() or "\x00" in str(bundle) or ".." in bundle.parts:
+        raise ArtifactVerificationError(f"publish signing bundle path is not canonical: {bundle}")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open("/", flags)
+        for component in bundle.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                return False
+            except OSError as exc:
+                raise ArtifactVerificationError(
+                    "publish signing bundle contains a symlink, non-directory, "
+                    f"or unreadable component: {bundle}"
+                ) from exc
+            previous = descriptor
+            descriptor = child
+            os.close(previous)
+        try:
+            identity = ArtifactIdentity.from_stat(os.fstat(descriptor))
+        except OSError as exc:
+            raise ArtifactVerificationError(
+                f"publish signing bundle cannot be identified: {bundle}"
+            ) from exc
+        if not stat.S_ISDIR(identity.mode):
+            raise ArtifactVerificationError(f"publish signing bundle is not a directory: {bundle}")
+        return True
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _publish_signing_contract_problem(
+    bundle: Path,
+    project_root: Path,
+    project_name: str,
+    manifest: dict[str, object],
+    signing: dict[str, object],
+    gate: dict[str, object],
+    sums_entries: dict[str, str],
+    keyring: ArtifactHandle,
+    targets: dict[str, ArtifactHandle],
+    options: BuildOptions,
+    session: ArtifactVerificationSession,
+    inventory: ArtifactTreeInventory,
+    current_iso: ArtifactHandle,
+) -> str | None:
+    manifest_problem = release_manifest_problem(
+        manifest,
+        expected_project_name=project_name,
+        expected_bundle_dir=bundle,
+    )
+    if manifest_problem is not None:
+        return f"RELEASE-MANIFEST.json is not authoritative: {manifest_problem}."
+    report_problem = release_signing_report_problem(
+        signing,
+        manifest,
+        expected_project=project_root,
+        expected_bundle_dir=bundle,
+    )
+    if report_problem is not None:
+        return f"SIGNING-REPORT.json is not authoritative: {report_problem}."
+    gate_problem = release_gate_report_problem(
+        gate,
+        expected_project=project_root,
+        expected_iso=current_iso.logical_path,
+        expected_output_dir=current_iso.logical_path.parent,
+    )
+    if gate_problem is not None:
+        return f"RELEASE-GATE.json is not authoritative: {gate_problem}."
+    required_signatures = {f"{name}.asc" for name in SIGN_TARGETS}
+    signed_value = signing.get("signed")
+    if (
+        signing.get("status") != "signed"
+        or signing.get("execute") is not True
+        or not isinstance(signed_value, list)
+        or len(signed_value) != len(required_signatures)
+        or not all(isinstance(name, str) for name in signed_value)
+        or set(signed_value) != required_signatures
+        or signing.get("planned") != []
+        or signing.get("skipped") != []
+    ):
+        return (
+            "Executed signing must record exactly the three required detached "
+            "signatures, with no planned or skipped target."
+        )
+    expected = full_fingerprint(options.release_artifacts.gpg_key)
+    recorded_value = signing.get("signer_fingerprint")
+    recorded = full_fingerprint(recorded_value if isinstance(recorded_value, str) else None)
+    if expected is None or recorded != expected:
+        return (
+            "SIGNING-REPORT.json does not match the configured complete OpenPGP signer fingerprint."
+        )
+    keyring_digest = signing.get("verification_keyring_sha256")
+    if (
+        signing.get("verification_keyring") != SIGNING_KEYRING
+        or not _is_sha256(keyring_digest)
+        or keyring.digest() != keyring_digest
+    ):
+        return "The pinned release verification keyring identity is inconsistent."
+
+    raw_files = manifest.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return "RELEASE-MANIFEST.json has no file snapshot."
+    manifest_entries: dict[str, tuple[int, str]] = {}
+    normalized_entries: list[dict[str, object]] = []
+    for raw_entry in raw_files:
+        if not isinstance(raw_entry, dict):
+            return "RELEASE-MANIFEST.json contains a malformed file entry."
+        name = raw_entry.get("name")
+        size = raw_entry.get("size")
+        digest = raw_entry.get("sha256")
+        if (
+            not isinstance(name, str)
+            or not name
+            or "\\" in name
+            or "\x00" in name
+            or Path(name).is_absolute()
+            or Path(name).as_posix() != name
+            or any(part in {"", ".", ".."} for part in Path(name).parts)
+            or name in manifest_entries
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(digest, str)
+            or not _is_sha256(digest)
+        ):
+            return f"RELEASE-MANIFEST.json has an unsafe entry: {name!r}."
+        manifest_entries[name] = (size, digest)
+        normalized_entries.append({"name": name, "size": size, "sha256": digest})
+    if signing.get("manifest_entries") != normalized_entries:
+        return "SIGNING-REPORT.json does not reproduce the signed manifest snapshot."
+
+    gate_status = gate.get("status")
+    manifest_gate_status = manifest.get("gate_status")
+    if (
+        gate_status not in {"ready", "review"}
+        or manifest_gate_status != gate_status
+        or gate.get("blocked") is not False
+    ):
+        return (
+            "The descriptor-held RELEASE-GATE.json status is blocked, invalid, "
+            "or differs from the signed manifest snapshot."
+        )
+    gate_iso_value = gate.get("iso")
+    if (
+        not isinstance(gate_iso_value, str)
+        or not gate_iso_value
+        or "\x00" in gate_iso_value
+        or ".." in Path(gate_iso_value).parts
+        or Path(os.path.abspath(gate_iso_value)) != current_iso.logical_path
+    ):
+        return "RELEASE-GATE.json does not identify the current descriptor-held ISO."
+    raw_gate_items = gate.get("items")
+    if not isinstance(raw_gate_items, list) or not raw_gate_items:
+        return "RELEASE-GATE.json must contain non-empty typed item verdicts."
+    gate_items: dict[str, dict[str, object]] = {}
+    for raw_item in raw_gate_items:
+        if not isinstance(raw_item, dict):
+            return "RELEASE-GATE.json contains malformed item verdicts."
+        code = raw_item.get("code")
+        status_value = raw_item.get("status")
+        detail = raw_item.get("detail")
+        if (
+            not isinstance(code, str)
+            or not code
+            or code in gate_items
+            or status_value not in {"ready", "review", "blocked"}
+            or not isinstance(detail, str)
+            or not detail
+        ):
+            return (
+                "RELEASE-GATE.json item verdicts require unique non-empty "
+                "codes and strict status/detail strings."
+            )
+        gate_items[code] = raw_item
+    item_statuses = [str(item["status"]) for item in gate_items.values()]
+    derived_status = (
+        "blocked"
+        if "blocked" in item_statuses
+        else "review"
+        if "review" in item_statuses
+        else "ready"
+    )
+    if derived_status != gate_status:
+        return "RELEASE-GATE.json aggregate status contradicts its descriptor-held item verdicts."
+    code_problem = release_gate_code_problem(set(gate_items))
+    if code_problem is not None:
+        return f"RELEASE-GATE.json {code_problem}."
+
+    for name, (expected_size, expected_digest) in manifest_entries.items():
+        artifact = session.file_path(
+            (bundle / name).absolute(),
+            max_bytes=session.limits.max_file_bytes,
+            allow_empty=True,
+            label=f"manifest artifact {name}",
+        )
+        if artifact.identity.size != expected_size or artifact.digest() != expected_digest:
+            return f"Manifest artifact {name} differs from its signed snapshot."
+    for required_name in ("SHA256SUMS", "RELEASE-GATE.json", SIGNING_KEYRING):
+        if required_name not in manifest_entries:
+            return f"The signed manifest does not bind {required_name}."
+
+    actual_bundle_by_name = inventory.by_name()
+    operational_files = set(actual_bundle_by_name) & OPERATIONAL_BUNDLE_FILES
+    unsafe_operational = sorted(
+        name for name in operational_files if not stat.S_ISREG(actual_bundle_by_name[name].mode)
+    )
+    if unsafe_operational:
+        return (
+            "Operational bundle paths must be regular files: " + ", ".join(unsafe_operational) + "."
+        )
+    expected_bundle_files = (
+        set(manifest_entries) | operational_files | {f"{name}.asc" for name in SIGN_TARGETS}
+    )
+    expected_bundle_entries = _expected_inventory_entries(expected_bundle_files)
+    actual_bundle_entries = set(actual_bundle_by_name)
+    if actual_bundle_entries != expected_bundle_entries:
+        missing = sorted(expected_bundle_entries - actual_bundle_entries)
+        unexpected = sorted(actual_bundle_entries - expected_bundle_entries)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if unexpected:
+            details.append("unexpected " + ", ".join(unexpected))
+        return "Publish bundle inventory is not exact: " + "; ".join(details) + "."
+
+    iso_names = sorted(name for name in manifest_entries if name.endswith(".iso"))
+    if len(iso_names) != 1:
+        return f"The signed manifest must bind exactly one ISO; found {len(iso_names)}."
+    iso_name = iso_names[0]
+    iso_size, iso_digest = manifest_entries[iso_name]
+    if iso_size <= 0:
+        return "The signed manifest binds an empty ISO."
+    if set(sums_entries) != {iso_name}:
+        return "SHA256SUMS must contain exactly the single manifest-bound ISO."
+    if sums_entries[iso_name] != manifest_entries[iso_name][1]:
+        return "SHA256SUMS does not match the signed ISO snapshot."
+    current_iso_digest = current_iso.digest()
+    if (
+        iso_name != current_iso.logical_path.name
+        or iso_size != current_iso.identity.size
+        or iso_digest != current_iso_digest
+    ):
+        return "The signed bundle ISO does not match the current descriptor-held release-gate ISO."
+    iso_item = gate_items.get("iso")
+    sha_item = gate_items.get("sha256")
+    if (
+        iso_item is None
+        or iso_item.get("status") != "ready"
+        or iso_item.get("detail") != f"{current_iso.identity.size} bytes"
+        or sha_item is None
+        or sha_item.get("status") != "ready"
+        or sha_item.get("detail") != current_iso_digest
+    ):
+        return (
+            "RELEASE-GATE.json does not bind its ready ISO and SHA256 items "
+            "to the current descriptor-held ISO."
+        )
+    for name, target in targets.items():
+        if name in manifest_entries:
+            expected_size, expected_digest = manifest_entries[name]
+            if target.identity.size != expected_size or target.digest() != expected_digest:
+                return f"Signed payload {name} differs from the manifest snapshot."
+    return None
 
 
 def _boot_proof_summary(path: Path) -> dict[str, str]:

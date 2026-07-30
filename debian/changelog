@@ -1,7 +1,65 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
-  * Hardened the local M3.2a evidence plumbing without widening its proof.
-    Immutable text evidence is now encoded before mutation, written to an
+  * Closed the local M3.2a.2 artifact-verdict integrity boundary without
+    promoting product evidence. Removed the persistent path/size/mtime digest
+    cache; low-level SHA-256 calls now recompute for every invocation. Added
+    bounded descriptor-backed verification sessions whose hash, byte, JSON and
+    replay reuse cannot cross a verdict. Canonical path components are opened
+    without following links, only regular files are admitted, complete host
+    identities and descriptors remain held. Closing first re-hashes held inodes,
+    then repeats bounded tree inventories and finally repins each path from its
+    leaf name back to the anchor. Every run producer and reader refuses a
+    non-canonical run ID, any separator or control character, invalid Unicode or
+    more than 255 encoded bytes. Migrated rootfs, ISO, QEMU/boot and
+    release/publish readers,
+    manifests, sidecars, serial/capture/firmware evidence and checksum inputs to
+    that boundary. External consumers receive held descriptors through procfs
+    and pass_fds. Added durable no-replace binary and tree copies which hash
+    while writing synced staging objects and never expose a partial target.
+    Non-blocked signed gates now require one immutable build run B and boot run
+    C, bind provenance/SBOM paths under B and boot/QEMU paths under C, and
+    terminally cross-check the boot proof and manifest relation C-to-B. CLI,
+    pipeline, drill, acceptance, beginner and GUI flows propagate only verified
+    IDs. A build with an embedded valid boot run reuses it without starting a
+    second VM or publishing a conflicting run; iso-accept remediation creates
+    and consumes a missing boot proof within one pipeline invocation.
+    Publish signing now requires an exact bundle snapshot, one current ISO,
+    canonical bounded SHA256SUMS, a coherent typed release gate, the pinned
+    public-only keyring, an externally supplied complete signer fingerprint and
+    exactly three descriptor-bound signatures which verify cryptographically;
+    file presence alone cannot report ready. Threaded
+    the post-publication bundle identity through notes, verification,
+    explanation, pipeline and drill, and made terminal live verification the
+    only resolver of the pre-signing review. Bundle creation itself consumes a
+    non-serialized gate receipt which binds each source identity/digest and each
+    run-tree anchor/inventory exactly. Regular text and binary publication uses
+    anonymous same-filesystem O_TMPFILE inodes and one no-replace link; exact
+    existing bytes may be reused explicitly, but no inode is replaced or
+    unlinked. Tree failures are detached durably by descriptor-bound quarantine
+    before an independently reported bounded best-effort scrub. The quarantine
+    is always retained; detach-only replay cleanup may explicitly report
+    residual entries and bytes rather than claiming physical deletion. Strict
+    drill schema validation and one final read-only verifier close cross-report
+    drift. The release gate now evaluates the explicitly selected bundle:
+    missing evidence remains review, while a symlinked, non-directory or
+    unreadable path is blocked and a signed default bundle cannot credit a
+    custom one. Signing-stage reservation or cleanup failures become blocked
+    reports and roll back any published signature set. Explanation emits
+    shell-quoted remediation commands with the exact product paths, public
+    keyring and signer pin. Six release actions run off the Qt thread after
+    their UI inputs are frozen.
+    A changed ISO or repair output directory blocks beginner repair and stops
+    the release pipeline before bundle publication. Same-size and same-mtime
+    swaps, links, special files, malformed input, post-stat drift, publication
+    failures and structural-budget exhaustion fail closed. This proves local
+    reader and publication integrity only:
+    capture_origin remains unverified-mutable-target-rootfs,
+    filesystem_causality remains unverified and release_ready remains false.
+    The unreadable-CVE-database blocking policy remains M3.2a.3, while the
+    host-isolated pre-dpkg acknowledgement and producer deltas remain M3.2b.
+  * At the M3.2a.1 stage, before the M3.2a.2 anonymous-inode writer replaced
+    this mechanism, hardened the local evidence plumbing without widening its
+    proof. Immutable text evidence was encoded before mutation and written to an
     exclusive same-directory temporary through a held directory descriptor,
     file-synced, atomically published by a no-replace hard link, directory-
     synced, unlinked from its temporary name and directory-synced again.

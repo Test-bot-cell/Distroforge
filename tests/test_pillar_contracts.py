@@ -183,22 +183,27 @@ def _iso_with_sidecar(root: Path) -> tuple[object, Path]:
     return project, iso
 
 
-def count_iso_reads(iso: Path, work) -> int:
-    """Run ``work`` and count how many times ``iso`` is opened for reading bytes."""
-    reads = []
-    real_open = Path.open
+def iso_measurements(iso: Path, work) -> tuple[int, set[int]]:
+    """Count descriptor-backed ISO passes and the verdict sessions owning them."""
+    from distroforge.core.artifact_verification import ArtifactVerificationSession
 
-    def spy(self, mode="r", *args, **kwargs):
-        if "b" in mode and self == iso:
-            reads.append(self)
-        return real_open(self, mode, *args, **kwargs)
+    sessions: list[ArtifactVerificationSession] = []
+    real_measure = ArtifactVerificationSession._measure
 
-    Path.open = spy
+    def spy(self, record, binding, **kwargs):
+        if self.anchor_path / binding.relative == iso.absolute():
+            # Retain the objects until the measurement is complete. Otherwise
+            # CPython may recycle an address between sequential verdict-scoped
+            # sessions and make two real sessions look like one through id().
+            sessions.append(self)
+        return real_measure(self, record, binding, **kwargs)
+
+    ArtifactVerificationSession._measure = spy
     try:
         work()
     finally:
-        Path.open = real_open
-    return len(reads)
+        ArtifactVerificationSession._measure = real_measure
+    return len(sessions), {id(session) for session in sessions}
 
 
 def test_journey_status_never_hashes_the_iso(tmp_path) -> None:
@@ -210,11 +215,20 @@ def test_journey_status_never_hashes_the_iso(tmp_path) -> None:
 
     project, iso = _iso_with_sidecar(tmp_path / "journey")
     options = BuildOptions()
-    assert count_iso_reads(iso, lambda: build_journey(project, options, "maintainer")) == 0
+    status_passes, _ = iso_measurements(
+        iso,
+        lambda: build_journey(project, options, "maintainer"),
+    )
+    assert status_passes == 0
     # The step panel's check is still the authoritative, hashing one.
     from distroforge.core.build_journey import check_journey_step
 
-    assert count_iso_reads(iso, lambda: check_journey_step(project, options, "publish-gate")) >= 1
+    authoritative_passes, authoritative_sessions = iso_measurements(
+        iso,
+        lambda: check_journey_step(project, options, "publish-gate"),
+    )
+    assert authoritative_passes == 2
+    assert len(authoritative_sessions) == 1
 
 
 def test_evidence_status_never_reuses_a_digest_across_verdicts(tmp_path) -> None:
@@ -224,13 +238,14 @@ def test_evidence_status_never_reuses_a_digest_across_verdicts(tmp_path) -> None
     from distroforge.core.evidence import EvidenceStatusService
 
     project, iso = _iso_with_sidecar(tmp_path / "evidence")
-    reads = count_iso_reads(
+    passes, sessions = iso_measurements(
         iso,
         lambda: EvidenceStatusService().check(
             project, BuildOptions(), iso=iso, output_dir=iso.parent
         ),
     )
-    assert reads == 3
+    assert passes == 4
+    assert len(sessions) == 2
 
 
 def test_same_size_same_mtime_replacement_cannot_reuse_a_digest(tmp_path) -> None:

@@ -1,24 +1,62 @@
 from __future__ import annotations
 
 import json
+import shlex
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 
 from .artifact_paths import default_artifact_paths
+from .artifact_verification import (
+    ArtifactIdentity,
+    ArtifactLimits,
+    ArtifactVerificationError,
+    ArtifactVerificationSession,
+)
+from .boot_proof import run_boot_proof
 from .build import BuildOptions, ProgressCallback
 from .build_diagnosis import classify_log
 from .build_journey import apply_journey_step, check_journey_step
 from .build_memory import BuildAttempt, BuildMemory, options_signature
-from .command import CommandRunner
 from .definition import definition_from_project, write_definition
 from .dry_run_report import generate_dry_run_report
-from .hashing import sha256_file
+from .evidence_run import StableParentIdentity, publish_regular_text
 from .iso_build import run_iso_build
-from .prebuild_vm import QemuLabService
 from .project import Project
 from .release_gate import ReleaseGateService
+from .release_run import embedded_boot_run_id, select_executed_release_run
+
+_REPAIR_ISO_MAX_BYTES = 64 * 1024 * 1024 * 1024
+_REPAIR_TEXT_MAX_BYTES = 16 * 1024 * 1024
+_REPAIR_PROVENANCE_MAX_BYTES = 128 * 1024 * 1024
+_REPAIR_LIMITS = ArtifactLimits(
+    max_open_files=8,
+    max_file_bytes=_REPAIR_ISO_MAX_BYTES,
+    max_buffered_bytes=4 * _REPAIR_TEXT_MAX_BYTES,
+    max_hashed_bytes=2 * _REPAIR_ISO_MAX_BYTES + 16 * _REPAIR_TEXT_MAX_BYTES,
+    max_json_depth=128,
+    max_json_nodes=100_000,
+    max_path_components=64,
+    max_closing_fds=64,
+    max_inventory_entries=64,
+)
+_REPAIR_PROVENANCE_LIMITS = ArtifactLimits(
+    max_open_files=1,
+    max_file_bytes=_REPAIR_PROVENANCE_MAX_BYTES,
+    max_buffered_bytes=_REPAIR_PROVENANCE_MAX_BYTES,
+    max_hashed_bytes=2 * _REPAIR_PROVENANCE_MAX_BYTES,
+    max_json_depth=256,
+    max_json_nodes=2_000_000,
+    max_path_components=64,
+    max_closing_fds=16,
+    max_inventory_entries=16,
+)
+
+
+class _RepairAnchorChanged(ArtifactVerificationError):
+    """The repair output directory no longer names its opening inode."""
 
 
 @dataclass(frozen=True)
@@ -34,6 +72,7 @@ class BeginnerIsoPathReport:
     gate_status: str
     notes: tuple[str, ...]
     next_command: str
+    build_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -48,6 +87,7 @@ class BeginnerIsoPathReport:
             "gate_status": self.gate_status,
             "notes": list(self.notes),
             "next_command": self.next_command,
+            "build_run_id": self.build_run_id,
         }
 
     def render_text(self) -> str:
@@ -59,6 +99,7 @@ class BeginnerIsoPathReport:
             f"Command log: {self.command_log or 'not written'}",
             f"ISO-BUILD evidence: {self.build_evidence or 'not written'}",
             f"Run manifest: {self.run_manifest or 'not written'}",
+            f"Build run: {self.build_run_id or 'not selected'}",
             f"Build: {self.build_status}",
             f"Release gate: {self.gate_status.upper()}",
             "",
@@ -117,6 +158,7 @@ class BeginnerIsoFailureReport:
 class BeginnerIsoRepairReport:
     project: Path
     iso: Path
+    status: str
     repaired: tuple[str, ...]
     skipped: tuple[str, ...]
     gate_status: str
@@ -126,6 +168,7 @@ class BeginnerIsoRepairReport:
         return {
             "project": str(self.project),
             "iso": str(self.iso),
+            "status": self.status,
             "repaired": list(self.repaired),
             "skipped": list(self.skipped),
             "gate_status": self.gate_status,
@@ -139,6 +182,7 @@ class BeginnerIsoRepairReport:
             "Beginner ISO release artifact repair",
             f"Project: {self.project}",
             f"ISO: {self.iso}",
+            f"Repair status: {self.status.upper()}",
             f"Release gate: {self.gate_status.upper()}",
             "",
             "Repaired:",
@@ -164,6 +208,8 @@ class BeginnerIsoBootProofReport:
     proof: Path
     gate_status: str
     notes: tuple[str, ...]
+    build_run_id: str | None = None
+    boot_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -173,6 +219,8 @@ class BeginnerIsoBootProofReport:
             "proof": str(self.proof),
             "gate_status": self.gate_status,
             "notes": list(self.notes),
+            "build_run_id": self.build_run_id,
+            "boot_run_id": self.boot_run_id,
         }
 
     def render_text(self) -> str:
@@ -183,6 +231,8 @@ class BeginnerIsoBootProofReport:
                 f"ISO: {self.iso}",
                 f"Status: {self.status}",
                 f"Proof: {self.proof}",
+                f"Build run: {self.build_run_id or 'not selected'}",
+                f"Boot run: {self.boot_run_id or 'not selected'}",
                 f"Release gate: {self.gate_status.upper()}",
                 "",
                 "Notes:",
@@ -231,6 +281,7 @@ def prepare_beginner_iso_path(
     build_status = "not-run"
     build_evidence: Path | None = None
     run_manifest: Path | None = None
+    build_run_id: str | None = None
     if execute:
         # run_iso_build owns the evidence reservation, command log, immutable report
         # and manifest. The beginner path must not be a friendlier-looking bypass
@@ -244,6 +295,7 @@ def prepare_beginner_iso_path(
         )
         build_evidence = iso_report.report
         run_manifest = iso_report.run_manifest
+        build_run_id = iso_report.run_id or None
         if iso_report.status == "built":
             build_status = "completed"
             notes.append(
@@ -278,10 +330,29 @@ def prepare_beginner_iso_path(
                     title=title,
                 )
             )
-    gate = ReleaseGateService().check(project, options)
+    gate = ReleaseGateService().check(
+        project,
+        options,
+        iso=options.output_iso,
+        output_dir=options.output_iso.parent,
+        build_run_id=build_run_id,
+    )
     if execute and build_status == "completed":
-        next_command = (
-            f"distroforge release-gate {project.root} --definition {definition_path}"
+        assert build_run_id is not None
+        next_command = shlex.join(
+            [
+                "distroforge",
+                "release-gate",
+                str(project.root),
+                "--definition",
+                str(definition_path),
+                "--iso",
+                str(options.output_iso),
+                "--output-dir",
+                str(options.output_iso.parent),
+                "--build-run-id",
+                build_run_id,
+            ]
         )
     elif execute:
         next_command = (
@@ -305,6 +376,7 @@ def prepare_beginner_iso_path(
         gate.status,
         tuple(notes),
         next_command,
+        build_run_id,
     )
 
 
@@ -354,85 +426,371 @@ def _latest_beginner_command_log(project: Project) -> Path:
 def repair_beginner_iso_release_artifacts(project: Project, options: BuildOptions | None = None) -> BeginnerIsoRepairReport:
     options = options or BuildOptions()
     paths = default_artifact_paths(project)
-    iso = options.output_iso or paths.output_iso
+    iso = Path(options.output_iso or paths.output_iso).absolute()
     repaired: list[str] = []
     skipped: list[str] = []
-    if not iso.exists():
-        skipped.append("ISO is missing; release artifacts cannot be derived.")
-    else:
-        output_dir = iso.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        digest = sha256_file(iso)
+    repair_status = "ready"
+    output_dir = iso.parent
+    iso_session: ArtifactVerificationSession | None = None
+    try:
+        iso_session = ArtifactVerificationSession(
+            output_dir.absolute(),
+            label="beginner ISO release repair",
+            limits=_REPAIR_LIMITS,
+        )
+        iso_handle = iso_session.file(
+            Path(iso.name),
+            label="beginner ISO",
+            max_bytes=_REPAIR_ISO_MAX_BYTES,
+        )
+        digest = iso_handle.digest()
+        iso_identity = iso_handle.identity
+        generated_at = _identity_timestamp(iso_handle.identity.mtime_ns)
+        parent_identity = _stable_repair_identity(iso_session.anchor_identity)
+        iso_session.seal()
+        iso_session.close()
+        iso_session = None
         provenance_path = output_dir / "distroforge-provenance.json"
-        preserve_build = _matching_build_provenance(provenance_path, digest)
-        sums_path = output_dir / "SHA256SUMS"
-        if preserve_build and sums_path.exists():
-            skipped.append("Existing SHA256SUMS belongs to sealed build evidence; it was preserved.")
-        else:
-            sums_path.write_text(f"{digest}  {iso.name}\n", encoding="utf-8")
-            repaired.append("SHA256SUMS")
-        buildinfo_path = output_dir / "BUILDINFO"
+        provenance = _read_optional_repair_provenance(
+            provenance_path,
+            expected_parent_identity=parent_identity,
+        )
+        provenance_kind = _matching_provenance_kind(provenance, digest)
+        preserve_build = provenance_kind == "build"
+
+        _publish_or_preserve_repair_text(
+            output_dir / "SHA256SUMS",
+            f"{digest}  {iso.name}\n",
+            repaired=repaired,
+            skipped=skipped,
+            preserve_existing=preserve_build,
+            expected_parent_identity=parent_identity,
+        )
         buildinfo_content = (
-            f"Build-Date: {datetime.now(UTC).isoformat()}\n"
+            f"Build-Date: {generated_at}\n"
             f"Artifact: {iso.name}\n"
             "Builder: DistroForge\n"
             "Repair: beginner-iso\n"
         )
-        if preserve_build and buildinfo_path.exists():
-            skipped.append("Existing BUILDINFO belongs to sealed build evidence; it was preserved.")
+        _publish_or_preserve_repair_text(
+            output_dir / "BUILDINFO",
+            buildinfo_content,
+            repaired=repaired,
+            skipped=skipped,
+            preserve_existing=preserve_build,
+            expected_parent_identity=parent_identity,
+        )
+        if provenance_kind:
+            skipped.append(
+                "Existing build provenance already matches the ISO; it was preserved."
+                if preserve_build
+                else "Existing reconstructed provenance already matches the ISO; it was preserved."
+            )
         else:
-            buildinfo_path.write_text(buildinfo_content, encoding="utf-8")
-            repaired.append("BUILDINFO")
-        if preserve_build:
-            skipped.append("Existing build provenance already matches the ISO; it was preserved.")
-        else:
-            provenance_path.write_text(
+            provenance_content = (
                 json.dumps(
                     {
                         "schema": "distroforge.provenance.v2",
                         "attestation_kind": "reconstructed",
-                        "generated_at": datetime.now(UTC).isoformat(),
+                        "generated_at": generated_at,
                         "project": project.to_dict(),
                         "output_iso": str(iso),
                         "output_iso_sha256": digest,
                         "repair": "beginner-iso-release-artifacts",
                     },
                     indent=2,
-                ),
-                encoding="utf-8",
+                )
+                + "\n"
             )
-            repaired.append("distroforge-provenance.json")
+            _publish_or_preserve_repair_text(
+                provenance_path,
+                provenance_content,
+                repaired=repaired,
+                skipped=skipped,
+                preserve_existing=False,
+                expected_parent_identity=parent_identity,
+            )
         html_name = options.html_report.filename if options.html_report.enabled else "report.html"
-        html_path = output_dir / html_name
-        if preserve_build and html_path.exists():
-            skipped.append(f"Existing {html_name} belongs to sealed build evidence; it was preserved.")
-        else:
-            html_path.write_text(
-                _minimal_html_report(project, iso, digest),
-                encoding="utf-8",
-            )
-            repaired.append(html_name)
+        _publish_or_preserve_repair_text(
+            output_dir / html_name,
+            _minimal_html_report(project, iso, digest),
+            repaired=repaired,
+            skipped=skipped,
+            preserve_existing=preserve_build,
+            expected_parent_identity=parent_identity,
+        )
+        _revalidate_repair_iso(
+            iso,
+            identity=iso_identity,
+            expected_sha256=digest,
+            expected_parent_identity=parent_identity,
+        )
         skipped.append("Boot proof was not repaired; run QEMU/bootcheck/QA to prove bootability.")
+    except ArtifactVerificationError as exc:
+        repair_status = "blocked"
+        repaired.clear()
+        skipped.append(
+            "ISO is missing or unsafe; release artifact repair was refused: "
+            f"{exc}. Any complete immutable file left by a concurrent change is "
+            "non-authoritative; retry in a fresh output directory."
+        )
+    finally:
+        if iso_session is not None:
+            iso_session.close()
     gate = ReleaseGateService().check(project, options, iso=iso, output_dir=iso.parent)
     next_action = (
-        "Run boot proof and release-gate again." if gate.status != "ready" else "Release gate is ready."
+        "Use a fresh output directory before retrying the repair."
+        if repair_status == "blocked"
+        else (
+            "Run boot proof and release-gate again."
+            if gate.status != "ready"
+            else "Release gate is ready."
+        )
     )
-    return BeginnerIsoRepairReport(project.root, iso, tuple(repaired), tuple(skipped), gate.status, next_action)
+    return BeginnerIsoRepairReport(
+        project.root,
+        iso,
+        repair_status,
+        tuple(repaired),
+        tuple(skipped),
+        gate.status,
+        next_action,
+    )
 
 
-def _matching_build_provenance(path: Path, iso_sha256: str) -> bool:
-    if not path.is_file():
-        return False
+def _read_optional_repair_provenance(
+    path: Path,
+    *,
+    expected_parent_identity: StableParentIdentity,
+) -> dict[str, object] | None:
+    session: ArtifactVerificationSession | None = None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
+        session = ArtifactVerificationSession(
+            path.parent.absolute(),
+            label="beginner ISO provenance",
+            limits=_REPAIR_PROVENANCE_LIMITS,
+        )
+        _require_repair_anchor(session, expected_parent_identity)
+        payload = session.file(
+            Path(path.name),
+            label="beginner ISO provenance",
+            max_bytes=_REPAIR_PROVENANCE_MAX_BYTES,
+        ).json_object()
+        session.seal()
+        return payload
+    except _RepairAnchorChanged:
+        raise
+    except ArtifactVerificationError:
+        return None
+    finally:
+        if session is not None:
+            session.close()
+
+
+def _matching_provenance_kind(
+    data: dict[str, object] | None,
+    iso_sha256: str,
+) -> str:
+    if (
+        data is None
+        or data.get("schema") != "distroforge.provenance.v2"
+        or data.get("output_iso_sha256") != iso_sha256
+    ):
+        return ""
+    kind = data.get("attestation_kind")
     return (
-        isinstance(data, dict)
-        and data.get("schema") == "distroforge.provenance.v2"
-        and data.get("attestation_kind") == "build"
-        and data.get("output_iso_sha256") == iso_sha256
+        kind
+        if isinstance(kind, str) and kind in {"build", "reconstructed"}
+        else ""
     )
+
+
+def _publish_or_preserve_repair_text(
+    path: Path,
+    content: str,
+    *,
+    repaired: list[str],
+    skipped: list[str],
+    preserve_existing: bool,
+    expected_parent_identity: StableParentIdentity,
+) -> None:
+    encoded = content.encode("utf-8", errors="strict")
+    max_bytes = max(len(encoded), 1)
+    if preserve_existing and _existing_bounded_regular(
+        path,
+        expected_parent_identity=expected_parent_identity,
+    ):
+        skipped.append(
+            f"Existing {path.name} belongs to sealed build evidence; it was preserved."
+        )
+        return
+    try:
+        publish_regular_text(
+            path,
+            content,
+            max_bytes=_REPAIR_TEXT_MAX_BYTES,
+            expected_parent_identity=expected_parent_identity,
+        )
+    except (OSError, ValueError) as exc:
+        raise ArtifactVerificationError(
+            f"{path.name} repair was refused: {exc}"
+        ) from exc
+    _verify_repair_text(
+        path,
+        encoded,
+        max_bytes=max_bytes,
+        expected_parent_identity=expected_parent_identity,
+    )
+    repaired.append(path.name)
+
+
+def _verify_repair_text(
+    path: Path,
+    expected: bytes,
+    *,
+    max_bytes: int,
+    expected_parent_identity: StableParentIdentity,
+) -> None:
+    session = ArtifactVerificationSession(
+        path.parent.absolute(),
+        label=f"published {path.name}",
+        limits=ArtifactLimits(
+            max_open_files=1,
+            max_file_bytes=max_bytes,
+            max_buffered_bytes=max_bytes,
+            max_hashed_bytes=2 * max_bytes,
+            max_path_components=64,
+            max_closing_fds=16,
+            max_inventory_entries=16,
+        ),
+    )
+    try:
+        _require_repair_anchor(session, expected_parent_identity)
+        body = session.file(
+            Path(path.name),
+            label=f"published {path.name}",
+            max_bytes=max_bytes,
+            allow_empty=True,
+        ).read_bytes()
+        if body != expected:
+            raise ArtifactVerificationError(
+                f"published {path.name} does not contain the expected bytes"
+            )
+        session.seal()
+    finally:
+        session.close()
+
+
+def _existing_bounded_regular(
+    path: Path,
+    *,
+    expected_parent_identity: StableParentIdentity,
+) -> bool:
+    session: ArtifactVerificationSession | None = None
+    opened = False
+    try:
+        session = ArtifactVerificationSession(
+            path.parent.absolute(),
+            label=f"existing {path.name}",
+            limits=ArtifactLimits(
+                max_open_files=1,
+                max_file_bytes=_REPAIR_TEXT_MAX_BYTES,
+                max_buffered_bytes=_REPAIR_TEXT_MAX_BYTES,
+                max_hashed_bytes=2 * _REPAIR_TEXT_MAX_BYTES,
+                max_path_components=64,
+                max_closing_fds=16,
+                max_inventory_entries=16,
+            ),
+        )
+        _require_repair_anchor(session, expected_parent_identity)
+        session.file(
+            Path(path.name),
+            label=f"existing {path.name}",
+            max_bytes=_REPAIR_TEXT_MAX_BYTES,
+            allow_empty=True,
+        ).read_bytes()
+        opened = True
+        session.seal()
+        return True
+    except _RepairAnchorChanged:
+        raise
+    except ArtifactVerificationError as exc:
+        if not opened and _caused_by_missing_file(exc):
+            return False
+        raise
+    finally:
+        if session is not None:
+            session.close()
+
+
+def _identity_timestamp(mtime_ns: int) -> str:
+    seconds, nanoseconds = divmod(mtime_ns, 1_000_000_000)
+    return datetime.fromtimestamp(seconds, UTC).replace(
+        microsecond=nanoseconds // 1_000
+    ).isoformat()
+
+
+def _revalidate_repair_iso(
+    iso: Path,
+    *,
+    identity: ArtifactIdentity,
+    expected_sha256: str,
+    expected_parent_identity: StableParentIdentity,
+) -> None:
+    session = ArtifactVerificationSession(
+        iso.parent.absolute(),
+        label="beginner ISO repair closure",
+        limits=_REPAIR_LIMITS,
+    )
+    try:
+        _require_repair_anchor(session, expected_parent_identity)
+        handle = session.file(
+            Path(iso.name),
+            label="beginner ISO",
+            max_bytes=_REPAIR_ISO_MAX_BYTES,
+        )
+        if handle.identity != identity:
+            raise ArtifactVerificationError(
+                "beginner ISO changed while release artifacts were repaired"
+            )
+        if handle.digest() != expected_sha256:
+            raise ArtifactVerificationError(
+                "beginner ISO bytes changed while release artifacts were repaired"
+            )
+        session.seal()
+    finally:
+        session.close()
+
+
+def _stable_repair_identity(identity: ArtifactIdentity) -> StableParentIdentity:
+    return (
+        identity.dev,
+        identity.ino,
+        stat.S_IFMT(identity.mode),
+        identity.uid,
+        identity.gid,
+        identity.nlink,
+        identity.rdev,
+    )
+
+
+def _require_repair_anchor(
+    session: ArtifactVerificationSession,
+    expected: StableParentIdentity,
+) -> None:
+    if _stable_repair_identity(session.anchor_identity) != expected:
+        raise _RepairAnchorChanged(
+            "beginner ISO output directory changed during release artifact repair"
+        )
+
+
+def _caused_by_missing_file(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, FileNotFoundError):
+            return True
+        current = current.__cause__
+    return False
 
 
 def run_beginner_iso_boot_proof(
@@ -440,29 +798,121 @@ def run_beginner_iso_boot_proof(
     options: BuildOptions | None = None,
     *,
     execute: bool = True,
+    build_run_id: str | None = None,
 ) -> BeginnerIsoBootProofReport:
     options = options or BuildOptions()
     paths = default_artifact_paths(project)
-    iso = options.output_iso or paths.output_iso
-    proof = project.output_dir / options.prebuild_vm.report_name
+    iso = Path(options.output_iso or paths.output_iso).absolute()
+    proof = project.output_dir / "evidence" / "plans" / "unselected" / "boot-proof.json"
     notes: list[str] = []
     status = "blocked"
+    selected_build_run_id: str | None = None
+    boot_run_id: str | None = None
     options.prebuild_vm.enabled = True
-    if not iso.exists():
+    if execute:
+        selection_session = ArtifactVerificationSession(
+            Path("/"),
+            label="beginner boot-proof build-run selection",
+        )
+        try:
+            selected = select_executed_release_run(
+                project,
+                iso,
+                iso.parent,
+                selection_session,
+                build_run_id=build_run_id,
+            )
+            selected_build_run_id = selected.run_id
+            embedded_boot = embedded_boot_run_id(selected)
+            if embedded_boot is not None:
+                boot_run_id = embedded_boot
+                proof = (
+                    iso.parent
+                    / "evidence"
+                    / "runs"
+                    / embedded_boot
+                    / "boot-proof.json"
+                )
+                selection_session.seal()
+                status = "ready"
+                notes.append(
+                    "Reused immutable boot run "
+                    f"{embedded_boot} embedded by build {selected.run_id}; "
+                    "no VM was started."
+                )
+            else:
+                boot = run_boot_proof(
+                    project,
+                    options,
+                    iso=iso,
+                    backend="qemu",
+                    execute=True,
+                    build_run_id=selected.run_id,
+                    _selected_build=selected,
+                    _selection_session=selection_session,
+                )
+                selection_session.seal()
+                proof = boot.immutable_proof or boot.proof
+                boot_run_id = boot.run_id or None
+                status = boot.status
+                notes.extend(boot.notes)
+        except (
+            ArtifactVerificationError,
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
+            selected_build_run_id = None
+            boot_run_id = None
+            notes.append(
+                "Boot proof was not started because the requested immutable "
+                f"build run could not be selected and kept stable: {exc}"
+            )
+        finally:
+            selection_session.close()
+    elif not iso.exists():
         notes.append("ISO is missing; build or select an ISO before boot proof.")
-    elif execute and not CommandRunner.has_binary("qemu-system-x86_64"):
-        notes.append("qemu-system-x86_64 is missing; install qemu-system-x86 before boot proof.")
     else:
-        runner = CommandRunner(dry_run=not execute)
-        QemuLabService(runner, iso, project.workdir, project.output_dir, options.prebuild_vm).run()
-        if execute:
-            status = "ready" if proof.exists() else "blocked"
-            notes.append("Executed QEMU boot proof." if proof.exists() else "QEMU finished without writing the expected proof report.")
-        else:
-            status = "planned"
-            notes.append("Planned QEMU boot proof without executing it.")
-    gate = ReleaseGateService().check(project, options, iso=iso, output_dir=iso.parent)
-    return BeginnerIsoBootProofReport(project.root, iso, status, proof, gate.status, tuple(notes))
+        boot = run_boot_proof(
+            project,
+            options,
+            iso=iso,
+            backend="qemu",
+            execute=False,
+            build_run_id=build_run_id,
+        )
+        proof = boot.immutable_proof or boot.proof
+        boot_run_id = boot.run_id or None
+        status = boot.status
+        notes.extend(boot.notes)
+    gate = ReleaseGateService().check(
+        project,
+        options,
+        iso=iso,
+        output_dir=iso.parent,
+        build_run_id=selected_build_run_id,
+        boot_run_id=boot_run_id,
+    )
+    if execute and boot_run_id is not None:
+        boot_gate = next(
+            (item for item in gate.items if item.code == "boot-proof"),
+            None,
+        )
+        if boot_gate is None or boot_gate.status != "ready":
+            status = "blocked"
+    return BeginnerIsoBootProofReport(
+        project.root,
+        iso,
+        status,
+        proof,
+        gate.status,
+        tuple(notes),
+        selected_build_run_id,
+        boot_run_id,
+    )
 
 
 def _classify_failure(text: str) -> tuple[str, str, str]:

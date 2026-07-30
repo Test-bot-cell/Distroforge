@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from distroforge.ui.artifact_release_paths import resolve_artifact_release_paths
+
 
 def explain_risk_action(window) -> None:
     from distroforge.core.education import explain_risks
@@ -95,7 +97,6 @@ def forgeadvisor_doctor_ai_action(window) -> None:
 def forgeadvisor_explain_evidence_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
-    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -103,15 +104,14 @@ def forgeadvisor_explain_evidence_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
-    output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
+    paths = resolve_artifact_release_paths(window)
 
     def _work():
         return ForgeAdvisor(backend, BuildMemory(default_corpus_path()), level).explain_evidence(
             window.project.root,
             options=window._build_options(),
-            iso=iso,
-            output_dir=output_dir,
+            iso=paths.iso,
+            output_dir=paths.product_output_dir,
             profile="publish",
         )
 
@@ -126,7 +126,6 @@ def forgeadvisor_explain_evidence_action(window) -> None:
 def forgeadvisor_fix_plan_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
-    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -134,15 +133,14 @@ def forgeadvisor_fix_plan_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
-    output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
+    paths = resolve_artifact_release_paths(window)
 
     def _work():
         return ForgeAdvisor(backend, BuildMemory(default_corpus_path()), level).narrate_fix_plan(
             window.project.root,
             options=window._build_options(),
-            iso=iso,
-            output_dir=output_dir,
+            iso=paths.iso,
+            output_dir=paths.product_output_dir,
             profile="publish",
         )
 
@@ -207,7 +205,6 @@ def forgeadvisor_search_local_action(window) -> None:
 def forgeadvisor_copilot_action(window) -> None:
     from distroforge.ai.backend import select_backend
     from distroforge.ai.forgeadvisor import ForgeAdvisor
-    from distroforge.core.artifact_paths import default_output_iso
     from distroforge.core.build_memory import BuildMemory, default_corpus_path
 
     if not window._require_project():
@@ -215,16 +212,15 @@ def forgeadvisor_copilot_action(window) -> None:
     assert window.project
     backend = select_backend(window.advisor_backend_combo.currentData())
     level = window.advisor_register_combo.currentData()
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
-    output_dir = Path(window.artifacts_reports_dir_edit.text().strip() or iso.parent)
+    paths = resolve_artifact_release_paths(window)
     query = window.terminal_input.text().strip() or "evidence release readiness"
 
     def _work():
         return ForgeAdvisor(backend, BuildMemory(default_corpus_path()), level).maintainer_copilot(
             window.project.root,
             options=window._build_options(),
-            iso=iso,
-            output_dir=output_dir,
+            iso=paths.iso,
+            output_dir=paths.product_output_dir,
             profile="publish",
             query=query,
             limit=5,

@@ -41,22 +41,26 @@ def _built_project(root: Path) -> tuple[Project, Path]:
     return project, iso
 
 
-def _count_iso_reads(iso: Path, work) -> int:
-    """Run ``work`` and count how many times ``iso`` is opened for reading bytes."""
-    reads = []
-    real_open = Path.open
+def _iso_measurements(iso: Path, work) -> tuple[int, set[int]]:
+    """Count ISO passes and owning descriptor-backed verdict sessions."""
+    from distroforge.core.artifact_verification import ArtifactVerificationSession
 
-    def spy(self, mode="r", *args, **kwargs):
-        if "b" in mode and self == iso:
-            reads.append(self)
-        return real_open(self, mode, *args, **kwargs)
+    sessions: list[ArtifactVerificationSession] = []
+    real_measure = ArtifactVerificationSession._measure
 
-    Path.open = spy
+    def spy(self, record, binding, **kwargs):
+        if self.anchor_path / binding.relative == iso.absolute():
+            # Keep every owner alive until the assertion: otherwise a later
+            # verdict may reuse the address of an already-collected session.
+            sessions.append(self)
+        return real_measure(self, record, binding, **kwargs)
+
+    ArtifactVerificationSession._measure = spy
     try:
         work()
     finally:
-        Path.open = real_open
-    return len(reads)
+        ArtifactVerificationSession._measure = real_measure
+    return len(sessions), {id(session) for session in sessions}
 
 
 def _drain_workers(window, timeout: float = 15.0) -> None:
@@ -73,6 +77,12 @@ class _Report:
     """Stands in for whichever report the stubbed service would have returned."""
 
     status = "ready"
+    verdict = "ready"
+    build_run_id = None
+    boot_run_id = None
+    run_id = None
+    pipeline = None
+    gate = None
     # The boot proof report names the firmware it ran, and the Artifacts controller
     # repeats that word in its log line, so the stub has to carry it too.
     firmware_summary = "bios"
@@ -99,6 +109,376 @@ def _thread_recorder(seen: list[int]):
         return _Report()
 
     return _record
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute", "action", "fingerprint_argument"),
+    (
+        (
+            "distroforge.core.release_signing",
+            "sign_release_bundle",
+            "sign_release_from_artifacts",
+            "gpg_key",
+        ),
+        (
+            "distroforge.core.release_verification",
+            "verify_release_bundle",
+            "verify_release_from_artifacts",
+            "expected_signer_fingerprint",
+        ),
+        (
+            "distroforge.core.publish_drill_baseline",
+            "promote_publish_drill_baseline",
+            "promote_drill_from_artifacts",
+            "expected_signer_fingerprint",
+        ),
+    ),
+)
+def test_release_contract_gui_actions_propagate_custom_product_and_pin(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+    module: str,
+    attribute: str,
+    action: str,
+    fingerprint_argument: str,
+) -> None:
+    import importlib
+
+    from distroforge.ui import artifacts_page
+
+    core = importlib.import_module(module)
+    window, project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    fingerprint = "A" * 40
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    window.artifact_gpg_key_edit.setText(fingerprint)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Report()
+
+    monkeypatch.setattr(core, attribute, capture)
+
+    getattr(artifacts_page, action)(window)
+    _drain_workers(window)
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] is project
+    assert kwargs["bundle_dir"] == custom_reports.parent / "publish"
+    assert kwargs["expected_product_iso"] == custom_iso
+    assert kwargs["expected_product_output_dir"] == custom_iso.parent
+    assert kwargs[fingerprint_argument] == fingerprint
+
+
+def test_explain_release_gui_propagates_custom_product_bundle_and_pin(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from distroforge.core import release_explain
+    from distroforge.ui import artifacts_page
+
+    window, project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    fingerprint = "B" * 40
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    window.artifact_gpg_key_edit.setText(fingerprint)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Report()
+
+    monkeypatch.setattr(release_explain, "explain_release", capture)
+
+    artifacts_page.explain_release_from_artifacts(window)
+    _drain_workers(window)
+
+    assert calls == [
+        (
+            (project,),
+            {
+                "iso": custom_iso,
+                "bundle_dir": custom_reports.parent / "publish",
+                "expected_signer_fingerprint": fingerprint,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute", "action", "contract"),
+    (
+        (
+            "distroforge.core.release_signing",
+            "sign_release_bundle",
+            "sign_release_from_artifacts",
+            "sign",
+        ),
+        (
+            "distroforge.core.release_verification",
+            "verify_release_bundle",
+            "verify_release_from_artifacts",
+            "verify",
+        ),
+        (
+            "distroforge.core.release_explain",
+            "explain_release",
+            "explain_release_from_artifacts",
+            "explain",
+        ),
+        (
+            "distroforge.core.publish_drill",
+            "run_publish_drill",
+            "publish_drill_from_artifacts",
+            "drill",
+        ),
+        (
+            "distroforge.core.publish_drill_diff",
+            "diff_publish_drills",
+            "compare_drill_from_artifacts",
+            "diff",
+        ),
+        (
+            "distroforge.core.publish_drill_baseline",
+            "promote_publish_drill_baseline",
+            "promote_drill_from_artifacts",
+            "baseline",
+        ),
+    ),
+)
+def test_release_gui_actions_run_offthread_with_frozen_contract(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+    module: str,
+    attribute: str,
+    action: str,
+    contract: str,
+) -> None:
+    import importlib
+
+    from distroforge.ui import artifacts_page
+
+    core = importlib.import_module(module)
+    window, project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    bundle_dir = custom_reports.parent / "publish"
+    fingerprint = "C" * 40
+    options = object()
+    backend = str(window.boot_proof_backend_combo.currentData() or "auto")
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    window.artifact_gpg_key_edit.setText(fingerprint)
+    monkeypatch.setattr(window, "_build_options", lambda: options)
+    calls: list[
+        tuple[int, tuple[object, ...], dict[str, object]]
+    ] = []
+
+    def capture(*args, **kwargs):
+        calls.append((threading.get_ident(), args, kwargs))
+        return _Report()
+
+    monkeypatch.setattr(core, attribute, capture)
+
+    getattr(artifacts_page, action)(window)
+    _drain_workers(window)
+
+    assert len(calls) == 1
+    thread_id, args, kwargs = calls[0]
+    assert thread_id != threading.get_ident()
+    if contract == "sign":
+        assert args == (project,)
+        assert kwargs == {
+            "bundle_dir": bundle_dir,
+            "execute": False,
+            "gpg_key": fingerprint,
+            "expected_product_iso": custom_iso,
+            "expected_product_output_dir": custom_iso.parent,
+        }
+    elif contract == "verify":
+        assert args == (project,)
+        assert kwargs == {
+            "bundle_dir": bundle_dir,
+            "expected_signer_fingerprint": fingerprint,
+            "expected_product_iso": custom_iso,
+            "expected_product_output_dir": custom_iso.parent,
+        }
+    elif contract == "explain":
+        assert args == (project,)
+        assert kwargs == {
+            "iso": custom_iso,
+            "bundle_dir": bundle_dir,
+            "expected_signer_fingerprint": fingerprint,
+        }
+    elif contract == "drill":
+        assert args == (project, options)
+        assert kwargs == {
+            "iso": custom_iso,
+            "bundle_dir": bundle_dir,
+            "gpg_key": fingerprint,
+            "boot_backend": backend,
+            "build_run_id": None,
+            "boot_run_id": None,
+        }
+    elif contract == "diff":
+        assert args == (
+            bundle_dir / "PUBLISH-DRILL.previous.json",
+            bundle_dir / "PUBLISH-DRILL.json",
+        )
+        assert kwargs == {}
+    else:
+        assert contract == "baseline"
+        assert args == (project,)
+        assert kwargs == {
+            "bundle_dir": bundle_dir,
+            "expected_signer_fingerprint": fingerprint,
+            "expected_product_iso": custom_iso,
+            "expected_product_output_dir": custom_iso.parent,
+        }
+
+
+def test_create_publish_bundle_gui_uses_one_release_path_contract(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from distroforge.core import publish_bundle
+    from distroforge.ui import artifacts_actions
+
+    window, project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Report()
+
+    monkeypatch.setattr(publish_bundle, "create_publish_bundle", capture)
+
+    artifacts_actions.create_publish_bundle_action(window)
+    _drain_workers(window)
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] is project
+    assert kwargs == {
+        "iso": custom_iso,
+        "output_dir": custom_iso.parent,
+        "bundle_dir": custom_reports.parent / "publish",
+        "build_run_id": None,
+        "boot_run_id": None,
+    }
+
+
+def test_release_gate_gui_uses_the_selected_bundle(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from distroforge.core import release_gate
+    from distroforge.ui import artifacts_actions
+
+    window, project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    calls: list[tuple[object, object, dict[str, object]]] = []
+
+    def capture(_self, called_project, called_options, **kwargs):
+        calls.append((called_project, called_options, kwargs))
+        return _Report()
+
+    monkeypatch.setattr(release_gate.ReleaseGateService, "check", capture)
+
+    artifacts_actions.run_release_gate_action(window)
+    _drain_workers(window)
+
+    assert len(calls) == 1
+    called_project, _called_options, kwargs = calls[0]
+    assert called_project is project
+    assert kwargs == {
+        "iso": custom_iso,
+        "output_dir": custom_iso.parent,
+        "bundle_dir": custom_reports.parent / "publish",
+        "build_run_id": None,
+        "boot_run_id": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "method"),
+    (
+        ("forgeadvisor_explain_evidence_action", "explain_evidence"),
+        ("forgeadvisor_fix_plan_action", "narrate_fix_plan"),
+        ("forgeadvisor_copilot_action", "maintainer_copilot"),
+    ),
+)
+def test_publish_advisor_uses_product_parent_not_reports_dir(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+    action: str,
+    method: str,
+) -> None:
+    from distroforge.ai import backend as backend_module
+    from distroforge.ai import forgeadvisor as forgeadvisor_module
+    from distroforge.core import build_memory as build_memory_module
+    from distroforge.ui import advisor_actions
+
+    window, _project, _default_iso = _window(tmp_path)
+    custom_iso = tmp_path / "custom-output" / "Custom.iso"
+    custom_reports = tmp_path / "release-records" / "reports"
+    window.artifacts_output_iso_edit.setText(str(custom_iso))
+    window.artifacts_reports_dir_edit.setText(str(custom_reports))
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Advisor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def explain_evidence(self, *_args, **kwargs):
+            calls.append(("explain_evidence", kwargs))
+            return _Report()
+
+        def narrate_fix_plan(self, *_args, **kwargs):
+            calls.append(("narrate_fix_plan", kwargs))
+            return _Report()
+
+        def maintainer_copilot(self, *_args, **kwargs):
+            calls.append(("maintainer_copilot", kwargs))
+            return _Report()
+
+    monkeypatch.setattr(backend_module, "select_backend", lambda *_args: object())
+    monkeypatch.setattr(forgeadvisor_module, "ForgeAdvisor", _Advisor)
+    monkeypatch.setattr(build_memory_module, "BuildMemory", lambda *_args: object())
+    monkeypatch.setattr(
+        build_memory_module,
+        "default_corpus_path",
+        lambda: tmp_path / "unused-corpus.json",
+    )
+
+    getattr(advisor_actions, action)(window)
+    _drain_workers(window)
+
+    assert len(calls) == 1
+    called_method, kwargs = calls[0]
+    assert called_method == method
+    assert kwargs["iso"] == custom_iso
+    assert kwargs["output_dir"] == custom_iso.parent
+    assert kwargs["profile"] == "publish"
 
 
 def _window(tmp_path) -> tuple[object, Project, Path]:
@@ -197,8 +577,7 @@ def test_the_gui_boot_proof_runs_the_firmware_the_lab_selected(qt_app, tmp_path,
 
 
 def test_refresh_rehashes_each_verdict_until_scoped_reuse_exists(qt_app, tmp_path) -> None:
-    """The cache-removal interlock makes both authoritative consumers hash their
-    own bytes until a descriptor-backed verification session can share them."""
+    """Each refresh owns one session: one measurement plus one closing recheck."""
     window, _project, iso = _window(tmp_path)
     for index in range(window.mode_combo.count()):
         if window.mode_combo.itemData(index) == "maintainer":
@@ -206,7 +585,10 @@ def test_refresh_rehashes_each_verdict_until_scoped_reuse_exists(qt_app, tmp_pat
             break
     assert window.mode_combo.currentData() == "maintainer"
 
-    first = _count_iso_reads(iso, window._refresh)
-    assert first == 2
+    first_passes, first_sessions = _iso_measurements(iso, window._refresh)
+    assert first_passes == 2
+    assert len(first_sessions) == 1
     # No digest survives into the next independently computed verdict.
-    assert _count_iso_reads(iso, window._refresh) == 2
+    second_passes, second_sessions = _iso_measurements(iso, window._refresh)
+    assert second_passes == 2
+    assert len(second_sessions) == 1

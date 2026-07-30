@@ -7,16 +7,24 @@ from distroforge.core.host_artifacts import HostArtifactWriter, write_host_artif
 
 ROOT = Path(__file__).resolve().parents[1]
 
-RELEASE_FAMILY_WRITERS = (
-    "distroforge/core/publish_bundle.py",
-    "distroforge/core/publish_drill.py",
+RELEASE_FAMILY_BOUNDARIES = {
+    "distroforge/core/publish_bundle.py": ("publish_immutable_tree",),
+    "distroforge/core/publish_drill.py": ("publish_regular_text",),
+    "distroforge/core/publish_drill_baseline.py": ("publish_regular_text",),
+    "distroforge/core/publish_drill_diff.py": ("ArtifactVerificationSession",),
+    "distroforge/core/recipe.py": ("write_host_artifact",),
+    "distroforge/core/presets.py": ("write_host_artifact",),
+    "distroforge/core/release_pipeline.py": ("publish_regular_text",),
+    "distroforge/core/release_notes.py": ("publish_regular_text",),
+    "distroforge/core/release_signing.py": (
+        "copy_immutable_file_descriptor",
+        "publish_regular_text",
+    ),
+    "distroforge/core/release_verification.py": ("publish_regular_text",),
+}
+PUBLISH_DRILL_BOUNDARIES = (
     "distroforge/core/publish_drill_baseline.py",
-    "distroforge/core/recipe.py",
-    "distroforge/core/presets.py",
-    "distroforge/core/release_pipeline.py",
-    "distroforge/core/release_notes.py",
-    "distroforge/core/release_signing.py",
-    "distroforge/core/release_verification.py",
+    "distroforge/core/publish_drill_diff.py",
 )
 
 
@@ -50,8 +58,17 @@ def test_write_host_artifact_always_writes_and_creates_parents(tmp_path) -> None
     assert target.read_text(encoding="utf-8") == "{}\n"
 
 
-def test_release_family_writers_route_through_host_artifact_boundary() -> None:
-    for path in RELEASE_FAMILY_WRITERS:
+def test_release_family_modules_route_through_safe_artifact_boundaries() -> None:
+    for path, accepted_boundaries in RELEASE_FAMILY_BOUNDARIES.items():
         source = (ROOT / path).read_text(encoding="utf-8")
-        assert "write_host_artifact" in source, f"{path} should route writes through the boundary"
+        assert any(boundary in source for boundary in accepted_boundaries), (
+            f"{path} should route artifact I/O through one accepted boundary"
+        )
         assert ".write_text(" not in source, f"{path} still performs a raw .write_text host write"
+
+
+def test_publish_drill_readers_and_writers_keep_path_dangerous_helpers_out() -> None:
+    for path in PUBLISH_DRILL_BOUNDARIES:
+        source = (ROOT / path).read_text(encoding="utf-8")
+        for forbidden in (".mkdir(", "shutil.copy2", "write_host_artifact"):
+            assert forbidden not in source, f"{path} still contains {forbidden}"

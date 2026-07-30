@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import cast
 
+from .evidence_run import is_safe_run_id
+
 PACKAGE_APT_ACTIONS_SCHEMA = "distroforge.package-apt-actions.v1"
 PACKAGE_APT_ACTIONS_FILENAME = "PACKAGE-APT-ACTIONS.json"
 
@@ -275,7 +277,8 @@ def recompute_package_apt_actions_report(
 ) -> dict[str, object]:
     """Recompute the complete M3.2a document without trusting a prior report."""
 
-    _safe_component(run_id, "run_id", MAX_TRANSACTION_ID_BYTES)
+    if not is_safe_run_id(run_id):
+        raise PackageAptActionsError("run_id is unsafe")
     if not isinstance(package_inputs, Mapping):
         raise PackageAptActionsError("PACKAGE-INPUTS payload is not an object")
     if package_inputs.get("schema") != _PACKAGE_INPUTS_SCHEMA:

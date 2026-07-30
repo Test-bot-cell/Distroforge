@@ -34,7 +34,16 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
     if args.command == "release-readiness":
         return render_release_readiness(args.iso, args.output_dir, args.json)
     if args.command == "release-gate":
-        return render_release_gate(args.root, args.definition, args.iso, args.output_dir, args.json)
+        return render_release_gate(
+            args.root,
+            args.definition,
+            args.iso,
+            args.output_dir,
+            args.json,
+            bundle_dir=args.bundle_dir,
+            build_run_id=args.build_run_id,
+            boot_run_id=args.boot_run_id,
+        )
     if args.command == "publish-bundle":
         return render_publish_bundle(
             args.root,
@@ -43,6 +52,8 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             args.output_dir,
             args.bundle_dir,
             args.json,
+            build_run_id=args.build_run_id,
+            boot_run_id=args.boot_run_id,
         )
     if args.command == "sign-release":
         return render_sign_release(
@@ -52,6 +63,8 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             execute=args.execute,
             json_output=args.json,
             gpg_keyring=args.gpg_keyring,
+            expected_product_iso=args.iso,
+            expected_product_output_dir=args.output_dir,
         )
     if args.command == "release-notes":
         return render_release_notes(args.root, args.bundle_dir, args.json)
@@ -61,9 +74,20 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             args.bundle_dir,
             json_output=args.json,
             gpg_fingerprint=args.gpg_fingerprint,
+            expected_product_iso=args.iso,
+            expected_product_output_dir=args.output_dir,
         )
     if args.command == "explain-release":
-        return render_explain_release(args.root, args.iso, args.bundle_dir, args.json), False
+        return (
+            render_explain_release(
+                args.root,
+                args.iso,
+                args.bundle_dir,
+                args.json,
+                expected_signer_fingerprint=args.gpg_fingerprint,
+            ),
+            False,
+        )
     if args.command == "publish-drill":
         return render_publish_drill(
             args.root,
@@ -75,6 +99,8 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             boot_backend=args.boot_backend,
             json_output=args.json,
             gpg_keyring=args.gpg_keyring,
+            build_run_id=args.build_run_id,
+            boot_run_id=args.boot_run_id,
         )
     if args.command == "publish-drill-diff":
         return render_publish_drill_diff(args.old, args.new, args.json), False
@@ -84,6 +110,9 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             args.bundle_dir,
             args.allow_blocked,
             args.json,
+            args.gpg_fingerprint,
+            args.iso,
+            args.output_dir,
         )
     if args.command == "release-pipeline":
         return render_release_pipeline(
@@ -99,20 +128,46 @@ def render_artifacts_command(args) -> tuple[str, bool] | None:
             boot_backend=args.boot_backend,
             json_output=args.json,
             gpg_keyring=args.gpg_keyring,
+            build_run_id=args.build_run_id,
+            boot_run_id=args.boot_run_id,
         )
     if args.command == "boot-proof":
-        rendered, blocked = render_boot_proof(args.root, args.definition, args.iso, args.backend, args.timeout, args.firmware, args.secure_boot, args.dry_run, args.json)
+        rendered, blocked = render_boot_proof(
+            args.root,
+            args.definition,
+            args.iso,
+            args.backend,
+            args.timeout,
+            args.firmware,
+            args.secure_boot,
+            args.dry_run,
+            args.json,
+            build_run_id=args.build_run_id,
+        )
         return rendered, blocked
     if args.command == "preview":
-        return render_preview(args.root, args.definition, args.iso, args.display, args.execute, args.json), False
+        return render_preview(
+            args.root, args.definition, args.iso, args.display, args.execute, args.json
+        ), False
     if args.command == "qemu-interaction":
-        return render_qemu_interaction(args.root, args.definition, args.iso, args.plan, args.display, args.list, args.execute, args.json), False
+        return render_qemu_interaction(
+            args.root,
+            args.definition,
+            args.iso,
+            args.plan,
+            args.display,
+            args.list,
+            args.execute,
+            args.json,
+        ), False
     if args.command == "qemu-smoke-plan":
         return render_qemu_smoke_plan(args.iso, args.json), False
     return None
 
 
-def render_release_readiness(iso: Path, output_dir: Path, json_output: bool = False) -> tuple[str, bool]:
+def render_release_readiness(
+    iso: Path, output_dir: Path, json_output: bool = False
+) -> tuple[str, bool]:
     report = ReleaseReadinessService().check(iso, output_dir)
     return (report.render_json() if json_output else report.render_text(), report.blocked)
 
@@ -128,23 +183,34 @@ def register_release_gate_parser(subparsers) -> None:
     parser.add_argument("--definition", type=Path)
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--build-run-id")
+    parser.add_argument("--boot-run-id")
     parser.add_argument("--json", action="store_true")
 
 
 def register_publish_bundle_parser(subparsers) -> None:
-    parser = subparsers.add_parser("publish-bundle", help="Create a maintainer publish inspection bundle")
+    parser = subparsers.add_parser(
+        "publish-bundle", help="Create a maintainer publish inspection bundle"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--definition", type=Path)
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--build-run-id")
+    parser.add_argument("--boot-run-id")
     parser.add_argument("--json", action="store_true")
 
 
 def register_sign_release_parser(subparsers) -> None:
-    parser = subparsers.add_parser("sign-release", help="Generate manifest and sign maintainer publish bundle")
+    parser = subparsers.add_parser(
+        "sign-release", help="Generate manifest and sign maintainer publish bundle"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--iso", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--gpg-key")
     parser.add_argument("--gpg-keyring", type=Path)
     parser.add_argument("--execute", action="store_true")
@@ -152,7 +218,9 @@ def register_sign_release_parser(subparsers) -> None:
 
 
 def register_release_notes_parser(subparsers) -> None:
-    parser = subparsers.add_parser("release-notes", help="Write maintainer release notes and changelog")
+    parser = subparsers.add_parser(
+        "release-notes", help="Write maintainer release notes and changelog"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--json", action="store_true")
@@ -162,20 +230,27 @@ def register_verify_release_parser(subparsers) -> None:
     parser = subparsers.add_parser("verify-release", help="Verify a maintainer publish bundle")
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--iso", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--gpg-fingerprint")
     parser.add_argument("--json", action="store_true")
 
 
 def register_explain_release_parser(subparsers) -> None:
-    parser = subparsers.add_parser("explain-release", help="Explain release evidence for maintainer publication")
+    parser = subparsers.add_parser(
+        "explain-release", help="Explain release evidence for maintainer publication"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
+    parser.add_argument("--gpg-fingerprint")
     parser.add_argument("--json", action="store_true")
 
 
 def register_publish_drill_parser(subparsers) -> None:
-    parser = subparsers.add_parser("publish-drill", help="Run a safe one-button maintainer publish drill")
+    parser = subparsers.add_parser(
+        "publish-drill", help="Run a safe one-button maintainer publish drill"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--definition", type=Path)
     parser.add_argument("--iso", type=Path)
@@ -184,21 +259,34 @@ def register_publish_drill_parser(subparsers) -> None:
     parser.add_argument("--gpg-keyring", type=Path)
     parser.add_argument("--execute-signing", action="store_true")
     parser.add_argument("--boot-backend", default="auto", choices=["auto", "qemu", "iso-scan"])
+    parser.add_argument("--build-run-id")
+    parser.add_argument("--boot-run-id")
     parser.add_argument("--json", action="store_true")
 
 
 def register_publish_drill_diff_parser(subparsers) -> None:
-    parser = subparsers.add_parser("publish-drill-diff", help="Compare two publish drill JSON reports")
+    parser = subparsers.add_parser(
+        "publish-drill-diff", help="Compare two publish drill JSON reports"
+    )
     parser.add_argument("old", type=Path)
     parser.add_argument("new", type=Path)
     parser.add_argument("--json", action="store_true")
 
 
 def register_publish_drill_baseline_parser(subparsers) -> None:
-    parser = subparsers.add_parser("publish-drill-baseline", help="Promote current publish drill as comparison baseline")
+    parser = subparsers.add_parser(
+        "publish-drill-baseline", help="Promote current publish drill as comparison baseline"
+    )
     parser.add_argument("root", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--allow-blocked", action="store_true")
+    parser.add_argument(
+        "--gpg-fingerprint",
+        "--gpg-key",
+        dest="gpg_fingerprint",
+    )
+    parser.add_argument("--iso", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--json", action="store_true")
 
 
@@ -215,6 +303,8 @@ def register_release_pipeline_parser(subparsers) -> None:
     parser.add_argument("--run-boot-proof", action="store_true")
     parser.add_argument("--boot-backend", default="auto", choices=["auto", "qemu", "iso-scan"])
     parser.add_argument("--boot-proof-dry-run", action="store_true")
+    parser.add_argument("--build-run-id")
+    parser.add_argument("--boot-run-id")
     parser.add_argument("--json", action="store_true")
 
 
@@ -245,6 +335,7 @@ def register_boot_proof_parser(subparsers) -> None:
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--build-run-id")
     parser.add_argument("--json", action="store_true")
 
 
@@ -259,7 +350,9 @@ def register_preview_parser(subparsers) -> None:
 
 
 def register_qemu_interaction_parser(subparsers) -> None:
-    parser = subparsers.add_parser("qemu-interaction", help="Plan or run a declarative QMP-driven ISO interaction")
+    parser = subparsers.add_parser(
+        "qemu-interaction", help="Plan or run a declarative QMP-driven ISO interaction"
+    )
     parser.add_argument("root", type=Path, nargs="?")
     parser.add_argument("--definition", type=Path)
     parser.add_argument("--iso", type=Path)
@@ -270,7 +363,17 @@ def register_qemu_interaction_parser(subparsers) -> None:
     parser.add_argument("--json", action="store_true")
 
 
-def render_release_gate(root: Path, definition: Path | None, iso: Path | None, output_dir: Path | None, json_output: bool = False) -> tuple[str, bool]:
+def render_release_gate(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    output_dir: Path | None,
+    json_output: bool = False,
+    *,
+    bundle_dir: Path | None = None,
+    build_run_id: str | None = None,
+    boot_run_id: str | None = None,
+) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
@@ -278,7 +381,15 @@ def render_release_gate(root: Path, definition: Path | None, iso: Path | None, o
     options = BuildOptions()
     if definition:
         options = apply_definition(project, load_definition(definition))
-    report = ReleaseGateService().check(project, options, iso=iso, output_dir=output_dir)
+    report = ReleaseGateService().check(
+        project,
+        options,
+        iso=iso,
+        output_dir=output_dir,
+        bundle_dir=bundle_dir,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
+    )
     return (report.render_json() if json_output else report.render_text(), report.blocked)
 
 
@@ -289,13 +400,26 @@ def render_publish_bundle(
     output_dir: Path | None,
     bundle_dir: Path | None,
     json_output: bool = False,
+    *,
+    build_run_id: str | None = None,
+    boot_run_id: str | None = None,
 ) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    report = create_publish_bundle(project, options, iso=iso, output_dir=output_dir, bundle_dir=bundle_dir)
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
+    report = create_publish_bundle(
+        project,
+        options,
+        iso=iso,
+        output_dir=output_dir,
+        bundle_dir=bundle_dir,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
+    )
     return (
         report.render_json() if json_output else report.render_text(),
         report.blocked,
@@ -309,6 +433,8 @@ def render_sign_release(
     execute: bool = False,
     json_output: bool = False,
     gpg_keyring: Path | None = None,
+    expected_product_iso: Path | None = None,
+    expected_product_output_dir: Path | None = None,
 ) -> tuple[str, bool]:
     report = sign_release_bundle(
         Project.load(root),
@@ -316,6 +442,8 @@ def render_sign_release(
         execute=execute,
         gpg_key=gpg_key,
         gpg_keyring=gpg_keyring,
+        expected_product_iso=expected_product_iso,
+        expected_product_output_dir=expected_product_output_dir,
     )
     return (
         report.render_json() if json_output else report.render_text(),
@@ -340,11 +468,15 @@ def render_verify_release(
     bundle_dir: Path | None,
     json_output: bool = False,
     gpg_fingerprint: str | None = None,
+    expected_product_iso: Path | None = None,
+    expected_product_output_dir: Path | None = None,
 ) -> tuple[str, bool]:
     report = verify_release_bundle(
         Project.load(root),
         bundle_dir=bundle_dir,
         expected_signer_fingerprint=gpg_fingerprint,
+        expected_product_iso=expected_product_iso,
+        expected_product_output_dir=expected_product_output_dir,
     )
     return (
         report.render_json() if json_output else report.render_text(),
@@ -352,8 +484,20 @@ def render_verify_release(
     )
 
 
-def render_explain_release(root: Path, iso: Path | None, bundle_dir: Path | None, json_output: bool = False) -> str:
-    report = explain_release(Project.load(root), iso=iso, bundle_dir=bundle_dir)
+def render_explain_release(
+    root: Path,
+    iso: Path | None,
+    bundle_dir: Path | None,
+    json_output: bool = False,
+    *,
+    expected_signer_fingerprint: str | None = None,
+) -> str:
+    report = explain_release(
+        Project.load(root),
+        iso=iso,
+        bundle_dir=bundle_dir,
+        expected_signer_fingerprint=expected_signer_fingerprint,
+    )
     return report.render_json() if json_output else report.render_text()
 
 
@@ -367,12 +511,16 @@ def render_publish_drill(
     boot_backend: str = "auto",
     json_output: bool = False,
     gpg_keyring: Path | None = None,
+    build_run_id: str | None = None,
+    boot_run_id: str | None = None,
 ) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
     report = run_publish_drill(
         project,
         options,
@@ -382,6 +530,8 @@ def render_publish_drill(
         gpg_key=gpg_key,
         gpg_keyring=gpg_keyring,
         boot_backend=boot_backend,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
     )
     return (
         report.render_json() if json_output else report.render_text(),
@@ -399,11 +549,17 @@ def render_publish_drill_baseline(
     bundle_dir: Path | None,
     allow_blocked: bool = False,
     json_output: bool = False,
+    gpg_fingerprint: str | None = None,
+    iso: Path | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[str, bool]:
     report = promote_publish_drill_baseline(
         Project.load(root),
         bundle_dir=bundle_dir,
         allow_blocked=allow_blocked,
+        expected_signer_fingerprint=gpg_fingerprint,
+        expected_product_iso=iso,
+        expected_product_output_dir=output_dir,
     )
     return (
         report.render_json() if json_output else report.render_text(),
@@ -424,12 +580,16 @@ def render_release_pipeline(
     boot_backend: str = "auto",
     json_output: bool = False,
     gpg_keyring: Path | None = None,
+    build_run_id: str | None = None,
+    boot_run_id: str | None = None,
 ) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
     report = run_release_pipeline(
         project,
         options,
@@ -442,6 +602,8 @@ def render_release_pipeline(
         run_boot_proof=run_boot,
         boot_proof_execute=not boot_dry,
         boot_proof_backend=boot_backend,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
     )
     return (
         report.render_json() if json_output else report.render_text(),
@@ -459,12 +621,15 @@ def render_boot_proof(
     secure_boot: bool = False,
     dry_run: bool = False,
     json_output: bool = False,
+    build_run_id: str | None = None,
 ) -> tuple[str, bool]:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
     report = run_boot_proof(
         project,
         options,
@@ -474,6 +639,7 @@ def render_boot_proof(
         firmware=firmware,
         secure_boot=secure_boot,
         execute=not dry_run,
+        build_run_id=build_run_id,
     )
     rendered = report.render_json() if json_output else report.render_text()
     # Same rule as iso-build and debian-package: a plan never fails, a proof does. A
@@ -483,19 +649,39 @@ def render_boot_proof(
     return rendered, report.blocked and not dry_run
 
 
-def render_preview(root: Path, definition: Path | None, iso: Path | None, display: str, execute: bool = False, json_output: bool = False) -> str:
+def render_preview(
+    root: Path,
+    definition: Path | None,
+    iso: Path | None,
+    display: str,
+    execute: bool = False,
+    json_output: bool = False,
+) -> str:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
     target_iso = iso or options.output_iso or default_output_iso(project)
     runner = CommandRunner(dry_run=not execute)
-    report = QemuPreviewService(runner, target_iso, project.workdir, project.output_dir, QemuPreviewOptions(display=display)).run()
+    report = QemuPreviewService(
+        runner, target_iso, project.workdir, project.output_dir, QemuPreviewOptions(display=display)
+    ).run()
     return report.render_json() if json_output else report.render_text()
 
 
-def render_qemu_interaction(root: Path | None, definition: Path | None, iso: Path | None, plan: str, display: str = "none", list_plans: bool = False, execute: bool = False, json_output: bool = False) -> str:
+def render_qemu_interaction(
+    root: Path | None,
+    definition: Path | None,
+    iso: Path | None,
+    plan: str,
+    display: str = "none",
+    list_plans: bool = False,
+    execute: bool = False,
+    json_output: bool = False,
+) -> str:
     from distroforge.core.build import BuildOptions
     from distroforge.core.definition import apply_definition, load_definition
 
@@ -503,9 +689,18 @@ def render_qemu_interaction(root: Path | None, definition: Path | None, iso: Pat
         return "\n".join(available_interaction_plans())
     assert root is not None
     project = Project.load(root)
-    options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    options = (
+        apply_definition(project, load_definition(definition)) if definition else BuildOptions()
+    )
     target_iso = iso or options.output_iso or default_output_iso(project)
     resolved = resolve_interaction_plan(plan, target_iso)
     runner = CommandRunner(dry_run=not execute)
-    report = QemuInteractionService(runner, target_iso, project.workdir, project.output_dir, resolved, QemuInteractionOptions(display=display)).run()
+    report = QemuInteractionService(
+        runner,
+        target_iso,
+        project.workdir,
+        project.output_dir,
+        resolved,
+        QemuInteractionOptions(display=display),
+    ).run()
     return report.render_json() if json_output else report.render_text()

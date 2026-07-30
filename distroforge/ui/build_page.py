@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from distroforge.ui.artifact_release_paths import (
+    resolve_artifact_run_ids,
+    store_artifact_run_ids,
+)
 from distroforge.ui.path_actions import picker
 from distroforge.ui.qt import (
     QCheckBox,
@@ -219,13 +223,24 @@ def run_iso_accept_from_build(window: BuildPageWindow) -> None:
 
     window._sync_project_from_ui()
     project, options = window.project, window._build_options()
+    build_run_id, boot_run_id = resolve_artifact_run_ids(window)
 
     # Acceptance hashes the finished ISO end to end; the registry marks iso-accept
     # progress_required, so it belongs on a worker, not in the click handler.
     def _work():
-        return accept_iso(project, options)
+        return accept_iso(
+            project,
+            options,
+            build_run_id=build_run_id,
+            boot_run_id=boot_run_id,
+        )
 
     def _done(report):
+        store_artifact_run_ids(
+            window,
+            report.build_run_id,
+            report.boot_run_id,
+        )
         window.plan_view.setPlainText(report.render_text())
         window._log(f"ISO acceptance: {report.status}")
 

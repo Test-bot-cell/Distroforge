@@ -180,10 +180,12 @@ reproducing private vendor build pipelines.
 distroforge boot-proof "$PROJECT" --iso /path/to/image.iso --backend auto
 distroforge boot-proof "$PROJECT" --iso /path/to/image.iso --firmware uefi --secure-boot
 distroforge release-readiness \
-  --iso /path/to/image.iso \
-  --output-dir "$PROJECT/out"
-distroforge release-gate "$PROJECT" --iso /path/to/image.iso
-distroforge publish-drill "$PROJECT" --iso /path/to/image.iso
+  --iso /path/to/output/image.iso \
+  --output-dir /path/to/output
+distroforge release-gate "$PROJECT" \
+  --iso /path/to/output/image.iso \
+  --output-dir /path/to/output
+distroforge publish-drill "$PROJECT" --iso /path/to/output/image.iso
 ```
 
 Building, boot evidence, signing, verification, and publication decisions stay
@@ -256,6 +258,44 @@ APT shims and failing dpkg-family traps. These are local durability plus closed
 environment/command-resolution properties only; the harness still uses explicitly
 admitted host utilities, while `capture_origin`, dpkg execution and filesystem
 causality remain unverified.
+
+M3.2a.2 closes a separate artifact-I/O integrity boundary. Low-level SHA-256 calls no
+longer retain a pathname cache between verdicts. Authoritative rootfs, ISO, QEMU/boot and
+release/publish readers instead use invocation-scoped verification sessions: canonical
+paths are opened component by component without following links, regular-file inodes stay
+held, hashes and parsed values may be reused only inside that session, and the held inode
+plus its path are revalidated at closure. Every producer and reader validates `run_id`
+before composing a path: it must be one canonical strict-UTF-8 component, contain no
+separator or control character and fit in 255 encoded bytes. Binary evidence and run
+trees are copied from stable descriptors into synced same-filesystem objects. Regular
+text and binary targets use anonymous `O_TMPFILE` inodes and one no-replace link: an
+existing regular file is accepted only when an explicitly idempotent path proves the
+exact same size and SHA-256; it is never replaced or unlinked. Tree publication keeps a
+descriptor-bound staging directory and exact per-file digest contract. Malformed or
+non-canonical `SHA256SUMS` and existence-only signing evidence are refusals.
+`publish-bundle` consumes a deliberately ephemeral, non-serialized gate receipt which
+binds every source file to its identity and SHA-256 and every run tree to its anchor and
+exact inventory. The selected bundle is also explicit in the gate: a signed default
+bundle cannot credit a custom target, and unsafe path components are blocked before
+missing evidence can be downgraded to review. A non-blocked gate also names one immutable
+build run B and boot run C. Ready provenance/SBOM items must resolve under B; ready
+boot/QEMU items must resolve under C, and terminal verification cross-checks that both
+the boot proof and its run manifest bind C back to B. If B already embeds a valid boot
+run D, another boot request revalidates and reuses D without starting a VM or manufacturing
+an unusable C. CLI, pipeline, drill, beginner and GUI paths carry those verified IDs rather
+than selecting compatibility aliases. Only after publication does a distinct bundle
+directory identity flow through signing, notes, verification, explanation and drill. The
+signing keyring is
+re-exported public-only, but only an externally supplied complete signer fingerprint can
+anchor it. The persisted drill has a strict cross-report schema, and a final read-only
+live verifier—not self-consistent JSON—resolves the sole pre-signing review.
+Owned temporary trees are durably detached under unpredictable quarantine names before
+any optional bounded scrub. Detachment and scrub are separate verdicts, the quarantine
+is always physically retained, and some replay workspaces intentionally record residual
+bytes after detach-only retirement. These are code and adversarial-fixture guarantees,
+not a product run. They do not promote `capture_origin`, `filesystem_causality` or
+`release_ready`. The blocking policy for an unreadable CVE database remains the separate
+M3.2a.3 item; producer causality remains M3.2b.
 
 ## Supported sources
 

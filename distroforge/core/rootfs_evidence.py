@@ -26,16 +26,29 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from .artifact_verification import (
+    ArtifactHandle,
+    ArtifactLimits,
+    ArtifactVerificationError,
+    ArtifactVerificationSession,
+)
 from .command import CommandSpec, sudo
-from .evidence_run import canonical_sha256, write_immutable_text
+from .evidence_run import canonical_sha256, is_safe_run_id, write_immutable_text
 
 ROOTFS_MANIFEST_SCHEMA = "distroforge.rootfs-manifest.v1"
 ROOTFS_PACKING_VERIFICATION_SCHEMA = "distroforge.rootfs-packing-verification.v1"
+ROOTFS_DESCRIPTOR_WRITE_SCHEMA = "distroforge.rootfs-descriptor-write.v1"
 DEFAULT_EXCLUDED_DESCENDANTS = ("dev", "proc", "run", "sys")
 MAX_ROOTFS_MANIFEST_ENTRIES = 500_000
 MAX_ROOTFS_EXCLUSIONS = 64
 MAX_ROOTFS_PATH_BYTES = 4 * 1024
 MAX_ROOTFS_PATH_COMPONENTS = 256
+MAX_ROOTFS_MANIFEST_BYTES = 384 * 1024 * 1024
+MAX_ROOTFS_PACKING_VERIFICATION_BYTES = 16 * 1024 * 1024
+# One manifest entry contributes its object, keys and values to the defensive
+# JSON shape walk.  Keep the parser budget above the schema's entry ceiling
+# instead of silently making the declared 500k bound unreachable.
+MAX_ROOTFS_MANIFEST_JSON_NODES = MAX_ROOTFS_MANIFEST_ENTRIES * 24 + 4096
 
 _CHUNK = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -179,6 +192,12 @@ class StableFileWitness:
         return Path(f"/proc/{os.getpid()}/fd/{self._descriptor}")
 
     @property
+    def pass_fds(self) -> tuple[int, ...]:
+        if self._closed:
+            raise RootfsEvidenceError("Packed image witness is already closed")
+        return (self._descriptor,)
+
+    @property
     def initial_identity(self) -> dict[str, object]:
         """Identity hashed from the pinned descriptor before consumer dispatch."""
         if self._closed:
@@ -206,6 +225,7 @@ class StableFileWitness:
             raise RootfsEvidenceError(
                 f"Packed rootfs extraction destination is not fresh: {destination}"
             )
+        pass_fds = self.pass_fds
         return CommandSpec(
             argv=sudo(
                 (
@@ -216,9 +236,11 @@ class StableFileWitness:
                     str(self.proc_fd_path),
                 ),
                 use_sudo,
+                preserve_fds=pass_fds,
             ),
             needs_root=use_sudo,
             description="Extract witnessed packed rootfs into a fresh verification tree",
+            pass_fds=pass_fds,
         )
 
     def seal_after_extraction(self) -> dict[str, object]:
@@ -285,12 +307,25 @@ class RootfsEvidenceService:
         *,
         excluded_descendants: Iterable[str] = DEFAULT_EXCLUDED_DESCENDANTS,
         run_id: str | None = None,
+        root_descriptor: int | None = None,
     ) -> None:
         self.root = root.absolute()
         self.excluded_descendants = _normalise_exclusions(excluded_descendants)
-        if run_id is not None and (not run_id or Path(run_id).name != run_id):
+        if run_id is not None and not is_safe_run_id(run_id):
             raise RootfsEvidenceError(f"Unsafe rootfs evidence run_id: {run_id!r}")
         self.run_id = run_id
+        self.root_descriptor = root_descriptor
+        if root_descriptor is not None:
+            try:
+                root_identity = os.fstat(root_descriptor)
+            except OSError as exc:
+                raise RootfsEvidenceError(
+                    f"Cannot use held rootfs directory descriptor: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(root_identity.st_mode):
+                raise RootfsEvidenceError(
+                    "Held rootfs descriptor does not name a directory"
+                )
 
     def capture_before_packing(self, manifest_path: Path) -> dict[str, object]:
         """Write the immutable semantic identity and its host packing guard."""
@@ -299,16 +334,84 @@ class RootfsEvidenceService:
         write_immutable_text(manifest_path, _json_text(payload))
         return payload
 
+    def capture_before_packing_to_descriptor(
+        self,
+        manifest_descriptor: int,
+    ) -> dict[str, object]:
+        """Write one fresh manifest to an already-held regular-file inode."""
+
+        try:
+            before = os.fstat(manifest_descriptor)
+        except OSError as exc:
+            raise RootfsEvidenceError(
+                f"Cannot use held rootfs manifest descriptor: {exc}"
+            ) from exc
+        if not stat.S_ISREG(before.st_mode) or before.st_size != 0:
+            raise RootfsEvidenceError(
+                "Held rootfs manifest descriptor must name a fresh regular file"
+            )
+        payload = self.snapshot()
+        encoded = _json_text(payload).encode("utf-8")
+        if len(encoded) > MAX_ROOTFS_MANIFEST_BYTES:
+            raise RootfsEvidenceError("Rootfs manifest exceeds its byte bound")
+        try:
+            os.lseek(manifest_descriptor, 0, os.SEEK_SET)
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(manifest_descriptor, encoded[offset:])
+                if written <= 0:
+                    raise OSError("rootfs manifest write made no progress")
+                offset += written
+            os.fsync(manifest_descriptor)
+            after = os.fstat(manifest_descriptor)
+        except OSError as exc:
+            raise RootfsEvidenceError(
+                f"Cannot write held rootfs manifest descriptor: {exc}"
+            ) from exc
+        if (
+            _stable_inode_identity(before) != _stable_inode_identity(after)
+            or after.st_size != len(encoded)
+        ):
+            raise RootfsChangedError(
+                "Held rootfs manifest inode changed while it was written"
+            )
+        return payload
+
     def snapshot(self) -> dict[str, object]:
         """Return a stable two-pass snapshot without writing an artifact."""
-        _assert_physical_root(self.root)
+        if self.root_descriptor is None:
+            _assert_physical_root(self.root)
+        else:
+            _assert_directory_descriptor_binding(
+                self.root,
+                self.root_descriptor,
+                "held rootfs",
+            )
         _assert_unmounted(self.root)
-        first = _scan_once(self.root, self.excluded_descendants)
-        second = _scan_once(self.root, self.excluded_descendants)
+        if self.root_descriptor is None:
+            first = _scan_once(self.root, self.excluded_descendants)
+            second = _scan_once(self.root, self.excluded_descendants)
+        else:
+            first = _scan_once(
+                self.root,
+                self.excluded_descendants,
+                root_descriptor=self.root_descriptor,
+            )
+            second = _scan_once(
+                self.root,
+                self.excluded_descendants,
+                root_descriptor=self.root_descriptor,
+            )
         if first != second:
             raise RootfsChangedError(
                 "The rootfs changed between the two identity scans; refusing an "
                 "unstable pre-packing proof."
+            )
+        if self.root_descriptor is not None:
+            _assert_directory_descriptor_binding(
+                self.root,
+                self.root_descriptor,
+                "held rootfs",
             )
         entries = list(second.entries)
         return {
@@ -408,6 +511,8 @@ def rootfs_capture_command(
     excluded_descendants: Iterable[str] = DEFAULT_EXCLUDED_DESCENDANTS,
     use_sudo: bool = True,
     python: Path | None = None,
+    root_descriptor: int | None = None,
+    manifest_descriptor: int | None = None,
 ) -> CommandSpec:
     """Build the audited command that can read a protected final rootfs."""
     exclusions = _normalise_exclusions(excluded_descendants)
@@ -425,14 +530,37 @@ def rootfs_capture_command(
         str(root),
         "--manifest",
         str(manifest_path),
+        *(
+            ("--root-fd", str(root_descriptor))
+            if root_descriptor is not None
+            else ()
+        ),
+        *(
+            ("--manifest-fd", str(manifest_descriptor))
+            if manifest_descriptor is not None
+            else ()
+        ),
         *(("--run-id", run_id) if run_id is not None else ()),
         *exclusion_argv,
     )
+    pass_fds = tuple(
+        descriptor
+        for descriptor in (root_descriptor, manifest_descriptor)
+        if descriptor is not None
+    )
+    if len(set(pass_fds)) != len(pass_fds):
+        raise RootfsEvidenceError(
+            "Rootfs capture descriptors must name distinct held objects"
+        )
     return CommandSpec(
-        argv=sudo(argv, use_sudo),
+        argv=sudo(argv, use_sudo, preserve_fds=pass_fds),
         cwd=Path(__file__).resolve().parents[2],
         needs_root=use_sudo,
         description="Capture final rootfs identity before packing",
+        pass_fds=pass_fds,
+        pass_directory_fds=(
+            (root_descriptor,) if root_descriptor is not None else ()
+        ),
     )
 
 
@@ -490,22 +618,105 @@ def rootfs_verify_command(
 
 
 def rootfs_unpack_command(
-    witness: PackedImageWitness,
+    witness: PackedImageWitness | ArtifactHandle,
     destination: Path,
     *,
     use_sudo: bool = True,
+    destination_descriptor: int | None = None,
 ) -> CommandSpec:
     """Build the audited extraction command from the witness's pinned FD."""
+    if destination_descriptor is not None:
+        try:
+            destination_identity = os.fstat(destination_descriptor)
+        except OSError as exc:
+            raise RootfsEvidenceError(
+                f"Packed rootfs destination descriptor is unavailable: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(destination_identity.st_mode):
+            raise RootfsEvidenceError(
+                "Packed rootfs destination descriptor does not name a directory"
+            )
+        pass_fds = (*witness.pass_fds, destination_descriptor)
+        if len(set(pass_fds)) != len(pass_fds):
+            raise RootfsEvidenceError(
+                "Packed rootfs input and destination descriptors must be distinct"
+            )
+        return CommandSpec(
+            argv=sudo(
+                (
+                    "unsquashfs",
+                    "-no-progress",
+                    "-d",
+                    f"/proc/self/fd/{destination_descriptor}",
+                    str(witness.proc_fd_path),
+                ),
+                use_sudo,
+                preserve_fds=pass_fds,
+            ),
+            needs_root=use_sudo,
+            description=(
+                "Extract session-pinned packed rootfs into a held verification tree"
+            ),
+            pass_fds=pass_fds,
+            pass_directory_fds=(destination_descriptor,),
+        )
+    if isinstance(witness, ArtifactHandle):
+        if destination.exists() or destination.is_symlink():
+            raise RootfsEvidenceError(
+                f"Packed rootfs extraction destination is not fresh: {destination}"
+            )
+        pass_fds = witness.pass_fds
+        return CommandSpec(
+            argv=sudo(
+                (
+                    "unsquashfs",
+                    "-no-progress",
+                    "-d",
+                    str(destination),
+                    str(witness.proc_fd_path),
+                ),
+                use_sudo,
+                preserve_fds=pass_fds,
+            ),
+            needs_root=use_sudo,
+            description=("Extract session-pinned packed rootfs into a fresh verification tree"),
+            pass_fds=pass_fds,
+        )
     return witness.unpack_command(destination, use_sudo=use_sudo)
 
 
-def load_rootfs_manifest(path: Path) -> dict[str, object]:
+def load_rootfs_manifest(
+    path: Path,
+    *,
+    session: ArtifactVerificationSession | None = None,
+) -> dict[str, object]:
     """Load and structurally validate a rootfs manifest before trusting it."""
+    absolute = _absolute_artifact_path(path)
+    if session is None:
+        try:
+            with ArtifactVerificationSession(
+                absolute.parent,
+                label="rootfs manifest verification",
+                limits=ArtifactLimits(
+                    max_json_nodes=MAX_ROOTFS_MANIFEST_JSON_NODES,
+                ),
+            ) as local_session:
+                return load_rootfs_manifest(absolute, session=local_session)
+        except ArtifactVerificationError as exc:
+            raise RootfsEvidenceError(f"Rootfs manifest is unreadable: {exc}") from exc
+
+    def load() -> dict[str, object]:
+        payload = session.file_path(
+            absolute,
+            label="rootfs manifest",
+            max_bytes=MAX_ROOTFS_MANIFEST_BYTES,
+        ).json_object()
+        return validate_rootfs_manifest_payload(payload)
+
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return session.memo(("rootfs-manifest", str(absolute)), load)
+    except ArtifactVerificationError as exc:
         raise RootfsEvidenceError(f"Rootfs manifest is unreadable: {exc}") from exc
-    return validate_rootfs_manifest_payload(payload)
 
 
 def validate_rootfs_manifest_payload(payload: object) -> dict[str, object]:
@@ -530,9 +741,7 @@ def validate_rootfs_manifest_payload(payload: object) -> dict[str, object]:
     }:
         raise RootfsEvidenceError("Rootfs manifest fields are not canonical")
     run_id = payload.get("run_id")
-    if run_id is not None and (
-        not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id
-    ):
+    if run_id is not None and not is_safe_run_id(run_id):
         raise RootfsEvidenceError("Rootfs manifest run identity is malformed")
 
     entries = payload.get("entries")
@@ -595,6 +804,7 @@ def validate_rootfs_evidence(
     run_dir: Path,
     *,
     expected_run_id: str,
+    session: ArtifactVerificationSession | None = None,
 ) -> RootfsEvidenceValidation:
     """Validate the immutable pre-pack and packed-product proof offline.
 
@@ -603,20 +813,65 @@ def validate_rootfs_evidence(
     product refresh must unpack the product and call
     :func:`validate_replayed_rootfs_manifest`.
     """
-    if not expected_run_id or Path(expected_run_id).name != expected_run_id:
+    if not is_safe_run_id(expected_run_id):
         return RootfsEvidenceValidation(False, "expected rootfs run_id is unsafe")
+    absolute_run_dir = _absolute_artifact_path(run_dir)
+    if session is None:
+        try:
+            with ArtifactVerificationSession(
+                absolute_run_dir,
+                label="rootfs evidence verification",
+                limits=ArtifactLimits(
+                    max_json_nodes=MAX_ROOTFS_MANIFEST_JSON_NODES,
+                ),
+            ) as local_session:
+                return validate_rootfs_evidence(
+                    absolute_run_dir,
+                    expected_run_id=expected_run_id,
+                    session=local_session,
+                )
+        except ArtifactVerificationError as exc:
+            return RootfsEvidenceValidation(
+                False,
+                f"rootfs evidence is unreadable: {exc}",
+            )
+
+    def validate() -> RootfsEvidenceValidation:
+        return _validate_rootfs_evidence_in_session(
+            absolute_run_dir,
+            expected_run_id=expected_run_id,
+            session=session,
+        )
+
+    try:
+        return session.memo(
+            ("rootfs-evidence-validation", str(absolute_run_dir), expected_run_id),
+            validate,
+        )
+    except ArtifactVerificationError as exc:
+        return RootfsEvidenceValidation(False, f"rootfs evidence is unreadable: {exc}")
+
+
+def _validate_rootfs_evidence_in_session(
+    run_dir: Path,
+    *,
+    expected_run_id: str,
+    session: ArtifactVerificationSession,
+) -> RootfsEvidenceValidation:
     manifest_path = run_dir / "ROOTFS-MANIFEST.json"
     verification_path = run_dir / "ROOTFS-PACKING-VERIFICATION.json"
-    if manifest_path.is_symlink() or verification_path.is_symlink():
-        return RootfsEvidenceValidation(False, "rootfs evidence uses a symlink")
     try:
-        manifest = load_rootfs_manifest(manifest_path)
-        verification = json.loads(verification_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, RootfsEvidenceError) as exc:
+        manifest = load_rootfs_manifest(manifest_path, session=session)
+        verification = session.file_path(
+            verification_path,
+            label="rootfs packing verification",
+            max_bytes=MAX_ROOTFS_PACKING_VERIFICATION_BYTES,
+        ).json_object()
+    except (ArtifactVerificationError, RootfsEvidenceError) as exc:
         return RootfsEvidenceValidation(False, f"rootfs evidence is unreadable: {exc}")
     if manifest.get("run_id") != expected_run_id:
         return RootfsEvidenceValidation(False, "rootfs manifest belongs to another run")
-    if not isinstance(verification, dict) or set(verification) != {
+    if set(verification) != {
         "schema",
         "run_id",
         "status",
@@ -723,6 +978,7 @@ def validate_replayed_rootfs_manifest(
     replay_manifest_path: Path,
     *,
     expected_run_id: str,
+    session: ArtifactVerificationSession | None = None,
 ) -> RootfsEvidenceValidation:
     """Compare an independently unpacked rootfs with the sealed semantic manifest.
 
@@ -732,13 +988,52 @@ def validate_replayed_rootfs_manifest(
     portable semantic contract: exclusion scope, object count, canonical entries
     and their aggregate SHA256.
     """
-    if not expected_run_id or Path(expected_run_id).name != expected_run_id:
+    if not is_safe_run_id(expected_run_id):
         return RootfsEvidenceValidation(False, "expected rootfs replay run_id is unsafe")
-    if manifest_path.is_symlink() or replay_manifest_path.is_symlink():
-        return RootfsEvidenceValidation(False, "rootfs replay evidence uses a symlink")
+    if session is None:
+        try:
+            with ArtifactVerificationSession(
+                Path("/"),
+                label="rootfs replay comparison",
+                limits=ArtifactLimits(
+                    max_json_nodes=MAX_ROOTFS_MANIFEST_JSON_NODES,
+                ),
+            ) as local_session:
+                return validate_replayed_rootfs_manifest(
+                    manifest_path,
+                    replay_manifest_path,
+                    expected_run_id=expected_run_id,
+                    session=local_session,
+                )
+        except ArtifactVerificationError as exc:
+            return RootfsEvidenceValidation(
+                False,
+                f"rootfs replay manifest is unreadable: {exc}",
+            )
     try:
-        expected = load_rootfs_manifest(manifest_path)
-        replayed = load_rootfs_manifest(replay_manifest_path)
+        expected = load_rootfs_manifest(manifest_path, session=session)
+        replayed = load_rootfs_manifest(replay_manifest_path, session=session)
+    except RootfsEvidenceError as exc:
+        return RootfsEvidenceValidation(False, f"rootfs replay manifest is unreadable: {exc}")
+    return validate_replayed_rootfs_payloads(
+        expected,
+        replayed,
+        expected_run_id=expected_run_id,
+    )
+
+
+def validate_replayed_rootfs_payloads(
+    expected_payload: object,
+    replayed_payload: object,
+    *,
+    expected_run_id: str,
+) -> RootfsEvidenceValidation:
+    """Compare two manifest payloads already read through trusted descriptors."""
+    if not is_safe_run_id(expected_run_id):
+        return RootfsEvidenceValidation(False, "expected rootfs replay run_id is unsafe")
+    try:
+        expected = validate_rootfs_manifest_payload(expected_payload)
+        replayed = validate_rootfs_manifest_payload(replayed_payload)
     except RootfsEvidenceError as exc:
         return RootfsEvidenceValidation(False, f"rootfs replay manifest is unreadable: {exc}")
     if expected.get("run_id") != expected_run_id or replayed.get("run_id") != expected_run_id:
@@ -764,13 +1059,42 @@ def validate_replayed_rootfs_manifest(
     )
 
 
-def _scan_once(root: Path, exclusions: tuple[str, ...]) -> _Scan:
-    if root.is_symlink():
-        raise RootfsEvidenceError("The rootfs path itself must not be a symlink")
-    try:
-        root_fd = os.open(root, _DIRECTORY_FLAGS)
-    except OSError as exc:
-        raise RootfsEvidenceError(f"Cannot open rootfs {root}: {exc}") from exc
+def _absolute_artifact_path(path: Path) -> Path:
+    """Canonical lexical path without resolving any attacker-controlled symlink."""
+    return Path(os.path.abspath(path))
+
+
+def _scan_once(
+    root: Path,
+    exclusions: tuple[str, ...],
+    *,
+    root_descriptor: int | None = None,
+) -> _Scan:
+    if root_descriptor is None:
+        if root.is_symlink():
+            raise RootfsEvidenceError("The rootfs path itself must not be a symlink")
+        try:
+            root_fd = os.open(root, _DIRECTORY_FLAGS)
+        except OSError as exc:
+            raise RootfsEvidenceError(f"Cannot open rootfs {root}: {exc}") from exc
+    else:
+        try:
+            root_fd = os.open(
+                ".",
+                _DIRECTORY_FLAGS,
+                dir_fd=root_descriptor,
+            )
+        except OSError as exc:
+            raise RootfsEvidenceError(
+                f"Cannot duplicate held rootfs directory descriptor: {exc}"
+            ) from exc
+        if _stable_inode_identity(os.fstat(root_fd)) != _stable_inode_identity(
+            os.fstat(root_descriptor)
+        ):
+            os.close(root_fd)
+            raise RootfsChangedError(
+                "Held rootfs directory changed while acquiring a scan descriptor"
+            )
 
     entries: list[dict[str, object]] = []
     guards: list[dict[str, object]] = []
@@ -1063,6 +1387,45 @@ def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
         value.st_ctime_ns,
         value.st_rdev,
     )
+
+
+def _stable_inode_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_nlink,
+        value.st_rdev,
+    )
+
+
+def _assert_directory_descriptor_binding(
+    path: Path,
+    descriptor: int,
+    label: str,
+) -> None:
+    try:
+        held = os.fstat(descriptor)
+        current_descriptor = os.open(path, _DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise RootfsChangedError(
+            f"{label} path no longer names its held directory: {exc}"
+        ) from exc
+    try:
+        current = os.fstat(current_descriptor)
+        if (
+            not stat.S_ISDIR(held.st_mode)
+            or _stable_inode_identity(current) != _stable_inode_identity(held)
+        ):
+            raise RootfsChangedError(
+                f"{label} path no longer names its held directory"
+            )
+    finally:
+        os.close(current_descriptor)
 
 
 def _file_type(mode: int) -> str:
@@ -1433,10 +1796,7 @@ def _bounded_safe_relative_path(value: object) -> bool:
     ):
         return False
     path = PurePosixPath(value)
-    return (
-        value == path.as_posix()
-        and not any(part in {"", ".."} for part in path.parts)
-    )
+    return value == path.as_posix() and not any(part in {"", ".."} for part in path.parts)
 
 
 def _excluded(path: str, exclusions: tuple[str, ...]) -> bool:
@@ -1461,6 +1821,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     capture = subcommands.add_parser("capture")
     capture.add_argument("--root", type=Path, required=True)
     capture.add_argument("--manifest", type=Path, required=True)
+    capture.add_argument("--root-fd", type=int)
+    capture.add_argument("--manifest-fd", type=int)
     capture.add_argument("--run-id")
     capture_scope = capture.add_mutually_exclusive_group()
     capture_scope.add_argument("--exclude", action="append", default=None)
@@ -1494,10 +1856,27 @@ def main(argv: list[str] | None = None) -> int:
         arguments.root,
         excluded_descendants=exclusions,
         run_id=arguments.run_id,
+        root_descriptor=getattr(arguments, "root_fd", None),
     )
     try:
         if arguments.operation == "capture":
-            service.capture_before_packing(arguments.manifest)
+            if arguments.manifest_fd is None:
+                service.capture_before_packing(arguments.manifest)
+            else:
+                payload = service.capture_before_packing_to_descriptor(
+                    arguments.manifest_fd
+                )
+                encoded = _json_text(payload).encode("utf-8")
+                print(
+                    json.dumps(
+                        {
+                            "schema": ROOTFS_DESCRIPTOR_WRITE_SCHEMA,
+                            "size": len(encoded),
+                            "sha256": hashlib.sha256(encoded).hexdigest(),
+                        },
+                        sort_keys=True,
+                    )
+                )
         else:
             image_witness = {
                 "name": arguments.packed_image_name,

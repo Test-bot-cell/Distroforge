@@ -114,9 +114,7 @@ _PRODUCT_FIXTURE_TOOLS = ("dpkg-deb", "mksquashfs", "unsquashfs", "xorriso")
 def _require_product_fixture_tools() -> None:
     missing = [tool for tool in _PRODUCT_FIXTURE_TOOLS if shutil.which(tool) is None]
     if missing:
-        pytest.skip(
-            "authoritative build-evidence fixture requires: " + ", ".join(missing)
-        )
+        pytest.skip("authoritative build-evidence fixture requires: " + ", ".join(missing))
 
 
 def _package_fixture_keyring_bytes() -> bytes:
@@ -132,9 +130,7 @@ def _package_fixture_source_policy() -> dict[str, object]:
         "components": ["main"],
         "architectures": ["all"],
         "signer_fingerprints": [_PACKAGE_FIXTURE_FINGERPRINT],
-        "keyring_sha256": [
-            hashlib.sha256(_package_fixture_keyring_bytes()).hexdigest()
-        ],
+        "keyring_sha256": [hashlib.sha256(_package_fixture_keyring_bytes()).hexdigest()],
         "snapshot_at": None,
         "max_release_age_seconds": 24 * 60 * 60,
         "max_future_skew_seconds": 5 * 60,
@@ -317,9 +313,7 @@ def _write_valid_package_input_evidence(
             "expected_sha256": hashlib.sha256(keyring.read_bytes()).hexdigest(),
         },
         "allowed_signer_fingerprints": [_PACKAGE_FIXTURE_FINGERPRINT],
-        "source_policy_sha256": package_source_policy_sha256(
-            [_package_fixture_source_policy()]
-        ),
+        "source_policy_sha256": package_source_policy_sha256([_package_fixture_source_policy()]),
         "verification_time": _PACKAGE_FIXTURE_BUILD_TIME,
         "apt_command_argv_sha256": package_apt_command_argv_sha256(command_argv),
         "transactions": [
@@ -364,18 +358,14 @@ def _write_valid_package_apt_actions(
     run_id: str,
     package_inputs_path: Path,
 ) -> Path:
-    package_inputs = json.loads(
-        package_inputs_path.read_text(encoding="utf-8")
-    )
+    package_inputs = json.loads(package_inputs_path.read_text(encoding="utf-8"))
     if not isinstance(package_inputs, dict):
         raise AssertionError("invalid PACKAGE-INPUTS fixture")
     refs = package_inputs.get("transactions")
     if not isinstance(refs, list):
         raise AssertionError("invalid package transaction fixture")
     transactions = [
-        json.loads(
-            (run_dir / str(ref["path"])).read_text(encoding="utf-8")
-        )
+        json.loads((run_dir / str(ref["path"])).read_text(encoding="utf-8"))
         for ref in refs
         if isinstance(ref, dict)
     ]
@@ -502,7 +492,20 @@ def write_valid_qemu_report(
     marker = b"login:"
     serial_artifact = _artifact(serial)
     serial_artifact["path"] = "qemu/serial.log"
-    qemu_argv = ["qemu-system-x86_64", "-cdrom", str(iso)]
+    serial_artifact["consumed_via"] = "held-descriptor"
+    serial_descriptor = "/proc/4242/fd/8"
+    serial_artifact["descriptor_path"] = serial_descriptor
+    iso_descriptor = "/proc/4242/fd/7"
+    qemu_argv = [
+        "qemu-system-x86_64",
+        "-cdrom",
+        iso_descriptor,
+        "-serial",
+        f"file:{serial_descriptor}",
+    ]
+    iso_artifact = _artifact(iso)
+    iso_artifact["consumed_via"] = "held-descriptor"
+    iso_artifact["descriptor_path"] = iso_descriptor
     payload = {
         "schema": "distroforge.qemu-lab.v2",
         "run_id": run_id,
@@ -510,7 +513,7 @@ def write_valid_qemu_report(
         "verdict": "passed",
         "started_at": "2026-07-29T00:00:00+00:00",
         "finished_at": "2026-07-29T00:01:00+00:00",
-        "iso": _artifact(iso),
+        "iso": iso_artifact,
         "accelerated": False,
         "boot": {
             "profile": "live",
@@ -577,9 +580,34 @@ def write_valid_boot_proof(
     iso: Path,
     *,
     run_id: str = "proof-run",
+    build_run_id: str | None = None,
 ) -> Path:
+    if build_run_id is None:
+        iso_digest = hashlib.sha256(iso.read_bytes()).hexdigest()
+        matching_build_runs: list[str] = []
+        runs_root = project.output_dir / "evidence" / "runs"
+        for candidate in sorted(runs_root.glob("*/ISO-BUILD.json")):
+            try:
+                build_payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(build_payload, dict)
+                and build_payload.get("status") == "built"
+                and build_payload.get("execute") is True
+                and build_payload.get("output_iso") == str(iso)
+                and build_payload.get("output_sha256") == iso_digest
+            ):
+                matching_build_runs.append(candidate.parent.name)
+        if len(matching_build_runs) != 1:
+            raise AssertionError(
+                "boot proof fixture requires exactly one immutable build run "
+                f"matching the ISO, found {matching_build_runs}"
+            )
+        build_run_id = matching_build_runs[0]
     qemu_report = write_valid_qemu_report(project.output_dir, iso, run_id=run_id)
     run_dir = project.output_dir / "evidence" / "runs" / run_id
+    immutable_qemu_report = run_dir / qemu_report.name
     command_log = run_dir / "commands.jsonl"
     command_log.write_text(
         '{"event":"finish","argv":["qemu-system-x86_64"],"returncode":0}\n',
@@ -597,6 +625,7 @@ def write_valid_boot_proof(
         "blocked": False,
         "proof": "boot-proof.json",
         "qemu_report": qemu_report.name,
+        "immutable_qemu_report": str(immutable_qemu_report),
         "notes": ["fixture runtime proof"],
         "evidence": {},
         "attempted_backends": ["qemu"],
@@ -605,9 +634,9 @@ def write_valid_boot_proof(
         "firmware": "bios",
         "secure_boot": False,
         "immutable_proof": "boot-proof.json",
-        "qemu_report_sha256": hashlib.sha256(qemu_report.read_bytes()).hexdigest(),
+        "qemu_report_sha256": hashlib.sha256(immutable_qemu_report.read_bytes()).hexdigest(),
         "reached_milestone": "login_prompt",
-        "build_run_id": "",
+        "build_run_id": build_run_id,
         "command_log": command_log.name,
         "run_manifest": "RUN-MANIFEST.json",
     }
@@ -619,6 +648,7 @@ def write_valid_boot_proof(
     manifest = {
         "schema": "distroforge.boot-proof-run-manifest.v1",
         "run_id": run_id,
+        "build_run_id": build_run_id,
         "mode": "execute",
         "status": "ready",
         "files": [
@@ -635,6 +665,40 @@ def write_valid_boot_proof(
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (run_dir / "RUN-MANIFEST.json.sha256").write_text(
         f"{hashlib.sha256(manifest_path.read_bytes()).hexdigest()}  RUN-MANIFEST.json\n",
+        encoding="utf-8",
+    )
+
+    build_dir = project.output_dir / "evidence" / "runs" / build_run_id
+    build_report = build_dir / "ISO-BUILD.json"
+    build_payload = json.loads(build_report.read_text(encoding="utf-8"))
+    assert isinstance(build_payload, dict)
+    build_payload["boot_proof"] = payload
+    build_report.write_text(
+        json.dumps(build_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    build_manifest = build_dir / "RUN-MANIFEST.json"
+    build_manifest_payload = json.loads(build_manifest.read_text(encoding="utf-8"))
+    assert isinstance(build_manifest_payload, dict)
+    build_files = build_manifest_payload.get("files")
+    assert isinstance(build_files, list)
+    for index, item in enumerate(build_files):
+        if isinstance(item, dict) and item.get("path") == str(build_report):
+            build_files[index] = _artifact(build_report)
+            break
+    else:
+        raise AssertionError("build fixture manifest does not bind ISO-BUILD.json")
+    for artifact in (immutable_proof, immutable_qemu_report):
+        if not any(
+            isinstance(item, dict) and item.get("path") == str(artifact) for item in build_files
+        ):
+            build_files.append(_artifact(artifact))
+    build_manifest.write_text(
+        json.dumps(build_manifest_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (build_dir / "RUN-MANIFEST.json.sha256").write_text(
+        f"{hashlib.sha256(build_manifest.read_bytes()).hexdigest()}  RUN-MANIFEST.json\n",
         encoding="utf-8",
     )
     return proof
@@ -827,11 +891,7 @@ def write_valid_build_evidence(
     )
     package_apt_actions_identity = _artifact(package_apt_actions)
     package_apt_actions_identity["role"] = "package-apt-actions"
-    staged_squashfs = (
-        project.iso_root
-        / project.release.livefs
-        / "filesystem.squashfs"
-    )
+    staged_squashfs = project.iso_root / project.release.livefs / "filesystem.squashfs"
     fixture_rootfs = project.workdir / f"fixture-rootfs-{run_id}"
     rootfs_manifest = _write_valid_rootfs_manifest(
         run_dir,
@@ -845,9 +905,7 @@ def write_valid_build_evidence(
         expected_run_id=run_id,
         runner=CommandRunner(dry_run=False),
     )
-    package_filesystem_causality_identity = _artifact(
-        package_filesystem_causality
-    )
+    package_filesystem_causality_identity = _artifact(package_filesystem_causality)
     package_filesystem_causality_identity["role"] = "package-filesystem-causality"
     rootfs_verification = _write_valid_rootfs_packing_evidence(
         run_dir,
@@ -875,10 +933,7 @@ def write_valid_build_evidence(
         "commit_signature": "G " + "8" * 40,
         "git_measurements_complete": True,
         "dirty": False,
-        "tracked_diff_sha256": (
-            "e3b0c44298fc1c149afbf4c8996fb924"
-            "27ae41e4649b934ca495991b7852b855"
-        ),
+        "tracked_diff_sha256": ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
         "untracked": [],
         "ignored_runtime_paths": [],
         "worktree_sha256": "b" * 64,

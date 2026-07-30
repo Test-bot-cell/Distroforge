@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from .artifact_paths import default_output_iso
+from .artifact_verification import (
+    ArtifactVerificationError,
+    ArtifactVerificationSession,
+)
 from .boot_proof import BootProofReport, run_boot_proof
 from .build import BuildOptions, BuildOrchestrator
 from .command import CommandError, CommandRunner
@@ -13,9 +18,10 @@ from .evidence_run import (
     critical_artifact_identity,
     evidence_run_path,
     make_run_context,
+    publish_optional_text_alias_receipt,
     reserve_evidence_run,
+    stable_parent_identity,
     write_immutable_text,
-    write_text_alias,
 )
 from .hashing import sha256_file
 from .iso_doctor import IsoDoctorReport, diagnose_iso_build
@@ -27,6 +33,9 @@ from .project import Project
 _FAILURE_OUTPUT_TAIL = 8000
 ISO_BUILD_SCHEMA = "distroforge.iso-build.v2"
 RUN_MANIFEST_SCHEMA = "distroforge.build-run-manifest.v1"
+ISO_BUILD_ALIAS_PUBLICATION_SCHEMA = (
+    "distroforge.iso-build-alias-publication.v1"
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,9 @@ class IsoBuildReport:
     run_id: str = ""
     created_at: str = ""
     alias_report: Path | None = None
+    alias_target: Path | None = None
+    alias_publication_receipt: Path | None = None
+    alias_problem: str | None = None
     evidence_context: dict[str, object] | None = None
     artifacts: tuple[dict[str, object], ...] = ()
     provenance: dict[str, object] | None = None
@@ -127,6 +139,13 @@ class IsoBuildReport:
             "execute": self.execute,
             "report": str(self.report),
             "alias_report": str(self.alias_report) if self.alias_report else None,
+            "alias_target": str(self.alias_target) if self.alias_target else None,
+            "alias_publication_receipt": (
+                str(self.alias_publication_receipt)
+                if self.alias_publication_receipt
+                else None
+            ),
+            "alias_problem": self.alias_problem,
             "command_log": str(self.command_log) if self.command_log else None,
             "doctor": self.doctor.to_dict(),
             "build_steps": list(self.build_steps),
@@ -154,6 +173,12 @@ class IsoBuildReport:
             f"Output size: {self.output_size}",
             f"Output SHA256: {self.output_sha256 or 'missing'}",
             f"Report: {self.report}",
+            f"Alias target (optional): {self.alias_target or self.alias_report or 'none'}",
+            (
+                "Alias publication receipt: "
+                f"{self.alias_publication_receipt or 'not recorded'}"
+            ),
+            f"Alias note: {self.alias_problem or 'none'}",
             f"Command log: {self.command_log or 'not recorded'}",
             "",
             "Doctor:",
@@ -187,7 +212,9 @@ def run_iso_build(
     log_path: Path | None = None,
 ) -> IsoBuildReport:
     options = options or BuildOptions()
-    options.output_iso = options.output_iso or default_output_iso(project)
+    options.output_iso = Path(
+        os.path.abspath(options.output_iso or default_output_iso(project))
+    )
     options._evidence_context = None
     options._evidence_reserved = False
     options._evidence_injected = False
@@ -209,8 +236,18 @@ def run_iso_build(
         "ISO-BUILD.json",
         executed=execute,
     )
-    alias_report = project.output_dir / (
+    alias_target = project.output_dir / (
         "ISO-BUILD.json" if execute else "ISO-BUILD.plan.json"
+    )
+    alias_publication_receipt = evidence_run_path(
+        project.output_dir,
+        run_id,
+        "ISO-BUILD-ALIAS-PUBLICATION.json",
+        executed=execute,
+    )
+    alias_problem = (
+        "The compatibility alias is an optional, non-authoritative target. "
+        f"Consult {alias_publication_receipt} for this invocation's outcome."
     )
     log_path = log_path or evidence_run_path(
         project.output_dir,
@@ -256,14 +293,41 @@ def run_iso_build(
             exists, size, sha256 = _output_contract(options.output_iso)
             status = "built" if execute and exists and size > 0 else "blocked" if execute else "planned"
             if boot_proof_backend != "none" and (execute or options.output_iso.exists()):
-                boot_report = run_boot_proof(
-                    project,
-                    options,
-                    iso=options.output_iso,
-                    backend=boot_proof_backend,
-                    execute=execute,
-                )
-                if boot_report.blocked:
+                boot_source_session: ArtifactVerificationSession | None = None
+                try:
+                    boot_source_session = ArtifactVerificationSession(
+                        Path("/"),
+                        label=f"ISO build {run_id} boot source",
+                    )
+                    boot_source = boot_source_session.file_path(
+                        options.output_iso,
+                        label="newly built ISO boot source",
+                        max_bytes=boot_source_session.limits.max_file_bytes,
+                    )
+                    boot_report = run_boot_proof(
+                        project,
+                        options,
+                        iso=options.output_iso,
+                        backend=boot_proof_backend,
+                        execute=execute,
+                        build_run_id=run_id,
+                        _trusted_build_context=True,
+                        _source_iso_handle=boot_source,
+                        _source_verification_session=boot_source_session,
+                    )
+                    boot_source_session.seal()
+                except (ArtifactVerificationError, OSError, ValueError) as exc:
+                    failure = BuildFailure(
+                        command=(),
+                        description="boot-proof-source-selection",
+                        returncode=1,
+                        output=str(exc)[-_FAILURE_OUTPUT_TAIL:],
+                    )
+                    status = "blocked"
+                finally:
+                    if boot_source_session is not None:
+                        boot_source_session.close()
+                if boot_report is not None and boot_report.blocked:
                     status = "blocked"
     else:
         exists, size, sha256 = _output_contract(options.output_iso)
@@ -284,27 +348,10 @@ def run_iso_build(
     output_artifacts: list[tuple[Path, str]] = [
         (project.output_dir / "SHA256SUMS", "checksum-list"),
         (project.output_dir / "BUILDINFO", "build-info"),
-        (
-            project.output_dir / "distroforge-provenance.json",
-            "provenance-alias",
-        ),
-        (
-            project.output_dir / options.prebuild_vm.report_name,
-            "qemu-report-alias",
-        ),
-        (project.output_dir / "boot-proof.json", "boot-proof-alias"),
     ]
     if options.html_report.enabled:
         output_artifacts.append(
             (project.output_dir / options.html_report.filename, "html-report")
-        )
-    if options.provenance.sbom_format == "spdx":
-        output_artifacts.append(
-            (project.output_dir / "distroforge-sbom.spdx.json", "sbom-alias")
-        )
-    elif options.provenance.sbom_format == "cyclonedx":
-        output_artifacts.append(
-            (project.output_dir / "distroforge-sbom.cdx.json", "sbom-alias")
         )
     for path, role in output_artifacts:
         if path.is_file():
@@ -319,8 +366,6 @@ def run_iso_build(
             ),
             "qemu-report",
         ),
-        (project.output_dir / options.prebuild_vm.serial_log, "qemu-serial"),
-        (project.output_dir / options.prebuild_vm.screenshot_name, "qemu-screenshot"),
         (
             boot_report.immutable_proof
             if boot_report and boot_report.immutable_proof
@@ -328,8 +373,17 @@ def run_iso_build(
             "boot-proof",
         ),
         (
-            boot_report.qemu_report
-            if boot_report and boot_report.qemu_report_sha256
+            evidence_run_path(
+                project.output_dir,
+                boot_report.run_id,
+                options.prebuild_vm.report_name,
+                executed=execute,
+            )
+            if (
+                boot_report
+                and boot_report.run_id
+                and boot_report.qemu_report_sha256
+            )
             else None,
             "boot-proof-qemu-report",
         ),
@@ -385,16 +439,39 @@ def run_iso_build(
         command_log=command_log,
         run_id=run_id,
         created_at=str(evidence_context["created_at"]),
-        alias_report=alias_report,
+        # ``alias_report`` remains the legacy API spelling, but it is a target rather
+        # than a success claim.  The immutable run report and publication receipt are
+        # the authorities.
+        alias_report=alias_target,
+        alias_target=alias_target,
+        alias_publication_receipt=alias_publication_receipt,
+        alias_problem=alias_problem,
         evidence_context=evidence_context,
         artifacts=tuple(artifacts),
         provenance=provenance_identity,
         run_manifest=run_manifest,
     )
     content = report.render_json() + "\n"
-    write_immutable_text(immutable_report, content)
+    alias_parent_identity = stable_parent_identity(alias_target.parent)
+    immutable_report_receipt = write_immutable_text(immutable_report, content)
+    alias_receipt_payload = publish_optional_text_alias_receipt(
+        alias_target,
+        content,
+        schema=ISO_BUILD_ALIAS_PUBLICATION_SCHEMA,
+        run_id=run_id,
+        authoritative_source_path=immutable_report,
+        authoritative_source_receipt=immutable_report_receipt,
+        authoritative_source_key="authoritative_report",
+        expected_parent_identity=alias_parent_identity,
+    )
+    alias_receipt_content = json.dumps(alias_receipt_payload, indent=2) + "\n"
+    write_immutable_text(alias_publication_receipt, alias_receipt_content)
     manifest_files = [
         artifact_identity(immutable_report, role="iso-build-report"),
+        artifact_identity(
+            alias_publication_receipt,
+            role="iso-build-alias-publication",
+        ),
         *artifacts,
     ]
     if provenance_identity:
@@ -414,7 +491,6 @@ def run_iso_build(
         run_manifest.with_name(f"{run_manifest.name}.sha256"),
         f"{manifest_sha}  {run_manifest.name}\n",
     )
-    write_text_alias(alias_report, content)
     return report
 
 

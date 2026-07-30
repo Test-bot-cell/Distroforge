@@ -122,6 +122,7 @@ def test_beginner_iso_execute_records_a_completed_attempt(tmp_path: Path, monkey
         "distroforge.core.beginner_iso.run_iso_build",
         lambda *args, **kwargs: SimpleNamespace(
             status="built",
+            run_id="fixture-build-run",
             failure=None,
             command_log=kwargs["log_path"],
             report=tmp_path / "ISO-BUILD.json",
@@ -154,6 +155,7 @@ def test_beginner_iso_failure_records_canonical_category(tmp_path: Path, monkeyp
         )
         return SimpleNamespace(
             status="failed",
+            run_id="fixture-build-run",
             failure=SimpleNamespace(output="mksquashfs failed"),
             command_log=log,
             report=tmp_path / "ISO-BUILD.json",
@@ -189,6 +191,7 @@ def test_beginner_iso_without_injected_memory_records_nothing(tmp_path: Path, mo
         "distroforge.core.beginner_iso.run_iso_build",
         lambda *args, **kwargs: SimpleNamespace(
             status="built",
+            run_id="fixture-build-run",
             failure=None,
             command_log=kwargs["log_path"],
             report=tmp_path / "ISO-BUILD.json",
@@ -228,6 +231,7 @@ def test_cli_beginner_iso_execute_appends_to_corpus(tmp_path: Path, monkeypatch)
         "distroforge.core.beginner_iso.run_iso_build",
         lambda *args, **kwargs: SimpleNamespace(
             status="built",
+            run_id="fixture-build-run",
             failure=None,
             command_log=kwargs["log_path"],
             report=tmp_path / "ISO-BUILD.json",

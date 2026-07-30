@@ -84,6 +84,26 @@ def test_release_gate_apt_ledger_rejects_malformed_or_symlinked_logs(
         _command_argv_ledger(linked)
 
 
+@pytest.mark.parametrize(
+    "body",
+    (
+        '{"event":"start","event":"finish","argv":["apt-get","update"]}\n',
+        '{"event":"start","argv":["apt-get","update"],"value":NaN}\n',
+        '{"event":"start","argv":["apt-get","update"]}',
+        '{"event":"start","argv":["apt-get","update"]}\r\n',
+    ),
+)
+def test_release_gate_apt_ledger_requires_strict_canonical_jsonl(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    command_log = tmp_path / "commands.jsonl"
+    command_log.write_text(body, encoding="utf-8", newline="")
+
+    with pytest.raises(ValueError, match="commands.jsonl"):
+        _command_argv_ledger(command_log)
+
+
 def _identity(path: Path, run_dir: Path, **extra: object) -> dict[str, object]:
     digest, size = _stable_digest(path)
     return {

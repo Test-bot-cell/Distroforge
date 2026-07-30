@@ -11,6 +11,10 @@ from pathlib import Path
 import pytest
 
 from distroforge.core import rootfs_evidence
+from distroforge.core.artifact_verification import (
+    ArtifactVerificationError,
+    ArtifactVerificationSession,
+)
 from distroforge.core.evidence_run import canonical_sha256
 from distroforge.core.rootfs_evidence import (
     ROOTFS_MANIFEST_SCHEMA,
@@ -51,6 +55,26 @@ def _seal_image(path: Path) -> dict[str, object]:
     with witness:
         pass
     return witness.sealed_identity
+
+
+def _closed_rootfs_evidence(tmp_path: Path, run_id: str) -> tuple[Path, Path]:
+    root = _rootfs(tmp_path)
+    manifest = tmp_path / "ROOTFS-MANIFEST.json"
+    packed = tmp_path / "filesystem.squashfs"
+    unpacked = tmp_path / "unpacked-image"
+    verification = tmp_path / "ROOTFS-PACKING-VERIFICATION.json"
+    service = RootfsEvidenceService(root, excluded_descendants=(), run_id=run_id)
+    service.capture_before_packing(manifest)
+    packed.write_bytes(b"squashfs fixture")
+    shutil.copytree(root, unpacked, symlinks=True)
+    service.verify_after_packing(
+        manifest,
+        packed,
+        unpacked,
+        _seal_image(packed),
+        verification,
+    )
+    return manifest, verification
 
 
 def test_manifest_bounds_paths_and_exclusions_before_combinatorial_validation(
@@ -274,6 +298,66 @@ def test_load_manifest_rejects_tampered_digest_and_unsafe_paths(tmp_path: Path) 
     bad_digest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RootfsEvidenceError, match="semantic digest"):
         load_rootfs_manifest(bad_digest)
+
+
+def test_load_manifest_rejects_unbounded_file_kinds_and_invalid_utf8(
+    tmp_path: Path,
+) -> None:
+    invalid_utf8 = tmp_path / "invalid-utf8.json"
+    invalid_utf8.write_bytes(b"\xff")
+    with pytest.raises(RootfsEvidenceError, match="strict UTF-8"):
+        load_rootfs_manifest(invalid_utf8)
+
+    fifo = tmp_path / "manifest.pipe"
+    os.mkfifo(fifo, 0o620)
+    with pytest.raises(RootfsEvidenceError, match="regular file"):
+        load_rootfs_manifest(fifo)
+
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    symlink = tmp_path / "manifest-link.json"
+    symlink.symlink_to(target)
+    with pytest.raises(RootfsEvidenceError, match="symlink"):
+        load_rootfs_manifest(symlink)
+
+
+def test_shared_session_blocks_same_size_same_mtime_manifest_replacement(
+    tmp_path: Path,
+) -> None:
+    run_id = "session-rootfs"
+    manifest, _verification = _closed_rootfs_evidence(tmp_path, run_id)
+    original = manifest.read_bytes()
+    original_stat = manifest.stat()
+    session = ArtifactVerificationSession(tmp_path, label="rootfs test verdict")
+
+    first = validate_rootfs_evidence(
+        tmp_path,
+        expected_run_id=run_id,
+        session=session,
+    )
+    second = validate_rootfs_evidence(
+        tmp_path,
+        expected_run_id=run_id,
+        session=session,
+    )
+    assert first.ok, first.detail
+    assert second is first
+    assert session.metrics.json_parses == 2
+
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"x" * len(original))
+    os.utime(
+        replacement,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    replacement.replace(manifest)
+    os.utime(
+        manifest,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+
+    with pytest.raises(ArtifactVerificationError, match="changed"):
+        session.seal()
 
 
 def test_verify_packing_binds_an_unchanged_rootfs_and_image(tmp_path: Path) -> None:
@@ -502,6 +586,7 @@ def test_real_squashfs_round_trip_matches_the_prepacking_manifest(
     with witness:
         unpack = rootfs_unpack_command(witness, unpacked, use_sudo=False)
         assert str(unpack.argv[-1]).startswith(f"/proc/{os.getpid()}/fd/")
+        assert unpack.pass_fds == witness.pass_fds
         subprocess.run(
             unpack.argv,
             check=True,
@@ -569,6 +654,7 @@ def test_privileged_helper_commands_preserve_the_exact_exclusion_scope(
             str(witness.proc_fd_path),
         )
         assert str(unpack.argv[-1]) != str(packed)
+        assert unpack.pass_fds == witness.pass_fds
     verify = rootfs_verify_command(
         root,
         manifest,

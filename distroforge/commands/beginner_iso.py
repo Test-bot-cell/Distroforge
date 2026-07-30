@@ -36,6 +36,7 @@ def register_beginner_iso_parser(subparsers) -> None:
     parser.add_argument("--explain-last-failure", action="store_true")
     parser.add_argument("--repair-release-artifacts", action="store_true")
     parser.add_argument("--run-boot-proof", action="store_true")
+    parser.add_argument("--build-run-id")
     parser.add_argument("--json", action="store_true")
 
 
@@ -53,7 +54,12 @@ def render_beginner_iso(args) -> str:
     if args.run_boot_proof:
         project = Project.load(args.root)
         options = apply_definition(project, load_definition(args.definition)) if args.definition else BuildOptions()
-        report = run_beginner_iso_boot_proof(project, options, execute=not args.dry_run)
+        report = run_beginner_iso_boot_proof(
+            project,
+            options,
+            execute=not args.dry_run,
+            build_run_id=args.build_run_id,
+        )
         return report.render_json() if args.json else report.render_text()
     report = prepare_beginner_iso_path(
         Project.load(args.root),

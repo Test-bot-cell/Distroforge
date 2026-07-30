@@ -13,8 +13,9 @@ from .evidence_run import (
     critical_artifact_identity,
     evidence_run_path,
     observed_toolchain_identity,
+    publish_optional_text_alias_receipt,
+    stable_parent_identity,
     write_immutable_text,
-    write_text_alias,
 )
 from .hashing import sha256_file
 from .host_artifacts import HostArtifactWriter
@@ -30,6 +31,9 @@ SBOM_FORMATS: tuple[str, ...] = ("native", "spdx", "cyclonedx")
 SPDX_FILENAME = "distroforge-sbom.spdx.json"
 CYCLONEDX_FILENAME = "distroforge-sbom.cdx.json"
 PROVENANCE_SCHEMA = "distroforge.provenance.v2"
+PROVENANCE_ALIAS_PUBLICATION_SCHEMA = (
+    "distroforge.provenance-document-alias-publication.v1"
+)
 
 
 @dataclass
@@ -233,9 +237,16 @@ class ProvenanceService:
             executed=executed,
         )
         content = json.dumps(document, indent=2) + "\n"
+        alias_receipt = evidence_run_path(
+            self.project.output_dir,
+            run_id,
+            f"{target.name}.alias-publication.json",
+            executed=executed,
+        )
         for path, description in (
             (immutable, "Write immutable SBOM/provenance"),
             (target, "Write latest SBOM/provenance alias"),
+            (alias_receipt, "Write optional SBOM/provenance alias receipt"),
         ):
             self.runner.run(
                 CommandSpec(
@@ -245,8 +256,22 @@ class ProvenanceService:
             )
         if self.runner.dry_run:
             return
-        write_immutable_text(immutable, content)
-        write_text_alias(target, content)
+        source_receipt = write_immutable_text(immutable, content)
+        alias_parent_identity = stable_parent_identity(target.parent)
+        alias_payload = publish_optional_text_alias_receipt(
+            target,
+            content,
+            schema=PROVENANCE_ALIAS_PUBLICATION_SCHEMA,
+            run_id=run_id,
+            authoritative_source_path=immutable,
+            authoritative_source_receipt=source_receipt,
+            authoritative_source_key="authoritative_document",
+            expected_parent_identity=alias_parent_identity,
+        )
+        write_immutable_text(
+            alias_receipt,
+            json.dumps(alias_payload, indent=2) + "\n",
+        )
 
     def spdx_document(self, packages: Iterable[str] | None = None) -> dict[str, object]:
         pkgset = self._package_set(packages)

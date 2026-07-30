@@ -23,7 +23,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .chroot import ChrootService
 from .command import CommandError, CommandRunner, CommandSpec
-from .evidence_run import evidence_run_path, write_immutable_text
+from .evidence_run import evidence_run_path, is_safe_run_id, write_immutable_text
 from .fsops import FileSystemOps
 from .gpg import normalize_fingerprint
 from .package_apt_actions import (
@@ -583,8 +583,9 @@ class PackageEvidenceService:
     @property
     def _run_id(self) -> str:
         value = self.evidence_context.get("run_id")
-        if not isinstance(value, str) or not value or Path(value).name != value:
+        if not is_safe_run_id(value):
             raise ValueError("Package evidence requires a safe build run_id")
+        assert isinstance(value, str)
         return value
 
     @property
@@ -1643,6 +1644,8 @@ def validate_package_evidence(
     expected_verification_time: str | datetime | None = None,
     apt_command_argv: Iterable[Sequence[str]] | None = None,
 ) -> PackageEvidenceValidation:
+    if not is_safe_run_id(expected_run_id):
+        return PackageEvidenceValidation(False, "expected package run_id is unsafe")
     try:
         payload = _read_bounded_json_object(
             run_dir,
@@ -1686,6 +1689,8 @@ def validate_package_apt_actions_evidence(
 ) -> PackageAptActionsValidation:
     """Reload and recompute the M3.2a receipt from immutable run bytes."""
 
+    if not is_safe_run_id(expected_run_id):
+        return PackageAptActionsValidation(False, "expected APT action run_id is unsafe")
     try:
         report = _read_bounded_json_object(
             run_dir,
@@ -1773,7 +1778,7 @@ def validate_package_evidence_payload(
             False, "package evidence capture contract is unsupported"
         )
     run_id = payload.get("run_id")
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+    if not is_safe_run_id(run_id):
         return PackageEvidenceValidation(False, "package evidence has no safe run_id")
     source_mode = payload.get("source_mode")
     if source_mode not in {"bootstrap", "iso"}:

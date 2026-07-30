@@ -29,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO, TypeGuard, cast
 
 from .command import CommandError, CommandRunner, CommandSpec
-from .evidence_run import canonical_sha256
+from .evidence_run import canonical_sha256, is_safe_run_id
 from .package_evidence import PACKAGE_INPUTS_SCHEMA, PACKAGE_TRANSACTION_SCHEMA
 from .rootfs_evidence import (
     ROOTFS_MANIFEST_SCHEMA,
@@ -2162,10 +2162,7 @@ def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
 
 
 def _validate_expected_run_id(expected_run_id: str) -> None:
-    if not _safe_single_component(
-        expected_run_id,
-        max_bytes=MAX_TRANSACTION_ID_BYTES,
-    ):
+    if not is_safe_run_id(expected_run_id):
         raise PackageFilesystemCausalityError(
             "expected package filesystem causality run_id is unsafe"
         )

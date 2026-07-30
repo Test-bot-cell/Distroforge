@@ -33,6 +33,8 @@ def register_iso_commands(subparsers) -> None:
     iso_accept_parser.add_argument("--definition", type=Path)
     iso_accept_parser.add_argument("--iso", type=Path)
     iso_accept_parser.add_argument("--output-dir", type=Path)
+    iso_accept_parser.add_argument("--build-run-id")
+    iso_accept_parser.add_argument("--boot-run-id")
     iso_accept_parser.add_argument("--json", action="store_true")
 
     demo_iso_parser = subparsers.add_parser("demo-iso", help="Create and run a minimal demo ISO path")
@@ -64,7 +66,15 @@ def render_iso_command(args) -> tuple[str, bool] | None:
     if args.command == "iso-accept":
         from distroforge.commands.iso_accept import render_iso_accept
 
-        rendered, blocked = render_iso_accept(args.root, args.definition, args.iso, args.output_dir, args.json)
+        rendered, blocked = render_iso_accept(
+            args.root,
+            args.definition,
+            args.iso,
+            args.output_dir,
+            args.json,
+            build_run_id=getattr(args, "build_run_id", None),
+            boot_run_id=getattr(args, "boot_run_id", None),
+        )
         return rendered, blocked
     if args.command == "demo-iso":
         from distroforge.commands.demo_iso import render_demo_iso

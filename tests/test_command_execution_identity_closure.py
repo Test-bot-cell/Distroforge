@@ -486,6 +486,28 @@ def _release_gate_with_mutated_provenance(
         content,
         encoding="utf-8",
     )
+    manifest_path = immutable.parent / "RUN-MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest["files"]
+    assert isinstance(files, list)
+    immutable_entry = next(
+        item
+        for item in files
+        if isinstance(item, dict) and item.get("path") == str(immutable)
+    )
+    immutable_entry["size"] = immutable.stat().st_size
+    immutable_entry["sha256"] = hashlib.sha256(
+        immutable.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (immutable.parent / "RUN-MANIFEST.json.sha256").write_text(
+        f"{hashlib.sha256(manifest_path.read_bytes()).hexdigest()}  "
+        "RUN-MANIFEST.json\n",
+        encoding="utf-8",
+    )
     gate = ReleaseGateService().check(
         project,
         package_fixture_options(),

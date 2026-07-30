@@ -8,8 +8,24 @@ from distroforge.core.iso_acceptance import accept_iso
 from distroforge.core.project import Project
 
 
-def render_iso_accept(root: Path, definition: Path | None = None, iso: Path | None = None, output_dir: Path | None = None, json_output: bool = False) -> tuple[str, bool]:
+def render_iso_accept(
+    root: Path,
+    definition: Path | None = None,
+    iso: Path | None = None,
+    output_dir: Path | None = None,
+    json_output: bool = False,
+    *,
+    build_run_id: str | None = None,
+    boot_run_id: str | None = None,
+) -> tuple[str, bool]:
     project = Project.load(root)
     options = apply_definition(project, load_definition(definition)) if definition else BuildOptions()
-    report = accept_iso(project, options, iso=iso, output_dir=output_dir)
+    report = accept_iso(
+        project,
+        options,
+        iso=iso,
+        output_dir=output_dir,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
+    )
     return report.render_json() if json_output else report.render_text(), report.blocked

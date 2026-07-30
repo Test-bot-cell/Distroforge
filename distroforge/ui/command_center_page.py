@@ -32,6 +32,10 @@ from distroforge.core.phase_contracts import render_phase_contracts
 from distroforge.core.poweruser_iso import prepare_poweruser_iso_path
 from distroforge.core.publish_bundle import create_publish_bundle
 from distroforge.core.workflows import product_capability_text
+from distroforge.ui.artifact_release_paths import (
+    resolve_artifact_run_ids,
+    store_artifact_run_ids,
+)
 from distroforge.ui.goal_hub import build_goal_hub
 from distroforge.ui.jobs import GuiJob
 from distroforge.ui.qt import QInputDialog, QMessageBox, QVBoxLayout, QWidget
@@ -310,6 +314,11 @@ def run_beginner_boot_proof_from_start(window) -> None:
     if preset.exists():
         options = apply_definition(window.project, load_definition(preset))
     report = run_beginner_iso_boot_proof(window.project, options, execute=True)
+    store_artifact_run_ids(
+        window,
+        report.build_run_id,
+        report.boot_run_id,
+    )
     window.journey_view.setPlainText(report.render_text())
     if hasattr(window, "start_journey_status_label"):
         window.start_journey_status_label.setText(f"Boot proof {report.status} - gate {report.gate_status.upper()}")
@@ -322,7 +331,18 @@ def create_publish_bundle_from_start(window) -> None:
         return
     preset = window.project.root / "beginner-iso.yaml"
     options = apply_definition(window.project, load_definition(preset)) if preset.exists() else window._build_options()
-    report = create_publish_bundle(window.project, options)
+    build_run_id, boot_run_id = resolve_artifact_run_ids(window)
+    report = create_publish_bundle(
+        window.project,
+        options,
+        build_run_id=build_run_id,
+        boot_run_id=boot_run_id,
+    )
+    store_artifact_run_ids(
+        window,
+        report.gate.build_run_id,
+        report.gate.boot_run_id,
+    )
     window.journey_view.setPlainText(report.render_text())
     if hasattr(window, "start_journey_status_label"):
         window.start_journey_status_label.setText(f"Publish bundle written - gate {report.status.upper()}")

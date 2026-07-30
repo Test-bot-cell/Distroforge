@@ -147,7 +147,9 @@ def test_cli_acceptance_matrix_runs_source_workflows_offline(
     )
     assert drill["execute_signing"] is False
     assert drill["pipeline"]["status"] == "blocked"
-    assert (project.output_dir / "publish" / "PUBLISH-DRILL.json").exists()
+    assert not (
+        project.output_dir / "publish" / "PUBLISH-DRILL.json"
+    ).exists()
 
     pipeline = json.loads(
         _run_cli(
@@ -158,7 +160,8 @@ def test_cli_acceptance_matrix_runs_source_workflows_offline(
     )
     assert pipeline["status"] == "blocked"
     assert [stage["name"] for stage in pipeline["stages"]][-1] == "publish-bundle"
-    assert "not empty" in pipeline["stages"][-1]["detail"]
+    assert "Acceptance-26.04.iso" in pipeline["stages"][-1]["detail"]
+    assert not (project.output_dir / "publish").exists()
 
     policy = json.loads(_run_cli(capsys, ["packaging-policy", str(ROOT), "--json"]))
     assert policy["blocked"] is False

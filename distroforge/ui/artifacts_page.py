@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from distroforge.core.artifact_paths import default_output_iso
+from distroforge.ui.artifact_release_paths import (
+    resolve_artifact_release_paths,
+    store_artifact_run_ids,
+)
 from distroforge.ui.path_actions import picker
 from distroforge.ui.qt import QVBoxLayout, QWidget
 from distroforge.ui.step_focus import StepFocusHeader
@@ -40,6 +41,8 @@ def build_artifacts_page(window) -> QWidget:
             breakpoint=680,
         ),
     )
+    form.addRow("Build run ID", window.artifacts_build_run_id_edit)
+    form.addRow("Boot run ID", window.artifacts_boot_run_id_edit)
     form.addRow(
         "livefs work dir",
         _responsive_row(
@@ -158,12 +161,26 @@ def sign_release_from_artifacts(window) -> None:
         return
     from distroforge.core.release_signing import sign_release_bundle
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    report = sign_release_bundle(window.project, bundle_dir=bundle_dir, execute=False, gpg_key=window.artifact_gpg_key_edit.text().strip() or None)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Planned release signing with status {report.status}.")
-    window._open_surface("artifacts")
+    paths = resolve_artifact_release_paths(window)
+    project = window.project
+    gpg_key = window.artifact_gpg_key_edit.text().strip() or None
+
+    def _work():
+        return sign_release_bundle(
+            project,
+            bundle_dir=paths.bundle_dir,
+            execute=False,
+            gpg_key=gpg_key,
+            expected_product_iso=paths.iso,
+            expected_product_output_dir=paths.product_output_dir,
+        )
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Planned release signing with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Planning release signing…")
 
 
 def release_notes_from_artifacts(window) -> None:
@@ -171,9 +188,8 @@ def release_notes_from_artifacts(window) -> None:
         return
     from distroforge.core.release_notes import write_release_notes
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    report = write_release_notes(window.project, bundle_dir=bundle_dir)
+    paths = resolve_artifact_release_paths(window)
+    report = write_release_notes(window.project, bundle_dir=paths.bundle_dir)
     window.artifacts_view.setPlainText(report.render_text())
     window._log(f"Wrote release notes with status {report.status}.")
     window._open_surface("artifacts")
@@ -184,12 +200,27 @@ def verify_release_from_artifacts(window) -> None:
         return
     from distroforge.core.release_verification import verify_release_bundle
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    report = verify_release_bundle(window.project, bundle_dir=bundle_dir)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Verified release bundle with status {report.status}.")
-    window._open_surface("artifacts")
+    paths = resolve_artifact_release_paths(window)
+    project = window.project
+    expected_signer_fingerprint = (
+        window.artifact_gpg_key_edit.text().strip() or None
+    )
+
+    def _work():
+        return verify_release_bundle(
+            project,
+            bundle_dir=paths.bundle_dir,
+            expected_signer_fingerprint=expected_signer_fingerprint,
+            expected_product_iso=paths.iso,
+            expected_product_output_dir=paths.product_output_dir,
+        )
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Verified release bundle with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Verifying release bundle…")
 
 
 def explain_release_from_artifacts(window) -> None:
@@ -197,13 +228,26 @@ def explain_release_from_artifacts(window) -> None:
         return
     from distroforge.core.release_explain import explain_release
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
-    report = explain_release(window.project, iso=iso, bundle_dir=bundle_dir)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Explained release evidence with status {report.status}.")
-    window._open_surface("artifacts")
+    paths = resolve_artifact_release_paths(window)
+    project = window.project
+    expected_signer_fingerprint = (
+        window.artifact_gpg_key_edit.text().strip() or None
+    )
+
+    def _work():
+        return explain_release(
+            project,
+            iso=paths.iso,
+            bundle_dir=paths.bundle_dir,
+            expected_signer_fingerprint=expected_signer_fingerprint,
+        )
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Explained release evidence with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Explaining release evidence…")
 
 
 def publish_drill_from_artifacts(window) -> None:
@@ -211,14 +255,30 @@ def publish_drill_from_artifacts(window) -> None:
         return
     from distroforge.core.publish_drill import run_publish_drill
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
+    paths = resolve_artifact_release_paths(window)
     backend = str(window.boot_proof_backend_combo.currentData() or "auto")
-    report = run_publish_drill(window.project, window._build_options(), iso=iso, bundle_dir=bundle_dir, gpg_key=window.artifact_gpg_key_edit.text().strip() or None, boot_backend=backend)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Ran publish drill with status {report.status}.")
-    window._open_surface("artifacts")
+    project, options = window.project, window._build_options()
+    gpg_key = window.artifact_gpg_key_edit.text().strip() or None
+
+    def _work():
+        return run_publish_drill(
+            project,
+            options,
+            iso=paths.iso,
+            bundle_dir=paths.bundle_dir,
+            gpg_key=gpg_key,
+            boot_backend=backend,
+            build_run_id=paths.build_run_id,
+            boot_run_id=paths.boot_run_id,
+        )
+
+    def _done(report):
+        _store_release_run_ids(window, report.pipeline)
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Ran publish drill with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Running publish drill…")
 
 
 def compare_drill_from_artifacts(window) -> None:
@@ -226,12 +286,19 @@ def compare_drill_from_artifacts(window) -> None:
         return
     from distroforge.core.publish_drill_diff import diff_publish_drills
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    report = diff_publish_drills(bundle_dir / "PUBLISH-DRILL.previous.json", bundle_dir / "PUBLISH-DRILL.json")
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Compared publish drills with verdict {report.verdict}.")
-    window._open_surface("artifacts")
+    bundle_dir = resolve_artifact_release_paths(window).bundle_dir
+    previous = bundle_dir / "PUBLISH-DRILL.previous.json"
+    current = bundle_dir / "PUBLISH-DRILL.json"
+
+    def _work():
+        return diff_publish_drills(previous, current)
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Compared publish drills with verdict {report.verdict}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Comparing publish drills…")
 
 
 def promote_drill_from_artifacts(window) -> None:
@@ -239,12 +306,27 @@ def promote_drill_from_artifacts(window) -> None:
         return
     from distroforge.core.publish_drill_baseline import promote_publish_drill_baseline
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    report = promote_publish_drill_baseline(window.project, bundle_dir=bundle_dir)
-    window.artifacts_view.setPlainText(report.render_text())
-    window._log(f"Promoted publish drill baseline with status {report.status}.")
-    window._open_surface("artifacts")
+    paths = resolve_artifact_release_paths(window)
+    project = window.project
+    expected_signer_fingerprint = (
+        window.artifact_gpg_key_edit.text().strip() or None
+    )
+
+    def _work():
+        return promote_publish_drill_baseline(
+            project,
+            bundle_dir=paths.bundle_dir,
+            expected_signer_fingerprint=expected_signer_fingerprint,
+            expected_product_iso=paths.iso,
+            expected_product_output_dir=paths.product_output_dir,
+        )
+
+    def _done(report):
+        window.artifacts_view.setPlainText(report.render_text())
+        window._log(f"Promoted publish drill baseline with status {report.status}.")
+        window._open_surface("artifacts")
+
+    window._run_in_worker(_work, _done, "Promoting publish drill baseline…")
 
 
 def release_pipeline_from_artifacts(window) -> None:
@@ -252,18 +334,27 @@ def release_pipeline_from_artifacts(window) -> None:
         return
     from distroforge.core.release_pipeline import run_release_pipeline
 
-    reports_dir = Path(window.artifacts_reports_dir_edit.text().strip() or window.project.output_dir)
-    bundle_dir = reports_dir if reports_dir.name == "publish" else reports_dir.parent / "publish"
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
+    paths = resolve_artifact_release_paths(window)
     project, options = window.project, window._build_options()
     gpg_key = window.artifact_gpg_key_edit.text().strip() or None
 
     # Repair, sign, verify: several full reads of the ISO plus a copy of it, so
     # the whole chain runs on a worker like every other heavy Artifacts action.
     def _work():
-        return run_release_pipeline(project, options, iso=iso, output_dir=iso.parent, bundle_dir=bundle_dir, gpg_key=gpg_key)
+        return run_release_pipeline(
+            project,
+            options,
+            iso=paths.iso,
+            output_dir=paths.product_output_dir,
+            bundle_dir=paths.bundle_dir,
+            gpg_key=gpg_key,
+            run_boot_proof=paths.boot_run_id is None,
+            build_run_id=paths.build_run_id,
+            boot_run_id=paths.boot_run_id,
+        )
 
     def _done(report):
+        _store_release_run_ids(window, report)
         window.artifacts_view.setPlainText(report.render_text())
         window._log(f"Ran release pipeline with status {report.status}.")
         window._open_surface("artifacts")
@@ -276,7 +367,8 @@ def boot_proof_from_artifacts(window) -> None:
         return
     from distroforge.core.boot_proof import run_boot_proof
 
-    iso = Path(window.artifacts_output_iso_edit.text().strip() or window.output_iso_edit.text().strip() or default_output_iso(window.project))
+    paths = resolve_artifact_release_paths(window)
+    iso = paths.iso
     backend = str(window.boot_proof_backend_combo.currentData() or "auto")
     project, options = window.project, window._build_options()
     # Named in the busy line and the log because a boot proof is only as good as the
@@ -285,11 +377,37 @@ def boot_proof_from_artifacts(window) -> None:
 
     # A real QEMU boot, bounded only by the prebuild-vm timeout (300 s by default).
     def _work():
-        return run_boot_proof(project, options, iso=iso, backend=backend, execute=True)
+        return run_boot_proof(
+            project,
+            options,
+            iso=iso,
+            backend=backend,
+            execute=True,
+            build_run_id=paths.build_run_id,
+            _require_build_selection=True,
+            _build_output_dir=paths.product_output_dir,
+        )
 
     def _done(report):
+        if report.status == "ready" and report.build_run_id:
+            build_run_id = report.build_run_id
+        else:
+            build_run_id = None
+        if report.status == "ready" and report.run_id:
+            boot_run_id = report.run_id
+        else:
+            boot_run_id = None
+        store_artifact_run_ids(window, build_run_id, boot_run_id)
         window.artifacts_view.setPlainText(report.render_text())
         window._log(f"Ran {backend} boot proof on {report.firmware_summary or firmware} with status {report.status}.")
         window._open_surface("artifacts")
 
     window._run_in_worker(_work, _done, f"Running the {backend} boot proof on {firmware}…")
+
+
+def _store_release_run_ids(window, report) -> None:
+    store_artifact_run_ids(
+        window,
+        getattr(report, "build_run_id", None),
+        getattr(report, "boot_run_id", None),
+    )

@@ -21,26 +21,50 @@ The GUI **Artifacts** page exposes the same paths:
 The **Advanced Modules** `Output ISO` field and CLI `--output-iso` remain the build option
 source for the final ISO path.
 
-The canonical default ISO name is `dist/{name}-{version}.iso` — the only accepted form.
-Every command below resolves it through the single helper `default_output_iso(project)` in
-`core/artifact_paths.py`, so producer and consumers cannot drift; there is no unversioned
-`dist/{name}.iso` fallback. Each command still accepts `--iso`, for an ISO that sits
-somewhere else.
+The canonical default ISO name is `dist/{name}-{version}.iso` — the only accepted default
+form.
+Every project-scoped release command whose ISO is optional resolves it through the single
+helper `default_output_iso(project)` in `core/artifact_paths.py`, so producer and consumers
+cannot drift; there is no unversioned `dist/{name}.iso` fallback. Commands such as
+`release-readiness` that have no project argument require the ISO explicitly. Project
+commands also accept `--iso` for an ISO that sits somewhere else.
+
+For every release contract, the authoritative product output directory is exactly the
+canonical parent of that selected ISO. Thus `--iso /srv/product/image.iso` pairs with
+`--output-dir /srv/product`; any other value is refused. The GUI **Reports dir** is a
+separate presentation/bundle selector (the default `dist/reports` maps to
+`dist/publish`) and never changes the product output directory. `release-gate`,
+`publish-bundle` and every downstream consumer receive that selected bundle explicitly:
+a signed default `dist/publish` cannot satisfy a gate evaluating another bundle. Before
+reporting missing evidence as `review`, the gate opens the selected bundle component by
+component without following links; a symlinked, non-directory or unreadable component is
+`blocked`.
 
 ## Release Readiness
 
 ```bash
-distroforge release-readiness --iso /path/to/image.iso --output-dir /path/to/output
-distroforge release-gate /path/to/project --iso /path/to/image.iso --output-dir /path/to/output
-distroforge publish-bundle /path/to/project --iso /path/to/image.iso --output-dir /path/to/output
-distroforge sign-release /path/to/project --bundle-dir /path/to/project/dist/publish
+distroforge release-readiness --iso /path/to/output/image.iso --output-dir /path/to/output
+distroforge release-gate /path/to/project --iso /path/to/output/image.iso \
+  --output-dir /path/to/output --bundle-dir /path/to/project/dist/publish
+distroforge publish-bundle /path/to/project --iso /path/to/output/image.iso \
+  --output-dir /path/to/output --bundle-dir /path/to/project/dist/publish
+distroforge sign-release /path/to/project --iso /path/to/output/image.iso \
+  --output-dir /path/to/output --bundle-dir /path/to/project/dist/publish
 distroforge release-notes /path/to/project --bundle-dir /path/to/project/dist/publish
-distroforge verify-release /path/to/project --bundle-dir /path/to/project/dist/publish
-distroforge explain-release /path/to/project --iso /path/to/image.iso --bundle-dir /path/to/project/dist/publish
-distroforge publish-drill /path/to/project --iso /path/to/image.iso
-distroforge publish-drill-baseline /path/to/project
+distroforge verify-release /path/to/project \
+  --iso /path/to/output/image.iso --output-dir /path/to/output \
+  --bundle-dir /path/to/project/dist/publish --gpg-fingerprint FULL_FINGERPRINT
+distroforge explain-release /path/to/project --iso /path/to/output/image.iso \
+  --bundle-dir /path/to/project/dist/publish --gpg-fingerprint FULL_FINGERPRINT
+distroforge publish-drill /path/to/project --iso /path/to/output/image.iso \
+  --bundle-dir /path/to/project/dist/publish
+distroforge publish-drill-baseline /path/to/project \
+  --bundle-dir /path/to/project/dist/publish --iso /path/to/output/image.iso \
+  --output-dir /path/to/output --gpg-fingerprint FULL_FINGERPRINT
 distroforge publish-drill-diff old/PUBLISH-DRILL.json new/PUBLISH-DRILL.json
-distroforge release-pipeline /path/to/project --bundle-dir /path/to/project/dist/publish --run-boot-proof --boot-backend auto
+distroforge release-pipeline /path/to/project --iso /path/to/output/image.iso \
+  --output-dir /path/to/output --bundle-dir /path/to/project/dist/publish \
+  --run-boot-proof --boot-backend auto
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend auto
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend qemu --dry-run
 distroforge boot-proof /path/to/project --iso /path/to/image.iso --backend iso-scan
@@ -85,6 +109,14 @@ and screenshot digests recorded in the run manifest and no terminal refusal anyw
 the final log. A structural scan never satisfies this runtime publication gate. The gate
 returns `blocked`, `review`, or `ready`.
 
+One release-gate invocation now owns one bounded artifact-verification session. The ISO,
+provenance alias and run file, command log, package/rootfs/ISO reports, manifests, sidecars
+and delegated replay inputs are opened descriptor-relatively without following any path
+component and remain held until the verdict closes. Digest, JSON and expensive replay
+reuse is permitted only inside that session; a later gate starts from the filesystem
+again. Closing re-hashes held inodes and revalidates their logical paths and bounded tree
+inventories, so a same-size/same-mtime replacement cannot inherit an earlier answer.
+
 For `source_mode: iso`, an executing remaster has already required the source and detached
 signature to be stable regular files, the source bytes to match an external SHA-256, and
 GPG's `VALIDSIG` output to name one externally supplied full fingerprint exclusively.
@@ -112,11 +144,12 @@ blocks the input closure.
 
 M3.2a also requires the same run and its provenance to bind
 `PACKAGE-APT-ACTIONS.json`, schema `distroforge.package-apt-actions.v1`. An authoritative
-refresh reopens the bounded journal, raw protocol copy, transaction records, recorder and
-generated configuration, then recomputes the supplied version-3 action transcript and
-the one-to-one package/version/architecture binding for every unpack action. The stored
-status cannot authorize itself, and missing, malformed, incomplete, oversized, drifting
-or forged inputs block the package item.
+refresh binds the bounded journal, raw protocol copy, transaction records, recorder and
+generated configuration to the same verification session, then recomputes the supplied
+version-3 action transcript and the one-to-one package/version/architecture binding for
+every unpack action from those held bytes. The stored status cannot authorize itself, and
+missing, malformed, incomplete, oversized, drifting or forged inputs block the package
+item.
 
 That replay establishes internal consistency only. Before host collection, the
 transcript, journal and CAS live in the mutable target rootfs, so matching their hashes
@@ -151,6 +184,71 @@ tool directory, journals only its expected `apt-config`/`apt-get` shims and trap
 unexpected APT/dpkg-family resolution. This proves the synthetic test did not fall
 through to those host package tools. It neither authenticates InfoFD nor closes the
 mutable-rootfs race described above.
+
+M3.2a.2 closes the remaining artifact-reader boundary, not the producer boundary.
+Low-level SHA-256 calculation has no persistent pathname cache. A verification session
+pins canonical regular files with no-follow, non-blocking descriptor opens, retains their
+full host identity, parses JSON once and memoizes semantic validation and external replay
+only inside the verdict. At closure it first re-hashes the held descriptors, repeats
+bounded tree inventories as the last content observation and only then repins names from
+each leaf back through its ancestors to the anchor.
+Rootfs manifests and packing reports, ISO assembly, QEMU reports, serial/captures,
+firmware, boot proof, command/run manifests, `SHA256SUMS`, bundle signing and standalone
+verification now participate in that contract. Alias comparisons use descriptors held in
+the same session rather than independently reopening either name late in the verdict.
+Every producer and reader validates `run_id` before composing a path: it is one canonical
+strict-UTF-8 component, not empty, `.` or `..`, contains no slash, backslash, NUL,
+control/DEL or invalid Unicode, and is limited to 255 encoded bytes.
+
+The release verdict additionally carries an explicit immutable build selection B and boot
+selection C. A non-blocked gate cannot omit either selection. Ready provenance and SBOM
+items must name canonical files under `evidence/runs/B`; a ready boot item must name the
+proof and QEMU report under `evidence/runs/C`. Standalone verification then requires
+`boot-proof.run_id == C`, `boot-proof.build_run_id == B` and the same B/C pair in the boot
+run manifest. Malformed optional paths are refusals, not null values. Pipeline, drill,
+acceptance, beginner, CLI and GUI surfaces propagate only IDs returned by that verdict.
+If B already embeds a valid boot run D, a direct or orchestrated boot request revalidates
+and reuses D without starting another VM or exposing a conflicting C. The `iso-accept`
+boot remediation uses one `release-pipeline` invocation so the newly produced run is
+consumed in the same orchestration; it never emits a literal placeholder run ID.
+
+Binary files and evidence trees use a separate durable-copy primitive: the source remains
+held while size and SHA-256 are computed during the copy. Regular text and binary files
+are written and synced through an anonymous same-filesystem `O_TMPFILE`, then exposed by
+one no-replace link. No regular temporary pathname exists, no target is exchanged or
+replaced, and an idempotent collision is accepted only after the existing held regular
+inode proves the exact expected size and SHA-256. A failure before the link exposes
+nothing; a later failure may retain only the complete measured target because
+pathname-based deletion would reintroduce the substitution race.
+
+Evidence trees still require a named staging directory for atomic no-replace rename.
+Owned failed trees are moved only while the name identifies the held inode. This durable
+detach is a separate verdict from the subsequent bounded, no-follow, best-effort scrub:
+single-link regular contents may be truncated and synced, but external hard links are
+never damaged. The unpredictable quarantine remains physically present in every case.
+`scrub_complete` means only that the bounded traversal ended without error and found no
+remaining regular-file bytes; the ISO replay intentionally requests detach-only cleanup
+and records residual entries and bytes. The code therefore never claims successful
+physical deletion. POSIX still cannot prove that no mutation was made and perfectly
+restored between two observations.
+
+The beginner repair command is deliberately not promoted to an atomic multi-file
+transaction. Each individual output is complete and immutable, but if the ISO or its
+output-directory identity changes between files, the report becomes `blocked`, reports no
+successful repair and the release pipeline stops before bundle creation. Already linked
+complete files may remain non-authoritative and require a fresh output directory for
+retry. Its reconstructed provenance remains publication-blocking in every case.
+
+Strict `SHA256SUMS` means a bounded strict-UTF-8 document with LF endings, lower-case
+64-hex digests, the canonical two-space separator, unique canonical relative paths and no
+control-byte or path aliases. Publish signing is never `ready` from `exists()` checks:
+the exact bundle inventory, current ISO, typed release-gate aggregate and items, manifest
+snapshot, strict checksum file, pinned keyring and exactly three descriptor-bound
+signatures must agree and verify cryptographically. These are source and adversarial
+fixture properties only. `capture_origin` remains `unverified-mutable-target-rootfs`,
+`filesystem_causality` remains `unverified`, and `release_ready` remains false. The
+blocking policy for an unreadable CVE database is the separate M3.2a.3 item; the next
+producer-causality milestone is M3.2b.
 
 M3.1 adds the run-bound `PACKAGE-FILESYSTEM-CAUSALITY.json` artifact with schema
 `distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
@@ -231,28 +329,62 @@ its collected journal/transcript copies),
 inspection bundle, but the README marks it `BLOCKED` and lists the blocking items; the
 top-level CLI exits 2 for that blocked result.
 
-`sign-release` adds maintainer signing evidence to the bundle. It always writes
-`RELEASE-MANIFEST.json` with file sizes and SHA-256 digests, then writes
-`SIGNING-REPORT.json`. By default it is a plan: GPG commands are recorded but no signature
-is made. Passing `--execute` signs `SHA256SUMS`, `RELEASE-GATE.json`, and
-`RELEASE-MANIFEST.json` when `gpg` is available. Execution requires a complete 40- or
-64-hex OpenPGP signer fingerprint and an explicit filtered public keyring. The keyring is
-copied into the bundle as `RELEASE-SIGNING-KEYRING.gpg`, its SHA-256 is recorded, and each
-new signature is verified against that keyring and exact fingerprint before it is
-reported as signed. A signing plan remains non-failing; a blocked `--execute` signing
-attempt exits 2.
+Bundle publication copies each regular file from a stable descriptor and copies each
+referenced run as a bounded no-follow tree into a synced staging directory. A single
+Linux no-replace rename exposes the complete bundle; a symlink, special file, collision,
+copy/fsync failure or unexpected mutation leaves no final partial tree. Its receipt carries
+the published directory identity; signing, notes, verification, explanation, pipeline and
+drill writers must still see that identity. A post-publication clone receives no output.
+Before that publication, `create_publish_bundle` consumes a deliberately ephemeral
+`ArtifactVerificationReceipt` returned by the gate and never serialized into
+`RELEASE-GATE.json`. It binds every copied regular source to its complete identity and
+SHA-256, and each accepted run tree to its anchor plus exact inventory. An omitted source,
+unreceipted copy, changed identity or different union of runs is blocked. This gate
+receipt is distinct from the post-publication bundle directory identity.
+
+`sign-release` adds maintainer signing evidence only to an existing safe bundle; a missing
+or non-directory bundle is refused without creating a partial one. By default it is a
+strictly read-only plan: it invokes no GPG process, returns the proposed entry snapshot and
+the three planned `.asc` target names, and leaves the authoritative
+`RELEASE-MANIFEST.json` and `SIGNING-REPORT.json` names free for a later executing
+invocation. Passing `--execute` first requires an exact regular-file
+inventory, exactly one
+ISO, a strict `ready` or `review` release gate whose aggregate matches its items, no
+pre-existing detached signature, a complete 40- or 64-hex OpenPGP signer fingerprint and
+an explicit filtered public keyring. It then signs `SHA256SUMS`,
+`RELEASE-GATE.json`, and `RELEASE-MANIFEST.json` from held descriptors. The keyring is
+imported into an isolated GPG home and re-exported as a minimal public-only
+`RELEASE-SIGNING-KEYRING.gpg`; secret packets are a refusal. Its SHA-256 is recorded, and
+the complete three-signature set is verified against those same payload/keyring
+descriptors before it is reported as signed. Every later inventory and publication stays
+bound to the original preflight directory identity. A rollback never unlinks after a
+pathname-only check; an inode that cannot be removed safely remains under an internal
+quarantine name, is reported as incomplete cleanup and blocks the next preflight.
+Reservation or retirement failure of the private signing stage is likewise converted
+into a typed blocked report. If publication of the signature set had begun, all three
+owned `.asc` files are rolled back as one set and their held descriptors are closed;
+already completed manifest or public-keyring evidence may remain, but no partial
+signature set is reported as signed.
 
 `release-notes` writes the human review layer: `RELEASE-NOTES.md` and `CHANGELOG.txt`.
 The notes summarize status, ISO digest, included artifacts, boot proof, signing evidence,
 blocking gate items and verification commands.
 
-`verify-release` writes `VERIFY-REPORT.json`. It verifies every file listed in
-`RELEASE-MANIFEST.json`, checks sizes and SHA-256 digests, verifies `SHA256SUMS` against
-the ISO, compares the manifest and release-gate status, and attempts GPG verification for
-present detached signatures when `gpg` is available. Missing planned signatures remain
-review items; corrupted files block the bundle. A `blocked` release gate remains
-`blocked` under standalone verification: its aggregate status, `blocked` boolean,
-manifest status and individual item verdicts must be mutually consistent.
+`verify-release` computes one descriptor-relative opening inventory and keeps every
+manifest, gate, signing report, `SHA256SUMS`, ISO, runtime artifact, keyring, payload and
+signature in one verification session. It verifies every manifest size and SHA-256,
+requires the checksum file to identify the unique bundled ISO, compares the manifest and
+release-gate status, and passes held payload/signature/keyring FDs to GPG. The closing
+inventory and session must still equal the opening snapshot before a verdict is accepted.
+Missing planned signatures remain review items; malformed UTF-8/JSON, FIFO or symlink
+inputs, duplicate checksum entries, same-size replacements and corrupted files block the
+bundle. `VERIFY-REPORT.json` itself is published without following a pre-existing symlink,
+so verification cannot overwrite an external target. An unsealed descriptor session does
+not create that report; an existing report is reused only when the newly derived bytes are
+exactly identical and can never authorize a later live verdict by itself. A `blocked`
+release gate remains `blocked` under
+standalone verification: its aggregate status, `blocked` boolean, manifest status and
+individual item verdicts must be mutually consistent.
 
 Once signing execution is claimed, the contract is exact rather than best-effort:
 `status` must be `signed`, `execute` must be true, `planned` and `skipped` must be empty,
@@ -268,23 +400,46 @@ requires the externally supplied expected full signer fingerprint and the record
 explicit keyring bytes to match their SHA-256. A blocked verification report is propagated
 as CLI exit status 2.
 
-`explain-release` writes `RELEASE-EXPLAIN.md`. It reads the gate, boot proof, manifest and
-verification reports, separates ready, review and blocked evidence, names the boot proof
-level (`runtime` or `structural`), and prints the next maintainer commands to improve or
-verify the bundle.
+`explain-release` writes `RELEASE-EXPLAIN.md` only after a live descriptor-bound verifier
+has reproduced the stored verification report on the same bundle identity. It separates
+ready, review and blocked evidence, names the boot proof level (`runtime` or `structural`),
+and prints shell-quoted next commands carrying the same ISO/output/bundle triple.
+Signature remediation also names the required full fingerprint, filtered public keyring
+and terminal verification pin rather than emitting a predictably blocked invocation. A
+forged internally consistent JSON quartet cannot explain itself as ready. Terminal
+verification may resolve the sole pre-signing `publish-signing` review after the exact
+signatures and external fingerprint verify.
 
 `publish-drill` runs the full safe maintainer rehearsal in one command: boot proof with
 `auto`, release pipeline, signing plan, verification, explanation, and
 `PUBLISH-DRILL.json`. It never signs by default; real signing requires explicit
-`--execute-signing`.
+`--execute-signing`. After explanation is written, a final read-only live verification
+must still reproduce the preliminary result before the drill can be published. The
+persisted report then passes an exact schema and cross-report validator: pipeline stages,
+gate items, manifest, signatures, keyring, verification and bundle identity must agree.
+Status is derived from that terminal verifier, not an earlier report; an unpublished,
+replaced or semantically inconsistent bundle receives no drill output.
 
 `publish-drill-diff` compares two drill reports and returns `improved`, `unchanged`, or
 `regressed`. It flags status or release-gate regressions, boot proof downgrades, new
 blockers, manifest removals or SHA changes, signing changes, and next-command changes.
+Both bounded strict-JSON inputs are held in one no-follow session, so aliases are parsed
+once and a FIFO, link, malformed input or swap is a blocked comparison. Its assurance is
+explicitly `structural-only`: it compares the internally coherent stored reports but does
+not authenticate either release, re-run GPG or establish who created the files.
 
 `publish-drill-baseline` promotes the current `PUBLISH-DRILL.json` to
 `PUBLISH-DRILL.previous.json` for future comparisons. It refuses blocked drills unless
-`--allow-blocked` is explicit, and writes `PUBLISH-DRILL-BASELINE.json`.
+`--allow-blocked` is explicit. The held drill bytes are published durably and the receipt
+must reproduce their size and SHA-256 before `PUBLISH-DRILL-BASELINE.json` is written.
+For a `ready_to_publish` drill, promotion additionally requires an externally supplied
+complete signer fingerprint and identical live descriptor-bound verification before and
+after baseline publication. A terminal block or exception leaves no ready promotion
+receipt (the immutable baseline bytes may remain as a non-authoritative failed attempt).
+Canonical in-bundle comparisons require the exact previous/current names, the real bundle
+identity and that local receipt. The receipt proves only current local byte consistency:
+it is non-cryptographic, forgeable by a writer that controls the bundle, never a release
+attestation and never an input to `release_ready`.
 
 `release-pipeline` runs the maintainer sequence in one command: repair derivable artifacts
 when an ISO exists, optionally run boot proof with `--run-boot-proof --boot-backend
@@ -304,6 +459,15 @@ serial marker and artifact digests all verify. The
 metadata, El Torito boot catalog evidence and kernel/initrd or live payload markers. A
 complete scan can mark `boot-proof.json` structurally ready; partial structural evidence
 is `review`. The release gate nevertheless requires runtime evidence and blocks both.
+
+Before either backend consumes bytes, boot proof durably copies the selected regular ISO
+into run-owned storage and binds that copy to its invocation session. QEMU and external
+ISO scanners receive `/proc/<pid>/fd/<fd>` plus `pass_fds`, and the report records
+`consumed_via: held-descriptor`. The QEMU report, serial, firmware, command log, immutable
+proof, run manifest and sidecar are measured and parsed from held descriptors; the final
+compatibility alias is staged from the verified proof FD only after the session seals.
+Leaf or ancestor links, FIFOs and same-size/same-mtime swaps therefore produce a
+`blocked` verdict rather than a wait, raw exception or partial alias.
 
 Executing ISO builds use the same separation. The authority is
 `dist/evidence/runs/<run_id>/ISO-BUILD.json`; `dist/ISO-BUILD.json` is an atomic alias to

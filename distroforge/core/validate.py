@@ -88,7 +88,12 @@ def validate_project(project: Project, execute: bool = False) -> list[Validation
                 "No source ISO is configured; inject a local ISO or choose a skeleton starter.",
             )
         )
-    elif project.source_mode == "iso" and execute and project.source_iso and not project.source_iso.exists():
+    elif (
+        project.source_mode == "iso"
+        and execute
+        and project.source_iso
+        and not project.source_iso.exists()
+    ):
         issues.append(
             ValidationIssue(
                 "error",
@@ -225,7 +230,9 @@ def validate_kernel_module_options(options) -> list[ValidationIssue]:
             )
         )
     if getattr(options, "jobs", 0) < 0:
-        issues.append(ValidationIssue("error", "kernel-jobs", "Kernel build jobs cannot be negative"))
+        issues.append(
+            ValidationIssue("error", "kernel-jobs", "Kernel build jobs cannot be negative")
+        )
     if getattr(options, "config_strategy", "current") not in {"current", "defconfig"}:
         issues.append(
             ValidationIssue(
@@ -312,7 +319,14 @@ def validate_desktop_source_options(options) -> list[ValidationIssue]:
                     "Desktop source components require name, version and source_url",
                 )
             )
-        if component.build_system not in {"meson", "cmake", "autotools", "debuild", "debian", "gnome"}:
+        if component.build_system not in {
+            "meson",
+            "cmake",
+            "autotools",
+            "debuild",
+            "debian",
+            "gnome",
+        }:
             issues.append(
                 ValidationIssue(
                     "error",
@@ -352,9 +366,8 @@ def validate_system_sync_options(options) -> list[ValidationIssue]:
                     f"Invalid held package token: {package}",
                 )
             )
-    if (
-        not getattr(options, "run_during_build", True)
-        and not getattr(options, "post_install_tool", True)
+    if not getattr(options, "run_during_build", True) and not getattr(
+        options, "post_install_tool", True
     ):
         issues.append(
             ValidationIssue(
@@ -406,7 +419,16 @@ def validate_branding_options(options, strict: bool = False) -> list[ValidationI
                     f"Branding {field} does not look like a valid http/https URL: {url}",
                 )
             )
-    for field in ("logo", "distributor_logo", "app_icon", "grub_background", "plymouth_logo", "plymouth_background", "login_background", "lightdm_background"):
+    for field in (
+        "logo",
+        "distributor_logo",
+        "app_icon",
+        "grub_background",
+        "plymouth_logo",
+        "plymouth_background",
+        "login_background",
+        "lightdm_background",
+    ):
         path_str = getattr(options, field, None)
         if path_str and not Path(path_str).is_absolute():
             issues.append(
@@ -499,9 +521,15 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
             )
         )
     if getattr(options, "memory_mb", 0) < 512:
-        issues.append(ValidationIssue("error", "prebuild-vm-memory", "Prebuild VM memory must be at least 512 MB"))
+        issues.append(
+            ValidationIssue(
+                "error", "prebuild-vm-memory", "Prebuild VM memory must be at least 512 MB"
+            )
+        )
     if getattr(options, "cpus", 0) < 1:
-        issues.append(ValidationIssue("error", "prebuild-vm-cpus", "Prebuild VM CPUs must be at least 1"))
+        issues.append(
+            ValidationIssue("error", "prebuild-vm-cpus", "Prebuild VM CPUs must be at least 1")
+        )
     if getattr(options, "timeout_seconds", 0) < 30:
         issues.append(
             ValidationIssue(
@@ -541,6 +569,9 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
             not isinstance(value, str)
             or not value
             or value in {".", ".."}
+            or "\x00" in value
+            or "\\" in value
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
             or path.is_absolute()
             or path.name != value
         ):
@@ -552,10 +583,15 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
                     f"QEMU directory, not {value!r}",
                 )
             )
-    output_names = {
-        str(getattr(options, "serial_log", "")),
-        str(getattr(options, "screenshot_name", "")),
-        str(getattr(options, "report_name", "")),
+    configured_names = {
+        str(getattr(options, field_name, ""))
+        for field_name in (
+            "serial_log",
+            "screenshot_name",
+            "report_name",
+            "qmp_socket",
+            "pid_file",
+        )
     }
     reserved = {
         "ISO-BUILD.json",
@@ -564,15 +600,40 @@ def validate_prebuild_vm_options(options) -> list[ValidationIssue]:
         "boot-proof.plan.json",
         "distroforge-provenance.json",
         "RUN-MANIFEST.json",
+        "RUN-MANIFEST.json.sha256",
         "commands.jsonl",
+        "SHA256SUMS",
+        "BUILDINFO",
+        "PREBUILD-VM-INTEGRITY",
+        "ISO-BUILD-ALIAS-PUBLICATION.json",
+        "BOOT-PROOF-ALIAS-PUBLICATION.json",
+        "distroforge-provenance.json.alias-publication.json",
+        "distroforge-sbom.spdx.json.alias-publication.json",
+        "distroforge-sbom.cdx.json.alias-publication.json",
+        "QEMU-REPORT-ALIAS-PUBLICATION.json",
+        "qemu",
+        "qemu-lab.qcow2",
+        "OVMF_VARS.fd",
+        "swtpm.sock",
+        "swtpm-state",
     }
-    if len(output_names) != 3 or output_names & reserved:
+    configured_values = [
+        str(getattr(options, field_name, ""))
+        for field_name in (
+            "serial_log",
+            "screenshot_name",
+            "report_name",
+            "qmp_socket",
+            "pid_file",
+        )
+    ]
+    if len(configured_names) != len(configured_values) or configured_names & reserved:
         issues.append(
             ValidationIssue(
                 "error",
                 "prebuild-vm-artifact-collision",
-                "QEMU report, serial and screenshot names must be distinct and "
-                "must not collide with managed build evidence.",
+                "QEMU control, report, serial and screenshot names must all be "
+                "distinct and must not collide with managed build/runtime evidence.",
             )
         )
     if getattr(options, "qmp_socket", "") == getattr(options, "pid_file", ""):
@@ -629,9 +690,7 @@ def has_errors(issues: list[ValidationIssue]) -> bool:
 def format_issues(issues: list[ValidationIssue]) -> str:
     if not issues:
         return "Validation OK"
-    return "\n".join(
-        f"{issue.level.upper():7} {issue.code:18} {issue.message}" for issue in issues
-    )
+    return "\n".join(f"{issue.level.upper():7} {issue.code:18} {issue.message}" for issue in issues)
 
 
 def _valid_package_token(value: str) -> bool:

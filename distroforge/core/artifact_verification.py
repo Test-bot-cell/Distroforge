@@ -52,6 +52,7 @@ class ArtifactLimits:
     max_json_nodes: int = 2_000_000
     max_path_components: int = 256
     max_closing_fds: int = 1024
+    max_inventory_entries: int = 100_000
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
@@ -103,6 +104,63 @@ class ArtifactMetrics:
     replays: int = 0
 
 
+@dataclass(frozen=True)
+class ArtifactTreeInventory:
+    """Descriptor-relative identity snapshot of one bounded directory tree."""
+
+    anchor_identity: ArtifactIdentity
+    entries: tuple[tuple[str, ArtifactIdentity], ...]
+
+    def by_name(self) -> dict[str, ArtifactIdentity]:
+        return dict(self.entries)
+
+    def non_directory_entries(self, prefix: str = "") -> set[str]:
+        return {
+            name.removeprefix(prefix)
+            for name, identity in self.entries
+            if name.startswith(prefix) and not stat.S_ISDIR(identity.mode)
+        }
+
+    def regular_files(self, prefix: str = "") -> set[str]:
+        return {
+            name.removeprefix(prefix)
+            for name, identity in self.entries
+            if name.startswith(prefix) and stat.S_ISREG(identity.mode)
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactFileReceipt:
+    """Immutable byte-and-identity binding for one logical artifact path."""
+
+    relative_path: Path
+    absolute_path: Path
+    identity: ArtifactIdentity
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ArtifactTreeReceipt:
+    """Immutable identity inventory for one descriptor-walked tree path."""
+
+    relative_path: Path
+    absolute_path: Path
+    inventory: ArtifactTreeInventory
+
+
+@dataclass(frozen=True)
+class ArtifactVerificationReceipt:
+    """All regular files causally consumed by one successfully sealed verdict."""
+
+    anchor_path: Path
+    anchor_identity: ArtifactIdentity
+    files: tuple[ArtifactFileReceipt, ...]
+    trees: tuple[ArtifactTreeReceipt, ...]
+
+    def by_absolute_path(self) -> dict[Path, ArtifactFileReceipt]:
+        return {item.absolute_path: item for item in self.files}
+
+
 @dataclass
 class _ArtifactRecord:
     descriptor: int
@@ -124,6 +182,27 @@ class _PathBinding:
     ancestor_identities: tuple[tuple[str, ArtifactIdentity], ...]
     leaf_identity: ArtifactIdentity
     record: _ArtifactRecord
+
+
+@dataclass(frozen=True)
+class _TreeBinding:
+    relative: Path
+    label: str
+    max_entries: int
+    inventory: ArtifactTreeInventory
+    ancestor_identities: tuple[tuple[str, ArtifactIdentity], ...]
+
+
+@dataclass(frozen=True)
+class _ClosingPin:
+    """A held inode plus the descriptor-relative name which must still name it."""
+
+    descriptor: int
+    expected: ArtifactIdentity
+    label: str
+    strict_identity: bool
+    parent_descriptor: int
+    name: str
 
 
 class ArtifactHandle:
@@ -224,6 +303,7 @@ class ArtifactVerificationSession:
             self.anchor_path
         )
         self._bindings: dict[str, _PathBinding] = {}
+        self._tree_bindings: dict[str, _TreeBinding] = {}
         self._records: list[_ArtifactRecord] = []
         self._records_by_inode: dict[tuple[int, int], _ArtifactRecord] = {}
         self._memo: dict[Hashable, object] = {}
@@ -232,6 +312,7 @@ class ArtifactVerificationSession:
         self._buffered_bytes = 0
         self._sealed = False
         self._seal_error: ArtifactVerificationError | None = None
+        self._receipt: ArtifactVerificationReceipt | None = None
         self._closed = False
 
     def __enter__(self) -> ArtifactVerificationSession:
@@ -248,8 +329,17 @@ class ArtifactVerificationSession:
     def metrics(self) -> ArtifactMetrics:
         return replace(self._metrics)
 
+    @property
+    def anchor_identity(self) -> ArtifactIdentity:
+        return self._anchor_identity
+
     def metrics_dict(self) -> dict[str, int]:
         return dict(vars(self.metrics))
+
+    @property
+    def receipt(self) -> ArtifactVerificationReceipt | None:
+        """Return the immutable receipt requested by :meth:`seal_with_receipt`."""
+        return self._receipt
 
     def file(
         self,
@@ -367,32 +457,156 @@ class ArtifactVerificationSession:
 
         return self._guard(bind_absolute)
 
+    def tree_inventory(
+        self,
+        relative: Path,
+        *,
+        label: str | None = None,
+        max_entries: int | None = None,
+    ) -> ArtifactTreeInventory:
+        """Snapshot one tree without following links and bind it to this verdict."""
+
+        def inventory_relative() -> ArtifactTreeInventory:
+            self._assert_active()
+            canonical = _canonical_tree_relative(relative)
+            if len(canonical.parts) > self.limits.max_path_components:
+                raise ArtifactVerificationError(
+                    "artifact tree path exceeds "
+                    f"{self.limits.max_path_components} components: {relative}"
+                )
+            inventory_label = label or canonical.as_posix()
+            entry_limit = (
+                self.limits.max_inventory_entries
+                if max_entries is None
+                else max_entries
+            )
+            if (
+                entry_limit <= 0
+                or entry_limit > self.limits.max_inventory_entries
+            ):
+                raise ArtifactVerificationError(
+                    f"{inventory_label} has an invalid inventory-entry limit: "
+                    f"{entry_limit}"
+                )
+            key = canonical.as_posix()
+            existing = self._tree_bindings.get(key)
+            if existing is not None:
+                if len(existing.inventory.entries) > entry_limit:
+                    raise ArtifactVerificationError(
+                        f"{inventory_label} exceeds its {entry_limit}-entry limit"
+                    )
+                return existing.inventory
+            inventory = self._inventory_from_anchor(
+                self._anchor_descriptor,
+                canonical,
+                inventory_label,
+                entry_limit,
+            )
+            ancestors, closing_identity = self._tree_path_identities(
+                canonical,
+                inventory_label,
+            )
+            if closing_identity != inventory.anchor_identity:
+                raise ArtifactVerificationError(
+                    f"{inventory_label} path changed while its inventory was bound"
+                )
+            self._tree_bindings[key] = _TreeBinding(
+                relative=canonical,
+                label=inventory_label,
+                max_entries=entry_limit,
+                inventory=inventory,
+                ancestor_identities=ancestors,
+            )
+            return inventory
+
+        return self._guard(inventory_relative)
+
+    def tree_inventory_path(
+        self,
+        path: Path,
+        *,
+        label: str | None = None,
+        max_entries: int | None = None,
+    ) -> ArtifactTreeInventory:
+        """Bind an absolute directory tree after reducing it to this anchor."""
+
+        def bind_absolute() -> ArtifactTreeInventory:
+            if not path.is_absolute() or ".." in path.parts or "\x00" in str(path):
+                raise ArtifactVerificationError(
+                    f"artifact tree path is not canonical: {path}"
+                )
+            absolute = Path(os.path.abspath(path))
+            try:
+                relative = absolute.relative_to(self.anchor_path)
+            except ValueError as exc:
+                raise ArtifactVerificationError(
+                    f"artifact tree path escapes {self.label} anchor: {path}"
+                ) from exc
+            return self.tree_inventory(
+                relative,
+                label=label,
+                max_entries=max_entries,
+            )
+
+        return self._guard(bind_absolute)
+
     def memo(self, key: Hashable, factory: Callable[[], _T]) -> _T:
         """Reuse an expensive semantic validation only inside this verdict."""
-        self._assert_active()
-        if key not in self._memo:
-            self._memo[key] = factory()
-        return cast(_T, self._memo[key])
+        def memoized() -> _T:
+            self._assert_active()
+            if key not in self._memo:
+                self._memo[key] = factory()
+            return cast(_T, self._memo[key])
+
+        return self._guard(memoized)
 
     def replay_once(self, key: Hashable, factory: Callable[[], _T]) -> _T:
         """Run one named external replay at most once inside this verdict."""
-        self._assert_active()
-        if key not in self._replays:
-            self._metrics.replays += 1
-            self._replays[key] = factory()
-        return cast(_T, self._replays[key])
+        def replayed() -> _T:
+            self._assert_active()
+            if key not in self._replays:
+                result = factory()
+                self._replays[key] = result
+                self._metrics.replays += 1
+            return cast(_T, self._replays[key])
+
+        return self._guard(replayed)
 
     def seal(self) -> ArtifactMetrics:
         """Re-hash held inodes, revalidate every path, close, and fail on drift."""
+        return self._seal(capture_receipt=False)
+
+    def seal_with_receipt(self) -> ArtifactVerificationReceipt:
+        """Seal and bind every opened file path to its full identity and SHA-256.
+
+        Ordinary :meth:`seal` calls do not hash records that were only inspected
+        for metadata.  Publication gates opt into this stronger result so every
+        path causally consumed by the verdict can be matched to copied bytes.
+        """
+        self._seal(capture_receipt=True)
+        if self._receipt is None:
+            raise ArtifactVerificationError(
+                f"{self.label} was sealed without an artifact receipt"
+            )
+        return self._receipt
+
+    def _seal(self, *, capture_receipt: bool) -> ArtifactMetrics:
+        """Implement closure, optionally retaining immutable per-path receipts."""
         if self._sealed:
             if self._seal_error is not None:
                 raise ArtifactVerificationError(str(self._seal_error)) from self._seal_error
+            if capture_receipt and self._receipt is None:
+                raise ArtifactVerificationError(
+                    f"{self.label} was already sealed without an artifact receipt"
+                )
             return self.metrics
         if self._closed:
             raise ArtifactVerificationError(f"{self.label} is already closed")
         errors: list[str] = list(self._operation_errors)
+        receipt_candidate: ArtifactVerificationReceipt | None = None
         closing_anchor = -1
-        closing_pins: list[tuple[int, ArtifactIdentity, str]] = []
+        closing_anchor_parent = -1
+        closing_pins: list[_ClosingPin] = []
         try:
             try:
                 try:
@@ -404,6 +618,108 @@ class ArtifactVerificationSession:
                 except OSError as exc:
                     errors.append(f"{self.label} anchor cannot be rechecked: {exc}")
 
+                if capture_receipt:
+                    receipt_files: dict[str, ArtifactFileReceipt] = {}
+                    receipt_budget_exhausted = False
+                    for key, binding in self._bindings.items():
+                        try:
+                            digest = self._digest(binding)
+                        except ArtifactVerificationError as exc:
+                            errors.append(str(exc))
+                        else:
+                            receipt_files[key] = ArtifactFileReceipt(
+                                relative_path=binding.relative,
+                                absolute_path=self.anchor_path / binding.relative,
+                                identity=binding.record.identity,
+                                sha256=digest,
+                            )
+                    for tree_binding in self._tree_bindings.values():
+                        for name, expected_identity in tree_binding.inventory.entries:
+                            if not stat.S_ISREG(expected_identity.mode):
+                                continue
+                            relative = tree_binding.relative / Path(name)
+                            key = relative.as_posix()
+                            existing = receipt_files.get(key)
+                            if existing is not None:
+                                if existing.identity != expected_identity:
+                                    errors.append(
+                                        f"{tree_binding.label} file identity conflicts "
+                                        f"with its opened binding: {name}"
+                                    )
+                                continue
+                            if len(receipt_files) >= self.limits.max_open_files:
+                                errors.append(
+                                    f"{self.label} receipt exceeds its logical "
+                                    f"open-file budget ({self.limits.max_open_files})"
+                                )
+                                receipt_budget_exhausted = True
+                                break
+                            try:
+                                receipt_files[key] = self._inventory_file_receipt(
+                                    relative,
+                                    expected_identity,
+                                    label=f"{tree_binding.label} file {name}",
+                                )
+                            except ArtifactVerificationError as exc:
+                                errors.append(str(exc))
+                        if receipt_budget_exhausted:
+                            break
+                    if not errors:
+                        receipt_candidate = ArtifactVerificationReceipt(
+                            anchor_path=self.anchor_path,
+                            anchor_identity=self._anchor_identity,
+                            files=tuple(
+                                receipt_files[key]
+                                for key in sorted(receipt_files)
+                            ),
+                            trees=tuple(
+                                ArtifactTreeReceipt(
+                                    relative_path=tree_binding.relative,
+                                    absolute_path=(
+                                        self.anchor_path / tree_binding.relative
+                                    ),
+                                    inventory=tree_binding.inventory,
+                                )
+                                for _key, tree_binding in sorted(
+                                    self._tree_bindings.items()
+                                )
+                            ),
+                        )
+
+                # Re-hash the held artifact descriptors before observing their
+                # closing pathnames.  Pinning a name first would only prove that
+                # the pin still names the old inode if an attacker swapped the
+                # pathname during this potentially long pass.
+                for record in self._records:
+                    try:
+                        self._seal_record(record)
+                    except ArtifactVerificationError as exc:
+                        errors.append(str(exc))
+
+                # Re-inventory through the held opening anchor after all record
+                # re-hashes.  This is the terminal content observation for entries
+                # which were not opened as individual records.
+                for tree_binding in self._tree_bindings.values():
+                    try:
+                        closing_inventory = self._inventory_from_anchor(
+                            self._anchor_descriptor,
+                            tree_binding.relative,
+                            tree_binding.label,
+                            tree_binding.max_entries,
+                        )
+                    except ArtifactVerificationError as exc:
+                        errors.append(str(exc))
+                    else:
+                        if closing_inventory != tree_binding.inventory:
+                            errors.append(
+                                f"{tree_binding.label} inventory changed "
+                                "during verification"
+                            )
+
+                # Only now reopen the anchor pathname and every descriptor-relative
+                # component.  These terminal pins prove that the names consumed by
+                # this verdict still resolve to the same held inodes after the last
+                # byte and tree observations.
                 try:
                     closing_anchor, identity = self._open_absolute_anchor(
                         self.anchor_path
@@ -421,25 +737,89 @@ class ArtifactVerificationSession:
                     except ArtifactVerificationError as exc:
                         errors.append(str(exc))
 
-                # Hash held artifact descriptors only after every closing pathname
-                # has been pinned.  The final fstats below therefore establish one
-                # common closing interval without a later pathname open creating a
-                # new mutation window.
-                for record in self._records:
+                for pin in closing_pins:
                     try:
-                        self._seal_record(record)
-                    except ArtifactVerificationError as exc:
-                        errors.append(str(exc))
-
-                for descriptor, expected, pin_label in closing_pins:
-                    try:
-                        current = ArtifactIdentity.from_stat(os.fstat(descriptor))
+                        current = ArtifactIdentity.from_stat(
+                            os.fstat(pin.descriptor)
+                        )
                     except OSError as exc:
-                        errors.append(f"{pin_label} closing pin failed: {exc}")
+                        errors.append(f"{pin.label} closing pin failed: {exc}")
                     else:
-                        if current != expected:
+                        changed = (
+                            current != pin.expected
+                            if pin.strict_identity
+                            else not _same_directory_object(current, pin.expected)
+                        )
+                        if changed:
                             errors.append(
-                                f"{pin_label} identity changed during closure"
+                                f"{pin.label} identity changed during closure"
+                            )
+                # Observe names from leaves back toward the opening anchor so an
+                # ancestor cannot be detached after it was checked while a later
+                # child observation still proceeds through the held old parent.
+                for pin in reversed(closing_pins):
+                    try:
+                        named = ArtifactIdentity.from_stat(
+                            os.stat(
+                                pin.name,
+                                dir_fd=pin.parent_descriptor,
+                                follow_symlinks=False,
+                            )
+                        )
+                        held = ArtifactIdentity.from_stat(
+                            os.fstat(pin.descriptor)
+                        )
+                    except OSError as exc:
+                        errors.append(
+                            f"{pin.label} terminal name observation failed: {exc}"
+                        )
+                    else:
+                        name_changed = (
+                            named != held
+                            if pin.strict_identity
+                            else not _same_directory_object(named, held)
+                        )
+                        identity_changed = (
+                            held != pin.expected
+                            if pin.strict_identity
+                            else not _same_directory_object(held, pin.expected)
+                        )
+                        if name_changed:
+                            errors.append(
+                                f"{pin.label} terminal name no longer resolves "
+                                "to its held inode"
+                            )
+                        if identity_changed:
+                            errors.append(
+                                f"{pin.label} held identity changed before its "
+                                "terminal name observation"
+                            )
+                if closing_anchor >= 0 and self.anchor_path != Path("/"):
+                    try:
+                        (
+                            closing_anchor_parent,
+                            _parent_identity,
+                        ) = self._open_absolute_anchor(self.anchor_path.parent)
+                        named_anchor = ArtifactIdentity.from_stat(
+                            os.stat(
+                                self.anchor_path.name,
+                                dir_fd=closing_anchor_parent,
+                                follow_symlinks=False,
+                            )
+                        )
+                        held_anchor = ArtifactIdentity.from_stat(
+                            os.fstat(closing_anchor)
+                        )
+                    except (ArtifactVerificationError, OSError) as exc:
+                        errors.append(
+                            f"{self.label} terminal anchor-name observation "
+                            f"failed: {exc}"
+                        )
+                    else:
+                        if named_anchor != held_anchor:
+                            errors.append(
+                                f"{self.label} terminal anchor name no longer "
+                                "resolves to its held inode"
                             )
                 for descriptor, expected, anchor_label in (
                     (
@@ -467,49 +847,79 @@ class ArtifactVerificationSession:
                     f"{self.label} closure raised {type(exc).__name__}: {exc}"
                 )
         finally:
-            for descriptor, _identity, _label in reversed(closing_pins):
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
+            for pin in reversed(closing_pins):
+                _close_into(
+                    pin.descriptor,
+                    f"{pin.label} closing pin",
+                    errors,
+                )
+            if closing_anchor_parent >= 0:
+                _close_into(
+                    closing_anchor_parent,
+                    f"{self.label} closing anchor parent",
+                    errors,
+                )
             if closing_anchor >= 0:
-                try:
-                    os.close(closing_anchor)
-                except OSError:
-                    pass
+                _close_into(
+                    closing_anchor,
+                    f"{self.label} closing anchor",
+                    errors,
+                )
             self._sealed = True
-            self.close()
+            errors.extend(self._close_resources())
         if errors:
             self._seal_error = ArtifactVerificationError(
                 "; ".join(dict.fromkeys(errors))
             )
             raise self._seal_error
+        self._receipt = receipt_candidate
         return self.metrics
 
     def close(self) -> None:
-        """Close without making a verdict; idempotent and exception-safe."""
+        """Close without making a verdict; every descriptor failure blocks."""
+        errors = self._close_resources()
+        if errors:
+            raise ArtifactVerificationError("; ".join(dict.fromkeys(errors)))
+
+    def _close_resources(self) -> list[str]:
+        """Close all session-owned descriptors and return every close failure."""
         if self._closed:
-            return
+            return []
+        errors: list[str] = []
         for record in self._records:
             if not record.closed:
-                try:
-                    os.close(record.descriptor)
-                except OSError:
-                    pass
+                record_names = sorted(
+                    binding.label
+                    for binding in self._bindings.values()
+                    if binding.record is record
+                )
+                record_label = (
+                    record_names[0]
+                    if record_names
+                    else f"inode {record.identity.dev}:{record.identity.ino}"
+                )
+                _close_into(
+                    record.descriptor,
+                    f"{self.label} held artifact {record_label}",
+                    errors,
+                )
                 record.closed = True
             record.digest = None
             record.body = None
             record.text = None
             record.json_value = None
             record.json_loaded = False
-        try:
-            os.close(self._anchor_descriptor)
-        except OSError:
-            pass
+        _close_into(
+            self._anchor_descriptor,
+            f"{self.label} held anchor",
+            errors,
+        )
         self._memo.clear()
         self._replays.clear()
+        self._tree_bindings.clear()
         self._buffered_bytes = 0
         self._closed = True
+        return errors
 
     def _assert_active(self) -> None:
         if self._closed or self._sealed:
@@ -652,6 +1062,279 @@ class ArtifactVerificationSession:
                 except OSError:
                     pass
 
+    def _tree_path_identities(
+        self,
+        relative: Path,
+        label: str,
+    ) -> tuple[tuple[tuple[str, ArtifactIdentity], ...], ArtifactIdentity]:
+        """Bind every directory component leading to one inventoried tree."""
+        if relative == Path("."):
+            return (), ArtifactIdentity.from_stat(os.fstat(self._anchor_descriptor))
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = self._anchor_descriptor
+        owned_parent = -1
+        components: list[tuple[str, ArtifactIdentity]] = []
+        prefix: list[str] = []
+        try:
+            for component in relative.parts:
+                prefix.append(component)
+                child = -1
+                try:
+                    child = os.open(component, flags, dir_fd=parent)
+                    self._metrics.directories_opened += 1
+                    identity = ArtifactIdentity.from_stat(os.fstat(child))
+                except OSError as exc:
+                    if child >= 0:
+                        os.close(child)
+                    raise ArtifactVerificationError(
+                        f"{label} contains a symlink, non-directory, or unreadable "
+                        "component"
+                    ) from exc
+                if owned_parent >= 0:
+                    os.close(owned_parent)
+                owned_parent = child
+                parent = child
+                components.append(("/".join(prefix), identity))
+            root_identity = components[-1][1]
+            return tuple(components[:-1]), root_identity
+        finally:
+            if owned_parent >= 0:
+                os.close(owned_parent)
+
+    def _inventory_file_receipt(
+        self,
+        relative: Path,
+        expected_identity: ArtifactIdentity,
+        *,
+        label: str,
+    ) -> ArtifactFileReceipt:
+        """Hash one inventory-only regular file before terminal re-inventory."""
+        canonical = _canonical_relative(relative)
+        if len(canonical.parts) > self.limits.max_path_components:
+            raise ArtifactVerificationError(
+                f"{label} exceeds the session path-component budget "
+                f"({self.limits.max_path_components})"
+            )
+        descriptor = -1
+        try:
+            descriptor, identity, ancestors = self._open_relative(canonical, label)
+            if identity != expected_identity:
+                raise ArtifactVerificationError(
+                    f"{label} changed after its opening tree inventory"
+                )
+            if not stat.S_ISREG(identity.mode):
+                raise ArtifactVerificationError(f"{label} is not a regular file")
+            _enforce_size(
+                identity,
+                self.limits.max_file_bytes,
+                True,
+                label,
+            )
+            record = _ArtifactRecord(
+                descriptor=descriptor,
+                identity=identity,
+            )
+            binding = _PathBinding(
+                relative=canonical,
+                label=label,
+                max_bytes=self.limits.max_file_bytes,
+                allow_empty=True,
+                ancestor_identities=ancestors,
+                leaf_identity=identity,
+                record=record,
+            )
+            _body, digest = self._measure(record, binding, capture=False)
+            return ArtifactFileReceipt(
+                relative_path=canonical,
+                absolute_path=self.anchor_path / canonical,
+                identity=identity,
+                sha256=digest,
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _inventory_from_anchor(
+        self,
+        anchor_descriptor: int,
+        relative: Path,
+        label: str,
+        max_entries: int,
+    ) -> ArtifactTreeInventory:
+        directory_flags = (
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        parent = anchor_descriptor
+        owned_parent = -1
+        try:
+            for component in relative.parts:
+                child = -1
+                try:
+                    child = os.open(component, directory_flags, dir_fd=parent)
+                    self._metrics.directories_opened += 1
+                    identity = ArtifactIdentity.from_stat(os.fstat(child))
+                except OSError as exc:
+                    if child >= 0:
+                        os.close(child)
+                    raise ArtifactVerificationError(
+                        f"{label} contains a symlink, non-directory, or unreadable "
+                        "component"
+                    ) from exc
+                if not stat.S_ISDIR(identity.mode):
+                    os.close(child)
+                    raise ArtifactVerificationError(
+                        f"{label} contains a non-directory component"
+                    )
+                if owned_parent >= 0:
+                    os.close(owned_parent)
+                owned_parent = child
+                parent = child
+            anchor_identity = ArtifactIdentity.from_stat(os.fstat(parent))
+            entries: dict[str, ArtifactIdentity] = {}
+            counter = [0]
+            self._inventory_directory(
+                parent,
+                Path(),
+                entries,
+                counter,
+                label=label,
+                max_entries=max_entries,
+                depth=0,
+            )
+            if ArtifactIdentity.from_stat(os.fstat(parent)) != anchor_identity:
+                raise ArtifactVerificationError(
+                    f"{label} anchor changed during inventory"
+                )
+            return ArtifactTreeInventory(
+                anchor_identity,
+                tuple(sorted(entries.items())),
+            )
+        except OSError as exc:
+            raise ArtifactVerificationError(
+                f"{label} descriptor inventory failed: {exc}"
+            ) from exc
+        finally:
+            if owned_parent >= 0:
+                os.close(owned_parent)
+
+    def _inventory_directory(
+        self,
+        directory_descriptor: int,
+        prefix: Path,
+        entries: dict[str, ArtifactIdentity],
+        counter: list[int],
+        *,
+        label: str,
+        max_entries: int,
+        depth: int,
+    ) -> None:
+        if depth > self.limits.max_path_components:
+            raise ArtifactVerificationError(
+                f"{label} inventory exceeds its path-depth limit"
+            )
+        opening_identity = ArtifactIdentity.from_stat(
+            os.fstat(directory_descriptor)
+        )
+        try:
+            names: list[str] = []
+            with os.scandir(directory_descriptor) as iterator:
+                for entry in iterator:
+                    counter[0] += 1
+                    if counter[0] > max_entries:
+                        raise ArtifactVerificationError(
+                            f"{label} exceeds its {max_entries}-entry "
+                            "inventory limit"
+                        )
+                    names.append(_strict_filesystem_name(entry.name))
+            names.sort()
+        except OSError as exc:
+            raise ArtifactVerificationError(
+                f"{label} directory cannot be enumerated: {prefix or '.'}"
+            ) from exc
+        immediate: dict[str, ArtifactIdentity] = {}
+        directory_flags = (
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        for name in names:
+            try:
+                identity = ArtifactIdentity.from_stat(
+                    os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                )
+            except OSError as exc:
+                raise ArtifactVerificationError(
+                    f"{label} entry changed before identification: {name}"
+                ) from exc
+            relative = prefix / name
+            relative_name = relative.as_posix()
+            entries[relative_name] = identity
+            immediate[name] = identity
+            if not stat.S_ISDIR(identity.mode):
+                continue
+            child_descriptor = -1
+            try:
+                child_descriptor = os.open(
+                    name,
+                    directory_flags,
+                    dir_fd=directory_descriptor,
+                )
+                self._metrics.directories_opened += 1
+                if (
+                    ArtifactIdentity.from_stat(os.fstat(child_descriptor))
+                    != identity
+                ):
+                    raise ArtifactVerificationError(
+                        f"{label} directory changed while opening: {relative_name}"
+                    )
+                self._inventory_directory(
+                    child_descriptor,
+                    relative,
+                    entries,
+                    counter,
+                    label=label,
+                    max_entries=max_entries,
+                    depth=depth + 1,
+                )
+                if (
+                    ArtifactIdentity.from_stat(os.fstat(child_descriptor))
+                    != identity
+                ):
+                    raise ArtifactVerificationError(
+                        f"{label} directory changed during inventory: {relative_name}"
+                    )
+            except OSError as exc:
+                raise ArtifactVerificationError(
+                    f"{label} directory cannot be traversed safely: {relative_name}"
+                ) from exc
+            finally:
+                if child_descriptor >= 0:
+                    os.close(child_descriptor)
+        for name, expected in immediate.items():
+            try:
+                current = ArtifactIdentity.from_stat(
+                    os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                )
+            except OSError as exc:
+                raise ArtifactVerificationError(
+                    f"{label} entry disappeared during inventory: {name}"
+                ) from exc
+            if current != expected:
+                raise ArtifactVerificationError(
+                    f"{label} entry changed during inventory: {name}"
+                )
+        if ArtifactIdentity.from_stat(os.fstat(directory_descriptor)) != opening_identity:
+            raise ArtifactVerificationError(
+                f"{label} directory identity changed during inventory: "
+                f"{prefix or '.'}"
+            )
+
     def _digest(self, binding: _PathBinding) -> str:
         self._assert_active()
         record = binding.record
@@ -719,7 +1402,7 @@ class ArtifactVerificationSession:
         record = binding.record
         if record.json_loaded:
             self._metrics.json_reuse += 1
-            return copy.deepcopy(record.json_value)
+            return _copy_bounded_json(record.json_value, binding.label)
         text = self._read_text(binding)
         try:
             value = json.loads(
@@ -745,7 +1428,7 @@ class ArtifactVerificationSession:
         self._metrics.json_parses += 1
         record.json_value = value
         record.json_loaded = True
-        return copy.deepcopy(value)
+        return _copy_bounded_json(value, binding.label)
 
     def _measure(
         self,
@@ -852,14 +1535,15 @@ class ArtifactVerificationSession:
     def _pin_bindings_for_close(
         self,
         anchor_descriptor: int,
-    ) -> list[tuple[int, ArtifactIdentity, str]]:
+    ) -> list[_ClosingPin]:
         directory_flags = os.O_PATH | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
         leaf_flags = os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW
-        directories: dict[str, tuple[int, ArtifactIdentity, str]] = {}
-        leaves: list[tuple[int, ArtifactIdentity, str]] = []
+        directories: dict[str, _ClosingPin] = {}
+        leaves: list[_ClosingPin] = []
+        tree_pins: list[_ClosingPin] = []
 
         def reserve_pin(label: str) -> None:
-            used = 1 + len(directories) + len(leaves)
+            used = 1 + len(directories) + len(leaves) + len(tree_pins)
             if used >= self.limits.max_closing_fds:
                 raise ArtifactVerificationError(
                     f"{label} exceeds the session closing-FD budget "
@@ -881,12 +1565,14 @@ class ArtifactVerificationSession:
                         )
                     existing = directories.get(key)
                     if existing is not None:
-                        descriptor, prior_expected, _label = existing
-                        if prior_expected != expected:
+                        if not _same_directory_object(
+                            existing.expected,
+                            expected,
+                        ):
                             raise ArtifactVerificationError(
                                 f"{binding.label} ancestor identity is inconsistent"
                             )
-                        parent = descriptor
+                        parent = existing.descriptor
                         continue
                     reserve_pin(binding.label)
                     descriptor = -1
@@ -905,15 +1591,18 @@ class ArtifactVerificationSession:
                             f"{binding.label} ancestor cannot be pinned at closure: "
                             f"{exc}"
                         ) from exc
-                    if identity != expected:
+                    if not _same_directory_object(identity, expected):
                         os.close(descriptor)
                         raise ArtifactVerificationError(
                             f"{binding.label} ancestor identity changed before closure"
                         )
-                    directories[key] = (
-                        descriptor,
-                        expected,
-                        f"{binding.label} ancestor {key}",
+                    directories[key] = _ClosingPin(
+                        descriptor=descriptor,
+                        expected=identity,
+                        label=f"{binding.label} ancestor {key}",
+                        strict_identity=False,
+                        parent_descriptor=parent,
+                        name=component,
                     )
                     parent = descriptor
 
@@ -938,18 +1627,179 @@ class ArtifactVerificationSession:
                     raise ArtifactVerificationError(
                         f"{binding.label} path resolves to another inode before closure"
                     )
-                leaves.append((leaf, binding.leaf_identity, binding.label))
-            return [*directories.values(), *leaves]
+                leaves.append(
+                    _ClosingPin(
+                        descriptor=leaf,
+                        expected=binding.leaf_identity,
+                        label=binding.label,
+                        strict_identity=True,
+                        parent_descriptor=parent,
+                        name=binding.relative.name,
+                    )
+                )
+
+            for tree_binding in self._tree_bindings.values():
+                expected_ancestors = dict(tree_binding.ancestor_identities)
+                parent = anchor_descriptor
+                tree_prefix: list[str] = []
+                tree_components = (
+                    ()
+                    if tree_binding.relative == Path(".")
+                    else tree_binding.relative.parts
+                )
+                for index, component in enumerate(tree_components):
+                    tree_prefix.append(component)
+                    key = "/".join(tree_prefix)
+                    is_root = index == len(tree_components) - 1
+                    expected = (
+                        tree_binding.inventory.anchor_identity
+                        if is_root
+                        else expected_ancestors.get(key)
+                    )
+                    if expected is None:
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} lacks an opening ancestor identity"
+                        )
+                    reserve_pin(tree_binding.label)
+                    descriptor = -1
+                    try:
+                        descriptor = os.open(
+                            component,
+                            directory_flags,
+                            dir_fd=parent,
+                        )
+                        self._metrics.directories_opened += 1
+                        identity = ArtifactIdentity.from_stat(os.fstat(descriptor))
+                    except OSError as exc:
+                        if descriptor >= 0:
+                            os.close(descriptor)
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} path cannot be pinned at closure: "
+                            f"{exc}"
+                        ) from exc
+                    changed = (
+                        identity != expected
+                        if is_root
+                        else not _same_directory_object(identity, expected)
+                    )
+                    if changed:
+                        os.close(descriptor)
+                        kind = "root" if is_root else "ancestor"
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} path {kind} identity changed "
+                            "before closure"
+                        )
+                    tree_pins.append(
+                        _ClosingPin(
+                            descriptor=descriptor,
+                            expected=expected if is_root else identity,
+                            label=f"{tree_binding.label} path {key}",
+                            strict_identity=is_root,
+                            parent_descriptor=parent,
+                            name=component,
+                        )
+                    )
+                    parent = descriptor
+                tree_directories: dict[str, int] = {"": parent}
+                for name, expected_entry in tree_binding.inventory.entries:
+                    entry_path = Path(name)
+                    parent_path = entry_path.parent
+                    parent_key = (
+                        ""
+                        if parent_path == Path(".")
+                        else parent_path.as_posix()
+                    )
+                    entry_parent = tree_directories.get(parent_key)
+                    if entry_parent is None:
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} inventory lacks pinned parent "
+                            f"for {name}"
+                        )
+                    reserve_pin(tree_binding.label)
+                    entry_descriptor = -1
+                    entry_flags = leaf_flags
+                    if stat.S_ISDIR(expected_entry.mode):
+                        entry_flags = directory_flags
+                    try:
+                        entry_descriptor = os.open(
+                            entry_path.name,
+                            entry_flags,
+                            dir_fd=entry_parent,
+                        )
+                        if stat.S_ISDIR(expected_entry.mode):
+                            self._metrics.directories_opened += 1
+                        else:
+                            self._metrics.files_opened += 1
+                        entry_identity = ArtifactIdentity.from_stat(
+                            os.fstat(entry_descriptor)
+                        )
+                    except OSError as exc:
+                        if entry_descriptor >= 0:
+                            os.close(entry_descriptor)
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} entry cannot be pinned at "
+                            f"closure: {name}: {exc}"
+                        ) from exc
+                    if entry_identity != expected_entry:
+                        os.close(entry_descriptor)
+                        raise ArtifactVerificationError(
+                            f"{tree_binding.label} entry identity changed before "
+                            f"closure: {name}"
+                        )
+                    tree_pins.append(
+                        _ClosingPin(
+                            descriptor=entry_descriptor,
+                            expected=expected_entry,
+                            label=f"{tree_binding.label} entry {name}",
+                            strict_identity=True,
+                            parent_descriptor=entry_parent,
+                            name=entry_path.name,
+                        )
+                    )
+                    if stat.S_ISDIR(expected_entry.mode):
+                        tree_directories[name] = entry_descriptor
+            return [*directories.values(), *leaves, *tree_pins]
         except BaseException:
-            for descriptor, _identity, _label in [
+            for pin in [
                 *directories.values(),
                 *leaves,
+                *tree_pins,
             ]:
                 try:
-                    os.close(descriptor)
+                    os.close(pin.descriptor)
                 except OSError:
                     pass
             raise
+
+
+def _same_directory_object(
+    left: ArtifactIdentity,
+    right: ArtifactIdentity,
+) -> bool:
+    """Compare an ancestor binding without treating sibling churn as a swap."""
+    return (
+        left.dev,
+        left.ino,
+        left.mode,
+        left.uid,
+        left.gid,
+        left.rdev,
+    ) == (
+        right.dev,
+        right.ino,
+        right.mode,
+        right.uid,
+        right.gid,
+        right.rdev,
+    )
+
+
+def _close_into(descriptor: int, label: str, errors: list[str]) -> None:
+    """Attempt one close while preserving every failure for the final verdict."""
+    try:
+        os.close(descriptor)
+    except OSError as exc:
+        errors.append(f"{label} could not be closed: {exc}")
 
 
 def _canonical_relative(value: Path) -> Path:
@@ -963,6 +1813,26 @@ def _canonical_relative(value: Path) -> Path:
     if canonical.as_posix() != value.as_posix():
         raise ArtifactVerificationError(f"artifact path is not canonical: {value}")
     return canonical
+
+
+def _canonical_tree_relative(value: Path) -> Path:
+    if value == Path("."):
+        return value
+    return _canonical_relative(value)
+
+
+def _strict_filesystem_name(value: str) -> str:
+    if not value or value in {".", ".."} or "/" in value or "\x00" in value:
+        raise ArtifactVerificationError(
+            f"artifact inventory contains an unsafe entry name: {value!r}"
+        )
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ArtifactVerificationError(
+            "artifact inventory contains a non-UTF-8 filesystem name"
+        ) from exc
+    return value
 
 
 def _enforce_size(
@@ -988,6 +1858,16 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _copy_bounded_json(value: object, label: str) -> object:
+    """Return an isolated JSON value without leaking interpreter recursion errors."""
+    try:
+        return copy.deepcopy(value)
+    except RecursionError as exc:
+        raise ArtifactVerificationError(
+            f"{label} exceeds the safe JSON copy depth"
+        ) from exc
 
 
 def _validate_json_shape(value: object, *, max_depth: int, max_nodes: int) -> None:
@@ -1029,6 +1909,7 @@ __all__ = [
     "ArtifactIdentity",
     "ArtifactLimits",
     "ArtifactMetrics",
+    "ArtifactTreeInventory",
     "ArtifactVerificationError",
     "ArtifactVerificationSession",
 ]
