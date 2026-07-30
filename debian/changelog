@@ -17,9 +17,14 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844. GitHub accepts its signature
     as valid, and per-push run 30518874302 completed all ten jobs successfully:
     packaging-static, distro-dependencies, and every Python 3.11--3.14 /
-    PySide6/PyQt6 leg, each of which completed both Typecheck and Test. This
-    closes the stated CI refusal only; no package/ISO build, Golden-path run,
-    tag, pull request or main movement occurred.
+    PySide6/PyQt6 leg. Authenticated logs prove that every matrix installed mypy
+    2.3.0, checked all 256 source files and ran 1,306 tests successfully with
+    38 skips. The distribution-only leg ran 1,336 tests successfully with eight
+    skips; the static leg passed ShellCheck, both embedded Python payloads, all
+    eight pre-commit ratchets, 107 packaging/policy tests and both Debian and
+    Ubuntu Lintian profiles. Quiet pytest output does not disclose skip reasons.
+    This closes the stated CI refusal only; no package/ISO build, Golden-path
+    run, tag, pull request or main movement occurred.
   * Repaired the test-environment debt exposed only after the commit-subject
     ratchet itself passed. GitHub Actions run 30485032512 was green in
     packaging-static, while all eight Python/Qt legs shared four CLI failures

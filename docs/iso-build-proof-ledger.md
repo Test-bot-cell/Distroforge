@@ -25,7 +25,7 @@ bootloader, a kernel or a desktop session ran.
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
 | source checkout | observed | `origin/develop` is signed repair commit `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`; GitHub reports `verified: true`, reason `valid`, and local GPG verification accepts primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized fast-forward advanced only `develop`; `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
-| CI action inputs | observed | per-push GitHub Actions run `30518874302` targeted exact signed repair commit `a3f14bec…`, attempt 1, and completed success in all ten jobs. The eight Python 3.11--3.14 / PySide6/PyQt6 legs each completed both Typecheck and Test successfully; `packaging-static` and `distro-dependencies` also succeeded. This closes the mypy 2.3.0 refusal observed in run `30517720041`; it proves a source/test CI verdict, not an executing package, ISO, boot or release chain. |
+| CI action inputs | observed | per-push GitHub Actions run `30518874302` targeted exact signed repair commit `a3f14bec…`, attempt 1, and completed success in all ten jobs. Every Python 3.11--3.14 / PySide6/PyQt6 leg installed mypy 2.3.0, typechecked all 256 source files and reported 1,306 passed / 38 skipped tests; `packaging-static` and `distro-dependencies` also succeeded, the latter with 1,336 passed / eight skipped tests from distribution packages only. This closes the mypy refusal observed in run `30517720041`; it proves a source/test CI verdict, not an executing package, ISO, boot or release chain. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -533,12 +533,35 @@ ISO build.
   completed `success`.
 - The terminal jobs API enumerated exactly ten jobs and reported every one
   `completed`/`success`: `packaging-static`, `distro-dependencies`, and the eight
-  Python 3.11--3.14 / PySide6/PyQt6 matrix legs. In each matrix leg, both the
-  `Typecheck` and `Test` steps independently completed `success`; those are the
-  stages the preceding run never reached together. The public unauthenticated API
-  exposed the job and step verdicts but refused the raw log archive with HTTP 403,
-  so this receipt does not invent per-leg test counts or a package version not
-  visible in that evidence channel.
+  Python 3.11--3.14 / PySide6/PyQt6 matrix legs. Authenticated `gh run view --log`
+  subsequently retrieved the raw job logs after the unauthenticated archive
+  endpoint had correctly refused them with HTTP 403. Every matrix installed
+  mypy 2.3.0, reported `Success: no issues found in 256 source files`, and then
+  completed the test suite as follows:
+
+  | Python / Qt binding | pytest result | elapsed |
+  | --- | ---: | ---: |
+  | 3.11 / PySide6 | 1,306 passed, 38 skipped | 72.76 s |
+  | 3.11 / PyQt6 | 1,306 passed, 38 skipped | 94.47 s |
+  | 3.12 / PySide6 | 1,306 passed, 38 skipped | 106.13 s |
+  | 3.12 / PyQt6 | 1,306 passed, 38 skipped | 104.31 s |
+  | 3.13 / PySide6 | 1,306 passed, 38 skipped | 104.75 s |
+  | 3.13 / PyQt6 | 1,306 passed, 38 skipped | 99.95 s |
+  | 3.14 / PySide6 | 1,306 passed, 38 skipped | 102.74 s |
+  | 3.14 / PyQt6 | 1,306 passed, 38 skipped | 98.29 s |
+
+- `packaging-static` executed ShellCheck, compiled both embedded maintainer-script
+  Python payloads, passed all eight pre-commit ratchets, reported 107 packaging
+  and policy tests passed, and exercised both Debian and Ubuntu Lintian
+  2.129.0ubuntu2.1 profiles with five targeted tests passed and 24 deselected.
+  `distro-dependencies` ran under the unprivileged offscreen builder in the
+  `ubuntu:26.04` container using only declared distribution dependencies; GnuPG,
+  xorriso, SquashFS tools and zstd were present, and pytest reported 1,336 passed
+  and eight skipped in 90.36 seconds.
+- The quiet pytest output does not name the skipped tests or their reasons, so this
+  receipt records counts rather than inventing skip causality. Neither static
+  packaging checks nor the distribution-dependency suite built a Debian package,
+  rootfs or ISO.
 - This remote verdict closes the reproduced mypy refusal for the signed repair
   commit. It does not execute or promote the package, Golden path, ISO, firmware,
   boot, desktop, release-signature or reproducibility milestones. `origin/main`
