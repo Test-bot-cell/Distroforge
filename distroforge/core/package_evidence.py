@@ -1241,7 +1241,11 @@ class PackageEvidenceService:
                     raise ValueError(
                         "Package pre-install journal exceeds its byte bound"
                     )
-                journal_bytes = _stable_read_fd(journal_descriptor)
+                journal_bytes = _stable_read_fd(
+                    journal_descriptor,
+                    max_bytes=MAX_CAPTURE_JOURNAL_BYTES,
+                    label="Package pre-install journal",
+                )
         except FileNotFoundError:
             return []
         # Validate the complete ordering and every aggregate claim before any
@@ -1313,7 +1317,11 @@ class PackageEvidenceService:
                             "Package pre-install protocol CAS size differs "
                             "from its journal"
                         )
-                    protocol_bytes = _stable_read_fd(source_descriptor)
+                    protocol_bytes = _stable_read_fd(
+                        source_descriptor,
+                        max_bytes=protocol_size,
+                        label="Package pre-install protocol CAS",
+                    )
                     actual_sha = hashlib.sha256(protocol_bytes).hexdigest()
                     if (
                         actual_sha != digest
@@ -1635,12 +1643,26 @@ def validate_package_evidence(
     expected_verification_time: str | datetime | None = None,
     apt_command_argv: Iterable[Sequence[str]] | None = None,
 ) -> PackageEvidenceValidation:
-    path = run_dir / "PACKAGE-INPUTS.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return PackageEvidenceValidation(False, f"package evidence is unreadable: {exc}")
-    if not isinstance(payload, dict) or payload.get("run_id") != expected_run_id:
+        payload = _read_bounded_json_object(
+            run_dir,
+            "PACKAGE-INPUTS.json",
+            max_bytes=MAX_PACKAGE_INPUTS_BYTES,
+            label="PACKAGE-INPUTS",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        return PackageEvidenceValidation(
+            False,
+            f"package evidence is unreadable: {exc}",
+        )
+    if payload.get("run_id") != expected_run_id:
         return PackageEvidenceValidation(
             False, "package evidence belongs to another build run"
         )
@@ -1907,13 +1929,26 @@ def validate_package_evidence_payload(
     refs = payload.get("transactions")
     if not isinstance(refs, list) or not refs:
         return PackageEvidenceValidation(False, "package evidence has no transactions")
-    transactions: list[dict[str, object]] = []
+    try:
+        transactions = _load_package_transactions_for_actions(
+            run_dir,
+            payload,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        return PackageEvidenceValidation(
+            False,
+            f"package transactions are unreadable: {exc}",
+        )
     transaction_paths: set[str] = set()
     transaction_ids: set[str] = set()
-    for ref in refs:
-        identity_error = _identity_error(ref, run_dir)
-        if identity_error:
-            return PackageEvidenceValidation(False, identity_error)
+    for ref, transaction in zip(refs, transactions, strict=True):
         assert isinstance(ref, dict)
         relative = str(ref["path"])
         if relative in transaction_paths:
@@ -1921,16 +1956,8 @@ def validate_package_evidence_payload(
                 False, "package transaction is referenced more than once"
             )
         transaction_paths.add(relative)
-        transaction_path = run_dir / str(ref["path"])
-        try:
-            transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return PackageEvidenceValidation(
-                False, f"package transaction is unreadable: {exc}"
-            )
         if (
-            not isinstance(transaction, dict)
-            or transaction.get("schema") != PACKAGE_TRANSACTION_SCHEMA
+            transaction.get("schema") != PACKAGE_TRANSACTION_SCHEMA
             or transaction.get("run_id") != run_id
         ):
             return PackageEvidenceValidation(
@@ -1947,7 +1974,6 @@ def validate_package_evidence_payload(
                 False, "package transaction id is unsafe or duplicated"
             )
         transaction_ids.add(transaction_id)
-        transactions.append(transaction)
 
     all_archive_packages: dict[tuple[str, str, str], str] = {}
     baseline = _inventory_map(payload.get("baseline_inventory"))
@@ -3020,7 +3046,11 @@ def _read_bounded_run_bytes(
         size = os.fstat(descriptor).st_size
         if size <= 0 or size > max_bytes:
             raise ValueError(f"{label} exceeds its byte bound")
-        return _stable_read_fd(descriptor)
+        return _stable_read_fd(
+            descriptor,
+            max_bytes=max_bytes,
+            label=label,
+        )
 
 
 def _bytes_identity(relative: str, data: bytes) -> dict[str, object]:
@@ -3700,11 +3730,24 @@ def _fd_mount_id(descriptor: int) -> int:
     raise ValueError("confined descriptor has no Linux mount identity")
 
 
-def _stable_digest_fd(descriptor: int) -> tuple[str, int]:
+def _stable_digest_fd(
+    descriptor: int,
+    *,
+    max_bytes: int | None = None,
+    label: str = "confined package-input file",
+) -> tuple[str, int]:
     os.lseek(descriptor, 0, os.SEEK_SET)
     before = os.fstat(descriptor)
+    if max_bytes is not None and (
+        before.st_size <= 0 or before.st_size > max_bytes
+    ):
+        raise ValueError(f"{label} exceeds its byte bound")
     digest = hashlib.sha256()
+    total = 0
     while chunk := os.read(descriptor, _COPY_CHUNK):
+        total += len(chunk)
+        if max_bytes is not None and total > max_bytes:
+            raise ValueError(f"{label} exceeds its byte bound")
         digest.update(chunk)
     after = os.fstat(descriptor)
     before_identity = (
@@ -3721,20 +3764,42 @@ def _stable_digest_fd(descriptor: int) -> tuple[str, int]:
         after.st_mtime_ns,
         after.st_ctime_ns,
     )
-    if before_identity != after_identity or not stat.S_ISREG(after.st_mode):
+    if (
+        before_identity != after_identity
+        or not stat.S_ISREG(after.st_mode)
+        or total != after.st_size
+    ):
         raise ValueError("confined package-input file changed while it was hashed")
     return digest.hexdigest(), after.st_size
 
 
-def _stable_read_fd(descriptor: int) -> bytes:
-    expected = _stable_digest_fd(descriptor)
+def _stable_read_fd(
+    descriptor: int,
+    *,
+    max_bytes: int | None = None,
+    label: str = "confined package-input file",
+) -> bytes:
+    expected = _stable_digest_fd(
+        descriptor,
+        max_bytes=max_bytes,
+        label=label,
+    )
     os.lseek(descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
+    total = 0
     while chunk := os.read(descriptor, _COPY_CHUNK):
+        total += len(chunk)
+        if max_bytes is not None and total > max_bytes:
+            raise ValueError(f"{label} exceeds its byte bound")
         chunks.append(chunk)
     payload = b"".join(chunks)
     if (
-        _stable_digest_fd(descriptor) != expected
+        _stable_digest_fd(
+            descriptor,
+            max_bytes=max_bytes,
+            label=label,
+        )
+        != expected
         or hashlib.sha256(payload).hexdigest() != expected[0]
         or len(payload) != expected[1]
     ):

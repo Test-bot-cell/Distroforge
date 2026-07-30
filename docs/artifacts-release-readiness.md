@@ -128,6 +128,30 @@ unverified-mutable-target-rootfs`, `filesystem_causality: unverified` and
 dpkg success. M3.2b must use a host-isolated one-shot witness whose acknowledgement is a
 precondition for dpkg.
 
+M3.2a.1 hardens this local proof plumbing without promoting that status. Immutable text
+artifacts are fully written and file-synced under an exclusive temporary name before a
+same-directory no-replace link publishes them; the parent directory is synced before and
+after temporary-name cleanup. Existing destinations, including symlinks, remain
+refusals. A failed file sync publishes nothing, while a later directory-sync failure can
+leave only the complete target. A crash may leave a partial or complete temporary name,
+but that name is never the published target. The writer does not recursively sync newly
+created ancestors and publishes by linking the random temporary name rather than its
+held descriptor, so a hostile same-directory writer is outside this precise durability
+contract; this is not a filesystem or power-loss attestation.
+
+The authoritative package-input path now bounds every hash/read pass for
+`PACKAGE-INPUTS.json` and its transaction JSON through confined descriptors before
+decoding, including growth after the opening size check. The release gate pins one
+bounded provenance snapshot across its package, rootfs, ISO, manifest and provenance
+items and rejects an alias changed before closure. Its package preview also bounds
+package inputs, APT actions and the static filesystem map; invalid Unicode, malformed
+JSON, oversized files, FIFOs and unstable reads become blocked items. The controlled-root
+hook harness uses an allowlisted environment and closed
+tool directory, journals only its expected `apt-config`/`apt-get` shims and traps
+unexpected APT/dpkg-family resolution. This proves the synthetic test did not fall
+through to those host package tools. It neither authenticates InfoFD nor closes the
+mutable-rootfs race described above.
+
 M3.1 adds the run-bound `PACKAGE-FILESYSTEM-CAUSALITY.json` artifact with schema
 `distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
 refresh re-hashes and re-extracts the exact `.deb` files selected by the sealed

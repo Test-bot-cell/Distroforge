@@ -35,6 +35,7 @@ from distroforge.core.package_evidence import (
     package_apt_command_argv_sha256,
     package_source_policy_sha256,
     validate_package_apt_actions_evidence,
+    validate_package_evidence,
     validate_package_evidence_payload,
 )
 from distroforge.core.project import Project
@@ -528,22 +529,85 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     )
     config_dir = controlled_root / "etc/apt/apt.conf.d"
     keyring_dir = controlled_root / "usr/share/keyrings"
-    fake_bin = controlled_root / "fake-bin"
+    controlled_bin = controlled_root / "controlled-bin"
+    package_tool_log = controlled_root / "package-tool-calls.tsv"
     for directory in (
         recorder.parent,
         config_dir,
         keyring_dir,
-        fake_bin,
+        controlled_bin,
     ):
         directory.mkdir(parents=True)
     (config_dir / "99distroforge-evidence").write_text(
         _capture_hook_config(),
         encoding="utf-8",
     )
-    for helper in ("apt-config", "apt-get"):
-        target = fake_bin / helper
-        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    # The hook may use only this explicit set of ordinary Unix utilities. Package
+    # tools never fall through to the host PATH: expected APT discovery calls are
+    # logged shims, and every other package-oriented command is a failing trap.
+    admitted_utilities = (
+        "awk",
+        "chmod",
+        "grep",
+        "head",
+        "ln",
+        "mkdir",
+        "mktemp",
+        "mv",
+        "rm",
+        "rmdir",
+        "sed",
+        "sha256sum",
+        "wc",
+    )
+    for utility in admitted_utilities:
+        candidates = (Path("/usr/bin") / utility, Path("/bin") / utility)
+        executable = next((path for path in candidates if path.is_file()), None)
+        assert executable is not None, f"required test utility is absent: {utility}"
+        (controlled_bin / utility).symlink_to(executable)
+
+    def write_package_tool_shim(
+        command: str,
+        *,
+        disposition: str,
+        exit_status: int,
+    ) -> None:
+        target = controlled_bin / command
+        target.write_text(
+            "\n".join(
+                (
+                    "#!/bin/sh",
+                    "set -eu",
+                    f"log={shlex.quote(str(package_tool_log))}",
+                    "{",
+                    f"    printf '%s' {shlex.quote(disposition + ':' + command)}",
+                    "    for argument",
+                    "    do",
+                    "        printf '\\t%s' \"$argument\"",
+                    "    done",
+                    "    printf '\\n'",
+                    '} >> "$log"',
+                    f"exit {exit_status}",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
         target.chmod(0o755)
+
+    for expected in ("apt-config", "apt-get"):
+        write_package_tool_shim(
+            expected,
+            disposition="expected-shim",
+            exit_status=0,
+        )
+    for forbidden in ("apt", "dpkg", "dpkg-deb", "dpkg-query", "sudo"):
+        write_package_tool_shim(
+            forbidden,
+            disposition="forbidden-trap",
+            exit_status=97,
+        )
 
     script = _capture_hook_script()
     replacements = (
@@ -568,12 +632,18 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
         b"APT::Architecture=amd64\n\n"
         b"proof 1 amd64 none = 1 amd64 none **CONFIGURE**\n"
     )
+    # subprocess receives an allowlist, not os.environ. Supplying the variable
+    # below only exercises the recorder's own guard; it does not authenticate
+    # that APT really supplied InfoFD 0.
     base_env = {
-        **os.environ,
-        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": str(controlled_bin),
     }
+    shell = Path("/bin/sh")
+    assert shell.is_file()
     missing_fd = subprocess.run(
-        ("sh", str(recorder), "pre"),
+        (str(shell), str(recorder), "pre"),
         input=protocol,
         capture_output=True,
         env=base_env,
@@ -584,7 +654,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
 
     hook_env = {**base_env, "APT_HOOK_INFO_FD": "0"}
     pre = subprocess.run(
-        ("sh", str(recorder), "pre"),
+        (str(shell), str(recorder), "pre"),
         input=protocol,
         capture_output=True,
         env=hook_env,
@@ -594,7 +664,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     assert (base / "active").is_file()
 
     concurrent = subprocess.run(
-        ("sh", str(recorder), "pre"),
+        (str(shell), str(recorder), "pre"),
         input=protocol,
         capture_output=True,
         env=hook_env,
@@ -604,7 +674,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     assert b"earlier APT transaction was not closed" in concurrent.stderr
 
     post = subprocess.run(
-        ("sh", str(recorder), "post"),
+        (str(shell), str(recorder), "post"),
         capture_output=True,
         env=base_env,
         check=False,
@@ -633,7 +703,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     oversized_recorder.write_text(oversized_script, encoding="utf-8")
     oversized_recorder.chmod(0o755)
     oversized = subprocess.run(
-        ("sh", str(oversized_recorder), "pre"),
+        (str(shell), str(oversized_recorder), "pre"),
         input=b"x" * 65,
         capture_output=True,
         env=hook_env,
@@ -657,7 +727,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     )
     blob_limited_recorder.chmod(0o755)
     blob_limited = subprocess.run(
-        ("sh", str(blob_limited_recorder), "pre"),
+        (str(shell), str(blob_limited_recorder), "pre"),
         input=protocol,
         capture_output=True,
         env=hook_env,
@@ -681,7 +751,7 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     )
     aggregate_limited_recorder.chmod(0o755)
     aggregate_limited = subprocess.run(
-        ("sh", str(aggregate_limited_recorder), "pre"),
+        (str(shell), str(aggregate_limited_recorder), "pre"),
         input=protocol,
         capture_output=True,
         env=hook_env,
@@ -689,6 +759,13 @@ def test_hook_pre_post_state_machine_executes_in_a_controlled_root(
     )
     assert aggregate_limited.returncode == 125
     assert b"aggregate byte limit" in aggregate_limited.stderr
+    assert package_tool_log.read_text(encoding="utf-8").splitlines() == [
+        "expected-shim:apt-config\tshell\tlists\tDir::State::lists/f",
+        (
+            "expected-shim:apt-get\tindextargets\t--format\t"
+            "$(IDENTIFIER)|$(FILENAME)|$(URI)"
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1092,6 +1169,126 @@ def test_offline_validator_recomputes_release_packages_and_deb_chain(
     assert "1 archive .deb inputs" in validation.detail
     assert validation.filesystem_causality == "unverified"
     assert validation.release_ready is False
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("invalid-utf8", "not valid UTF-8 JSON"),
+        ("oversized", "exceeds its byte bound"),
+        ("symlink", "symlink"),
+    ),
+)
+def test_authoritative_package_input_reader_fails_closed_before_json_growth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    target = run_dir / "PACKAGE-INPUTS.json"
+    if mutation == "invalid-utf8":
+        target.write_bytes(b"\xff")
+    elif mutation == "oversized":
+        target.write_bytes(b"{}\n")
+        monkeypatch.setattr(
+            package_evidence_module,
+            "MAX_PACKAGE_INPUTS_BYTES",
+            target.stat().st_size - 1,
+        )
+    else:
+        external = tmp_path / "external-package-inputs.json"
+        external.write_bytes(b'{"run_id": "proof-run"}\n')
+        target.symlink_to(external)
+
+    validation = validate_package_evidence(
+        run_dir,
+        expected_run_id="proof-run",
+        expected_source_mode="bootstrap",
+        expected_signer_fingerprints=(),
+        expected_keyring_sha256=None,
+    )
+
+    assert validation.ok is False
+    assert validation.release_ready is False
+    assert "package evidence is unreadable" in validation.detail
+    assert expected in validation.detail
+
+
+def test_bounded_run_reader_rejects_growth_after_its_opening_fstat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    target = run_dir / "PACKAGE-INPUTS.json"
+    target.write_bytes(b"{}")
+    stable_read = package_evidence_module._stable_read_fd
+
+    def grow_before_stable_read(
+        descriptor: int,
+        *,
+        max_bytes: int | None = None,
+        label: str = "confined package-input file",
+    ) -> bytes:
+        target.write_bytes(b"{" + (b"x" * 4096))
+        return stable_read(
+            descriptor,
+            max_bytes=max_bytes,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        package_evidence_module,
+        "_stable_read_fd",
+        grow_before_stable_read,
+    )
+
+    with pytest.raises(ValueError, match="PACKAGE-INPUTS exceeds its byte bound"):
+        package_evidence_module._read_bounded_run_bytes(
+            run_dir,
+            "PACKAGE-INPUTS.json",
+            max_bytes=2,
+            label="PACKAGE-INPUTS",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("invalid-utf8", "not valid UTF-8 JSON"),
+        ("oversized", "identity is malformed"),
+    ),
+)
+def test_package_transaction_json_is_bounded_and_unicode_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+) -> None:
+    payload, run_dir, _deb, _release = _valid_payload(tmp_path, monkeypatch)
+    refs = payload["transactions"]
+    assert isinstance(refs, list)
+    bootstrap_ref = refs[0]
+    assert isinstance(bootstrap_ref, dict)
+    transaction_path = run_dir / str(bootstrap_ref["path"])
+    if mutation == "invalid-utf8":
+        transaction_path.write_bytes(b"\xff")
+        refs[0] = _identity(transaction_path, run_dir)
+    else:
+        monkeypatch.setattr(
+            package_evidence_module,
+            "MAX_PACKAGE_TRANSACTION_BYTES",
+            transaction_path.stat().st_size - 1,
+        )
+
+    validation = _validate(payload, run_dir)
+
+    assert validation.ok is False
+    assert validation.release_ready is False
+    assert "package transactions are unreadable" in validation.detail
+    assert expected in validation.detail
 
 
 def test_package_input_validator_authenticates_apt_deb_identity_fields(

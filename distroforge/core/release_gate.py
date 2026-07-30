@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
 import re
@@ -24,9 +26,13 @@ from .iso_evidence import (
     validate_iso_assembly_evidence,
 )
 from .package_apt_actions import (
+    MAX_PACKAGE_INPUTS_BYTES,
     MAX_REPORT_JSON_BYTES,
     PACKAGE_APT_ACTIONS_FILENAME,
     PACKAGE_APT_ACTIONS_SCHEMA,
+)
+from .package_causality import (
+    MAX_EVIDENCE_JSON_BYTES as MAX_PACKAGE_CAUSALITY_JSON_BYTES,
 )
 from .package_causality import (
     PACKAGE_FILESYSTEM_CAUSALITY_FILENAME,
@@ -48,6 +54,18 @@ from .rootfs_evidence import (
 )
 from .trust import TrustService
 from .vulnscan import VulnScanService
+
+MAX_PROVENANCE_JSON_BYTES = 128 * 1024 * 1024
+MAX_RELEASE_EVIDENCE_JSON_BYTES = 128 * 1024 * 1024
+MAX_COMMAND_LOG_BYTES = 128 * 1024 * 1024
+MAX_SHA256_SIDECAR_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class _ProvenanceSnapshot:
+    raw: bytes | None
+    data: dict[str, object] | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -129,30 +147,53 @@ class ReleaseGateService:
         iso = iso or options.output_iso or paths.output_iso
         output_dir = output_dir or iso.parent
         report = ReleaseGateReport(project.root, iso, output_dir)
+        provenance_snapshot = _load_provenance_snapshot(
+            output_dir / "distroforge-provenance.json"
+        )
         package_inputs = _package_inputs_item(
             output_dir,
             project,
             options,
             verify=verify_checksums,
+            provenance_snapshot=provenance_snapshot,
         )
         _check_source_trust(report, project, options, package_inputs)
         report.items.append(package_inputs)
-        report.items.append(_rootfs_evidence_item(output_dir, verify=verify_checksums))
+        report.items.append(
+            _rootfs_evidence_item(
+                output_dir,
+                verify=verify_checksums,
+                provenance_snapshot=provenance_snapshot,
+            )
+        )
         report.items.append(
             _iso_assembly_item(
                 output_dir,
                 iso,
                 project=project,
                 verify=verify_checksums,
+                provenance_snapshot=provenance_snapshot,
             )
         )
         _check_vuln_policy(report, project, options)
         _check_iso_and_checksums(report, iso, output_dir, verify_checksums)
-        _check_release_files(report, iso, output_dir, options)
+        _check_release_files(
+            report,
+            iso,
+            output_dir,
+            options,
+            provenance_snapshot=provenance_snapshot,
+        )
         _check_boot_proof(report, iso, output_dir, options)
         _check_release_readiness(report, iso, output_dir, verify_checksums)
         _check_packaging_policy(report, project.root)
         _check_publish_signing(report, project.root, options)
+        report.items.append(
+            _provenance_snapshot_closure_item(
+                output_dir / "distroforge-provenance.json",
+                provenance_snapshot,
+            )
+        )
         return report
 
 
@@ -217,16 +258,19 @@ def _package_inputs_item(
     options: BuildOptions,
     *,
     verify: bool,
+    provenance_snapshot: _ProvenanceSnapshot | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    try:
-        provenance_data = json.loads(provenance.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    if snapshot.error is not None:
         return ReleaseGateItem(
             "package-inputs",
             "blocked",
-            f"Cannot locate a package-input run without provenance: {exc}",
+            "Cannot locate a package-input run without provenance: "
+            + snapshot.error,
         )
+    assert snapshot.data is not None
+    provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
     if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
         return ReleaseGateItem(
@@ -266,16 +310,29 @@ def _package_inputs_item(
         )
     if not verify:
         try:
-            payload = json.loads(evidence.read_text(encoding="utf-8"))
+            payload = _read_bounded_json_file(
+                evidence,
+                max_bytes=MAX_PACKAGE_INPUTS_BYTES,
+                label="PACKAGE-INPUTS",
+            )
             action_payload = _read_bounded_json_file(
                 action_evidence,
                 max_bytes=MAX_REPORT_JSON_BYTES,
                 label="APT action report",
             )
-            causality_payload = json.loads(
-                causality_evidence.read_text(encoding="utf-8")
+            causality_payload = _read_bounded_json_file(
+                causality_evidence,
+                max_bytes=MAX_PACKAGE_CAUSALITY_JSON_BYTES,
+                label="package/filesystem causality report",
             )
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        except (
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
             return ReleaseGateItem(
                 "package-inputs",
                 "blocked",
@@ -412,9 +469,38 @@ def _read_bounded_json_file(
 ) -> object:
     """Read one regular JSON file through a stable, size-bounded descriptor."""
 
+    data = _read_bounded_file(
+        path,
+        max_bytes=max_bytes,
+        label=label,
+    )
+    return _decode_json(data, label=label)
+
+
+def _decode_json(data: bytes, *, label: str) -> object:
+    try:
+        return json.loads(data.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+
+
+def _read_bounded_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    """Read one regular file without following links or blocking on a FIFO."""
+
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(f"{label} is a symlink") from exc
+        raise
     try:
         before = os.fstat(descriptor)
         if (
@@ -442,10 +528,60 @@ def _read_bounded_json_file(
         or any(getattr(before, field) != getattr(after, field) for field in stable_fields)
     ):
         raise ValueError(f"{label} changed while it was read")
+    return data
+
+
+def _load_provenance_snapshot(path: Path) -> _ProvenanceSnapshot:
     try:
-        return json.loads(data.decode("utf-8", errors="strict"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+        raw = _read_bounded_file(
+            path,
+            max_bytes=MAX_PROVENANCE_JSON_BYTES,
+            label="provenance",
+        )
+        data = _decode_json(raw, label="provenance")
+        if not isinstance(data, dict):
+            raise ValueError("provenance is not a JSON object")
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
+        return _ProvenanceSnapshot(None, None, str(exc))
+    return _ProvenanceSnapshot(raw, data, None)
+
+
+def _provenance_snapshot_closure_item(
+    path: Path,
+    opening: _ProvenanceSnapshot,
+) -> ReleaseGateItem:
+    if opening.error is not None or opening.raw is None:
+        return ReleaseGateItem(
+            "provenance-snapshot",
+            "blocked",
+            "No valid opening provenance snapshot was available.",
+        )
+    closing = _load_provenance_snapshot(path)
+    if closing.error is not None or closing.raw is None:
+        return ReleaseGateItem(
+            "provenance-snapshot",
+            "blocked",
+            "Provenance could not be closed against its opening snapshot: "
+            + (closing.error or "missing bytes"),
+        )
+    if closing.raw != opening.raw:
+        return ReleaseGateItem(
+            "provenance-snapshot",
+            "blocked",
+            "Provenance changed while the release gate was evaluated.",
+        )
+    return ReleaseGateItem(
+        "provenance-snapshot",
+        "ready",
+        "All items used one bounded provenance snapshot; opening and closing bytes match.",
+    )
 
 
 def _package_apt_actions_boundary_error(
@@ -541,38 +677,38 @@ def _command_argv_ledger(path: Path) -> tuple[tuple[str, ...], ...]:
     trusting the earlier aggregate.
     """
 
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("commands.jsonl is missing, non-regular, or a symlink")
     commands: list[tuple[str, ...]] = []
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"commands.jsonl line {line_number} is not valid JSON"
-                    ) from exc
-                if not isinstance(event, dict):
-                    raise ValueError(
-                        f"commands.jsonl line {line_number} is not an event"
-                    )
-                if event.get("event") != "start":
-                    continue
-                argv = event.get("argv")
-                if (
-                    not isinstance(argv, list)
-                    or not argv
-                    or not all(isinstance(token, str) and token for token in argv)
-                ):
-                    raise ValueError(
-                        f"commands.jsonl line {line_number} has malformed argv"
-                    )
-                commands.append(tuple(argv))
-    except OSError as exc:
+        text = _read_bounded_file(
+            path,
+            max_bytes=MAX_COMMAND_LOG_BYTES,
+            label="commands.jsonl",
+        ).decode("utf-8", errors="strict")
+    except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"commands.jsonl is unreadable: {exc}") from exc
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
+            raise ValueError(
+                f"commands.jsonl line {line_number} is not valid JSON"
+            ) from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"commands.jsonl line {line_number} is not an event")
+        if event.get("event") != "start":
+            continue
+        argv = event.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(token, str) and token for token in argv)
+        ):
+            raise ValueError(
+                f"commands.jsonl line {line_number} has malformed argv"
+            )
+        commands.append(tuple(argv))
     return tuple(commands)
 
 
@@ -580,16 +716,19 @@ def _rootfs_evidence_item(
     output_dir: Path,
     *,
     verify: bool,
+    provenance_snapshot: _ProvenanceSnapshot | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    try:
-        provenance_data = json.loads(provenance.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    if snapshot.error is not None:
         return ReleaseGateItem(
             "rootfs-identity",
             "blocked",
-            f"Cannot locate rootfs evidence without provenance: {exc}",
+            "Cannot locate rootfs evidence without provenance: "
+            + snapshot.error,
         )
+    assert snapshot.data is not None
+    provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
     if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
         return ReleaseGateItem(
@@ -608,8 +747,19 @@ def _rootfs_evidence_item(
         )
     if not verify:
         try:
-            payload = json.loads(verification.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = _read_bounded_json_file(
+                verification,
+                max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+                label="rootfs packing verification",
+            )
+        except (
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
             return ReleaseGateItem(
                 "rootfs-identity",
                 "blocked",
@@ -654,16 +804,19 @@ def _iso_assembly_item(
     *,
     project: Project,
     verify: bool,
+    provenance_snapshot: _ProvenanceSnapshot | None = None,
 ) -> ReleaseGateItem:
     provenance = output_dir / "distroforge-provenance.json"
-    try:
-        provenance_data = json.loads(provenance.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    snapshot = provenance_snapshot or _load_provenance_snapshot(provenance)
+    if snapshot.error is not None:
         return ReleaseGateItem(
             "iso-assembly",
             "blocked",
-            f"Cannot locate ISO assembly evidence without provenance: {exc}",
+            "Cannot locate ISO assembly evidence without provenance: "
+            + snapshot.error,
         )
+    assert snapshot.data is not None
+    provenance_data = snapshot.data
     run_id = provenance_data.get("run_id")
     if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
         return ReleaseGateItem(
@@ -681,8 +834,19 @@ def _iso_assembly_item(
         )
     if not verify:
         try:
-            payload = json.loads(evidence.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = _read_bounded_json_file(
+                evidence,
+                max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+                label="ISO assembly evidence",
+            )
+        except (
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
             return ReleaseGateItem(
                 "iso-assembly",
                 "blocked",
@@ -786,6 +950,8 @@ def _check_release_files(
     iso: Path,
     output_dir: Path,
     options: BuildOptions,
+    *,
+    provenance_snapshot: _ProvenanceSnapshot,
 ) -> None:
     sbom_format = options.provenance.sbom_format
     sbom_filename = (
@@ -814,6 +980,7 @@ def _check_release_files(
                     iso,
                     output_dir,
                     use_sudo=options.use_sudo,
+                    provenance_snapshot=provenance_snapshot,
                 )
             )
             continue
@@ -821,6 +988,7 @@ def _check_release_files(
             if code in {"buildinfo", "sbom", "html-report"} and not _build_manifest_binds(
                 output_dir,
                 path,
+                provenance_snapshot=provenance_snapshot,
             ):
                 report.items.append(
                     ReleaseGateItem(
@@ -839,19 +1007,35 @@ def _check_release_files(
             report.items.append(ReleaseGateItem(code, "review", f"{filename} is not enabled."))
 
 
-def _build_manifest_binds(output_dir: Path, artifact: Path) -> bool:
-    provenance = output_dir / "distroforge-provenance.json"
+def _build_manifest_binds(
+    output_dir: Path,
+    artifact: Path,
+    *,
+    provenance_snapshot: _ProvenanceSnapshot | None = None,
+) -> bool:
+    snapshot = provenance_snapshot or _load_provenance_snapshot(
+        output_dir / "distroforge-provenance.json"
+    )
+    if snapshot.error is not None or snapshot.data is None:
+        return False
+    data = snapshot.data
     try:
-        data = json.loads(provenance.read_text(encoding="utf-8"))
         run_id = data.get("run_id")
         if not isinstance(run_id, str) or Path(run_id).name != run_id:
             return False
-        manifest = json.loads(
-            (output_dir / "evidence" / "runs" / run_id / "RUN-MANIFEST.json").read_text(
-                encoding="utf-8"
-            )
+        manifest = _read_bounded_json_file(
+            output_dir / "evidence" / "runs" / run_id / "RUN-MANIFEST.json",
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="run manifest",
         )
-    except (OSError, json.JSONDecodeError):
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ):
         return False
     files = manifest.get("files") if isinstance(manifest, dict) else None
     if not isinstance(files, list) or not artifact.is_file():
@@ -973,12 +1157,19 @@ def _validate_build_provenance(
     output_dir: Path,
     *,
     use_sudo: bool = True,
+    provenance_snapshot: _ProvenanceSnapshot | None = None,
 ) -> ReleaseGateItem:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return ReleaseGateItem("provenance", "blocked", f"Provenance is unreadable: {exc}")
-    if not isinstance(data, dict) or data.get("schema") != "distroforge.provenance.v2":
+    snapshot = provenance_snapshot or _load_provenance_snapshot(path)
+    if snapshot.error is not None:
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            f"Provenance is unreadable: {snapshot.error}",
+        )
+    assert snapshot.data is not None
+    assert snapshot.raw is not None
+    data = snapshot.data
+    if data.get("schema") != "distroforge.provenance.v2":
         return ReleaseGateItem(
             "provenance", "blocked", "Provenance schema is absent or unsupported."
         )
@@ -1264,7 +1455,7 @@ def _validate_build_provenance(
             "blocked",
             f"Immutable run evidence is incomplete: {', '.join(missing)}",
         )
-    if sha256_file(immutable) != sha256_file(path):
+    if sha256_file(immutable) != hashlib.sha256(snapshot.raw).hexdigest():
         return ReleaseGateItem(
             "provenance", "blocked", "Provenance alias differs from immutable evidence."
         )
@@ -1366,12 +1557,29 @@ def _validate_build_provenance(
             iso_assembly_validation.detail,
         )
     try:
-        assembly_payload = json.loads(iso_assembly.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        assembly_payload = _read_bounded_json_file(
+            iso_assembly,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="ISO assembly evidence",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return ReleaseGateItem(
             "provenance",
             "blocked",
             f"ISO assembly evidence is unreadable: {exc}",
+        )
+    if not isinstance(assembly_payload, dict):
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            "ISO assembly evidence is not a JSON object.",
         )
     for provenance_field, assembly_field in (
         ("assembled_output_iso", "output_iso"),
@@ -1409,9 +1617,24 @@ def _validate_build_provenance(
             "Provenance staged SquashFS differs from the packing FD witness.",
         )
     try:
-        build = json.loads(iso_report.read_text(encoding="utf-8"))
-        run_manifest = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        build = _read_bounded_json_file(
+            iso_report,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="ISO build report",
+        )
+        run_manifest = _read_bounded_json_file(
+            manifest,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="run manifest",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return ReleaseGateItem("provenance", "blocked", f"Run evidence is unreadable: {exc}")
     if (
         not isinstance(build, dict)
@@ -1436,7 +1659,19 @@ def _validate_build_provenance(
             "provenance", "blocked", "Run manifest identity does not match provenance."
         )
     expected_manifest_line = f"{sha256_file(manifest)}  {manifest.name}"
-    if manifest_sum.read_text(encoding="utf-8").strip() != expected_manifest_line:
+    try:
+        manifest_sum_text = _read_bounded_file(
+            manifest_sum,
+            max_bytes=MAX_SHA256_SIDECAR_BYTES,
+            label="run manifest SHA256 sidecar",
+        ).decode("utf-8", errors="strict")
+    except (OSError, UnicodeError, ValueError) as exc:
+        return ReleaseGateItem(
+            "provenance",
+            "blocked",
+            f"Run manifest SHA256 sidecar is unreadable: {exc}",
+        )
+    if manifest_sum_text.strip() != expected_manifest_line:
         return ReleaseGateItem(
             "provenance", "blocked", "Run manifest SHA256 sidecar does not match."
         )
@@ -1765,12 +2000,24 @@ def _command_log_error(
     executed_entrypoints: list[object],
 ) -> str | None:
     try:
-        events = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, json.JSONDecodeError) as exc:
+        command_log = _read_bounded_file(
+            path,
+            max_bytes=MAX_COMMAND_LOG_BYTES,
+            label="commands.jsonl",
+        ).decode("utf-8", errors="strict")
+        events = []
+        for line in command_log.splitlines():
+            if not line.strip():
+                continue
+            events.append(json.loads(line))
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return f"Command log is unreadable: {exc}"
     starts = [
         event for event in events if isinstance(event, dict) and event.get("event") == "start"
@@ -1874,9 +2121,24 @@ def _qemu_run_binding_error(
     manifest_path = run_dir / "RUN-MANIFEST.json"
     sidecar = run_dir / "RUN-MANIFEST.json.sha256"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        sidecar_text = sidecar.read_text(encoding="utf-8").strip()
-    except (OSError, json.JSONDecodeError) as exc:
+        manifest = _read_bounded_json_file(
+            manifest_path,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="QEMU run manifest",
+        )
+        sidecar_text = _read_bounded_file(
+            sidecar,
+            max_bytes=MAX_SHA256_SIDECAR_BYTES,
+            label="QEMU run manifest SHA256 sidecar",
+        ).decode("utf-8", errors="strict").strip()
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return f"QEMU run manifest is missing or unreadable: {exc}"
     if (
         not isinstance(manifest, dict)
@@ -1930,8 +2192,19 @@ def _qemu_run_binding_error(
 
 def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        data = _read_bounded_json_file(
+            path,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="boot proof",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return ReleaseGateItem("boot-proof", "blocked", f"Boot proof is unreadable: {exc}")
     if not isinstance(data, dict) or data.get("schema") != "distroforge.boot-proof.v2":
         return ReleaseGateItem(
@@ -1984,8 +2257,19 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             "Boot proof does not identify its immutable report.",
         )
     try:
-        run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        run_manifest = _read_bounded_json_file(
+            run_manifest_path,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="boot run manifest",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
@@ -2004,7 +2288,19 @@ def _validate_boot_proof(path: Path, iso: Path) -> ReleaseGateItem:
             "Boot run manifest identity or status is inconsistent.",
         )
     expected_manifest_line = f"{sha256_file(run_manifest_path)}  {run_manifest_path.name}"
-    if run_manifest_sum.read_text(encoding="utf-8").strip() != expected_manifest_line:
+    try:
+        run_manifest_sum_text = _read_bounded_file(
+            run_manifest_sum,
+            max_bytes=MAX_SHA256_SIDECAR_BYTES,
+            label="boot run manifest SHA256 sidecar",
+        ).decode("utf-8", errors="strict")
+    except (OSError, UnicodeError, ValueError) as exc:
+        return ReleaseGateItem(
+            "boot-proof",
+            "blocked",
+            f"Boot run manifest SHA256 sidecar is unreadable: {exc}",
+        )
+    if run_manifest_sum_text.strip() != expected_manifest_line:
         return ReleaseGateItem(
             "boot-proof",
             "blocked",
@@ -2164,8 +2460,19 @@ def _check_publish_signing(report: ReleaseGateReport, root: Path, options: Build
 
 def _boot_proof_summary(path: Path) -> dict[str, str]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = _read_bounded_json_file(
+            path,
+            max_bytes=MAX_RELEASE_EVIDENCE_JSON_BYTES,
+            label="boot proof summary",
+        )
+    except (
+        OSError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ):
         return {"status": "invalid", "selected_backend": "unknown", "proof_level": "none"}
     if not isinstance(data, dict):
         return {"status": "invalid", "selected_backend": "unknown", "proof_level": "none"}

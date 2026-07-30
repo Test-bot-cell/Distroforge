@@ -1,5 +1,33 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Hardened the local M3.2a evidence plumbing without widening its proof.
+    Immutable text evidence is now encoded before mutation, written to an
+    exclusive same-directory temporary through a held directory descriptor,
+    file-synced, atomically published by a no-replace hard link, directory-
+    synced, unlinked from its temporary name and directory-synced again.
+    Existing files and symlinks remain refusals. Simulated file-fsync failure
+    publishes nothing; a directory-fsync failure can leave only the complete
+    published target, never a partial target. A crash can still leave a
+    partial or complete dot-temporary which is never treated as the published
+    target, and newly created ancestor directories are not recursively synced.
+    Publication links the random temporary name rather than the held file
+    descriptor, so a hostile writer with same-directory mutation rights remains
+    outside this durability threat model. The authoritative package-input
+    validator now reads PACKAGE-INPUTS and every referenced transaction through
+    stable, no-follow, size-bounded run descriptors, checks the recorded size
+    and SHA before decoding, and turns invalid Unicode, malformed JSON,
+    oversized input, symlinks and read drift into a closed validation failure.
+    The release gate now pins one bounded provenance snapshot across its
+    package, rootfs, ISO, manifest and provenance items, checks the alias again
+    at closure, and makes its direct JSON, command-log and manifest-sidecar
+    reads non-blocking and bounded. The package preview likewise bounds
+    PACKAGE-INPUTS, PACKAGE-APT-ACTIONS and the package/filesystem map before
+    parsing. Its controlled-root hook test now receives an explicit environment
+    allowlist and closed PATH: admitted Unix utilities are named, the expected
+    apt-config/apt-get shims are journaled, and apt/dpkg-family fallthroughs
+    fail through traps. This proves the synthetic harness did not reach those
+    host package tools; it does not authenticate InfoFD, APT origin, dpkg
+    execution or filesystem causality, which remain M3.2b debt.
   * Added the bounded M3.2a APT action-transcript receipt without
     authenticating its origin. PACKAGE-APT-ACTIONS.json uses schema
     distroforge.package-apt-actions.v1 and recomputes the supplied

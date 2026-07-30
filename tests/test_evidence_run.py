@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import py_compile
+import stat
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from conftest import (
     write_valid_build_evidence,
 )
 
+import distroforge.core.evidence_run as evidence_run_module
 import distroforge.core.release_gate as release_gate_module
 from distroforge.core.beginner_iso import repair_beginner_iso_release_artifacts
 from distroforge.core.build import BuildOptions
@@ -29,6 +31,7 @@ from distroforge.core.evidence_run import (
     observed_executable_counts,
     reserve_evidence_run,
     toolchain_identity,
+    write_immutable_text,
 )
 from distroforge.core.iso_build import run_iso_build
 from distroforge.core.project import Project
@@ -103,6 +106,129 @@ def test_a_run_id_collision_is_refused_before_evidence_can_mix(tmp_path: Path) -
 
     with pytest.raises(FileExistsError):
         reserve_evidence_run(output, "same-run", executed=True)
+
+
+def test_immutable_text_is_synced_before_atomic_no_replace_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "run" / "proof.json"
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_link = os.link
+    real_unlink = os.unlink
+
+    def recording_fsync(file_descriptor: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(file_descriptor).st_mode) else "file"
+        events.append(f"fsync-{kind}")
+        real_fsync(file_descriptor)
+
+    def recording_link(
+        source: str,
+        destination: str,
+        **kwargs: object,
+    ) -> None:
+        events.append("link")
+        real_link(source, destination, **kwargs)
+
+    def recording_unlink(path: str, **kwargs: object) -> None:
+        events.append("unlink-temporary")
+        real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(evidence_run_module.os, "fsync", recording_fsync)
+    monkeypatch.setattr(evidence_run_module.os, "link", recording_link)
+    monkeypatch.setattr(evidence_run_module.os, "unlink", recording_unlink)
+
+    write_immutable_text(target, '{"sealed": true}\n')
+
+    assert target.read_bytes() == b'{"sealed": true}\n'
+    assert target.stat().st_nlink == 1
+    assert events == [
+        "fsync-file",
+        "link",
+        "fsync-directory",
+        "unlink-temporary",
+        "fsync-directory",
+    ]
+    assert list(target.parent.glob(f".{target.name}.tmp-*")) == []
+
+
+def test_immutable_text_refuses_existing_file_and_symlink_destinations(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "existing.json"
+    existing.write_text("original\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        write_immutable_text(existing, "replacement\n")
+
+    assert existing.read_text(encoding="utf-8") == "original\n"
+    assert list(tmp_path.glob(f".{existing.name}.tmp-*")) == []
+
+    external = tmp_path / "external.json"
+    external.write_text("external\n", encoding="utf-8")
+    linked = tmp_path / "linked.json"
+    linked.symlink_to(external)
+
+    with pytest.raises(FileExistsError):
+        write_immutable_text(linked, "replacement\n")
+
+    assert linked.is_symlink()
+    assert external.read_text(encoding="utf-8") == "external\n"
+    assert list(tmp_path.glob(f".{linked.name}.tmp-*")) == []
+
+
+def test_immutable_text_fsync_failure_cannot_publish_partial_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "proof.json"
+    publication_attempted = False
+    real_fsync = os.fsync
+
+    def failing_file_fsync(file_descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+            raise OSError("simulated file fsync failure")
+        real_fsync(file_descriptor)
+
+    def unexpected_link(*args: object, **kwargs: object) -> None:
+        nonlocal publication_attempted
+        publication_attempted = True
+
+    monkeypatch.setattr(evidence_run_module.os, "fsync", failing_file_fsync)
+    monkeypatch.setattr(evidence_run_module.os, "link", unexpected_link)
+
+    with pytest.raises(OSError, match="simulated file fsync failure"):
+        write_immutable_text(target, "must not become partial\n")
+
+    assert publication_attempted is False
+    assert not target.exists()
+    assert list(tmp_path.glob(f".{target.name}.tmp-*")) == []
+
+
+def test_immutable_text_directory_fsync_failure_leaves_only_complete_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "proof.json"
+    real_fsync = os.fsync
+
+    def failing_directory_fsync(file_descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(file_descriptor).st_mode):
+            raise OSError("simulated directory fsync failure")
+        real_fsync(file_descriptor)
+
+    monkeypatch.setattr(
+        evidence_run_module.os,
+        "fsync",
+        failing_directory_fsync,
+    )
+
+    with pytest.raises(OSError, match="simulated directory fsync failure"):
+        write_immutable_text(target, "complete before publication\n")
+
+    assert target.read_text(encoding="utf-8") == "complete before publication\n"
+    assert list(tmp_path.glob(f".{target.name}.tmp-*")) == []
 
 
 def test_symlink_detection_includes_every_ancestor_below_the_anchor(
@@ -911,6 +1037,190 @@ def test_release_gate_preview_bounds_the_apt_action_receipt_before_reading(
     item = next(item for item in gate.items if item.code == "package-inputs")
     assert item.status == "blocked"
     assert "APT action report exceeds its byte bound" in item.detail
+
+
+@pytest.mark.parametrize(
+    ("filename", "bound_name", "expected"),
+    (
+        (
+            "PACKAGE-INPUTS.json",
+            "MAX_PACKAGE_INPUTS_BYTES",
+            "PACKAGE-INPUTS exceeds its byte bound",
+        ),
+        (
+            "PACKAGE-FILESYSTEM-CAUSALITY.json",
+            "MAX_PACKAGE_CAUSALITY_JSON_BYTES",
+            "package/filesystem causality report exceeds its byte bound",
+        ),
+    ),
+)
+def test_release_gate_preview_bounds_all_package_json_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    filename: str,
+    bound_name: str,
+    expected: str,
+) -> None:
+    project = Project.create("BoundedPackageJson", tmp_path / filename, "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "BoundedPackageJson.iso"
+    iso.write_bytes(b"iso")
+    immutable = write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    target = immutable.parent / filename
+    monkeypatch.setattr(
+        release_gate_module,
+        bound_name,
+        target.stat().st_size - 1,
+    )
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+        verify_checksums=False,
+    )
+
+    item = next(item for item in gate.items if item.code == "package-inputs")
+    assert item.status == "blocked"
+    assert expected in item.detail
+
+
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "PACKAGE-INPUTS.json",
+        "PACKAGE-APT-ACTIONS.json",
+        "PACKAGE-FILESYSTEM-CAUSALITY.json",
+    ),
+)
+def test_release_gate_preview_converts_invalid_package_unicode_to_blocked(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    project = Project.create("InvalidPackageJson", tmp_path / filename, "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "InvalidPackageJson.iso"
+    iso.write_bytes(b"iso")
+    immutable = write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    (immutable.parent / filename).write_bytes(b"\xff")
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+        verify_checksums=False,
+    )
+
+    item = next(item for item in gate.items if item.code == "package-inputs")
+    assert item.status == "blocked"
+    assert "Package-input evidence is unreadable" in item.detail
+    assert "UTF-8" in item.detail
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("invalid-utf8", "UTF-8"),
+        ("non-object", "not a JSON object"),
+        ("oversized", "exceeds its byte bound"),
+        ("fifo", "exceeds its byte bound"),
+    ),
+)
+def test_release_gate_fails_closed_for_invalid_bounded_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+) -> None:
+    project = Project.create("InvalidProvenance", tmp_path / mutation, "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "InvalidProvenance.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    provenance = project.output_dir / "distroforge-provenance.json"
+    if mutation == "invalid-utf8":
+        provenance.write_bytes(b"\xff")
+    elif mutation == "non-object":
+        provenance.write_bytes(b"[]\n")
+    elif mutation == "oversized":
+        monkeypatch.setattr(
+            release_gate_module,
+            "MAX_PROVENANCE_JSON_BYTES",
+            provenance.stat().st_size - 1,
+        )
+    else:
+        provenance.unlink()
+        os.mkfifo(provenance)
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+        verify_checksums=False,
+    )
+
+    items = {item.code: item for item in gate.items}
+    for code in (
+        "package-inputs",
+        "rootfs-identity",
+        "iso-assembly",
+        "provenance",
+        "provenance-snapshot",
+    ):
+        assert items[code].status == "blocked"
+    assert expected in items["package-inputs"].detail
+
+
+def test_release_gate_pins_one_provenance_snapshot_and_detects_alias_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = Project.create("SwappedProvenance", tmp_path / "swap", "26.04")
+    project.source_mode = "bootstrap"
+    iso = project.output_dir / "SwappedProvenance.iso"
+    iso.write_bytes(b"iso")
+    write_valid_build_evidence(project, iso)
+    write_valid_boot_proof(project, iso)
+    provenance = project.output_dir / "distroforge-provenance.json"
+    package_item = release_gate_module._package_inputs_item
+
+    def swap_after_package_check(*args: object, **kwargs: object):
+        item = package_item(*args, **kwargs)
+        replacement = json.loads(provenance.read_text(encoding="utf-8"))
+        replacement["run_id"] = "swapped-run"
+        provenance.write_text(
+            json.dumps(replacement, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return item
+
+    monkeypatch.setattr(
+        release_gate_module,
+        "_package_inputs_item",
+        swap_after_package_check,
+    )
+
+    gate = ReleaseGateService().check(
+        project,
+        package_fixture_options(),
+        iso=iso,
+        output_dir=project.output_dir,
+        verify_checksums=False,
+    )
+
+    items = {item.code: item for item in gate.items}
+    assert items["rootfs-identity"].status == "review"
+    assert items["iso-assembly"].status == "review"
+    assert items["provenance"].status == "blocked"
+    assert "artifact changed" in items["provenance"].detail
+    assert items["provenance-snapshot"].status == "blocked"
+    assert "changed while" in items["provenance-snapshot"].detail
 
 
 @pytest.mark.parametrize(

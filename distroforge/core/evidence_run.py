@@ -112,10 +112,55 @@ def first_symlink_in_confined_tree(anchor: Path, root: Path) -> Path | None:
 
 
 def write_immutable_text(path: Path, content: str) -> None:
-    """Create an evidence file once and refuse accidental replacement."""
+    """Durably create an evidence file once and refuse replacement.
+
+    ``os.replace`` is deliberately unsuitable here: immutable evidence must never
+    displace an existing path.  A same-directory hard link publishes the fully
+    synced temporary inode atomically and fails with ``FileExistsError`` for every
+    pre-existing destination, including a dangling symlink.
+    """
+    encoded = content.encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(content)
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(path.parent, directory_flags)
+    temporary_name = f".{path.name}.tmp-{uuid.uuid4().hex}"
+    temporary_created = False
+    try:
+        temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        temporary_flags |= getattr(os, "O_CLOEXEC", 0)
+        temporary_flags |= getattr(os, "O_NOFOLLOW", 0)
+        temporary_fd = os.open(
+            temporary_name,
+            temporary_flags,
+            0o666,
+            dir_fd=directory_fd,
+        )
+        temporary_created = True
+        with os.fdopen(temporary_fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.link(
+                temporary_name,
+                path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.fsync(directory_fd)
+        os.unlink(temporary_name, dir_fd=directory_fd)
+        temporary_created = False
+        os.fsync(directory_fd)
+    finally:
+        if temporary_created:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        os.close(directory_fd)
 
 
 def copy_immutable_file(source: Path, target: Path) -> None:

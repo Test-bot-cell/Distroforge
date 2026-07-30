@@ -248,6 +248,15 @@ tested with offline, rootless fixtures, not promoted to an executed build claim.
 real APT transaction, dpkg operation, ISO or boot was produced by this hardening work; see
 the [ISO build proof ledger](docs/iso-build-proof-ledger.md).
 
+M3.2a.1 additionally publishes immutable text evidence only after a file sync and an
+atomic no-replace same-directory link, syncs the parent around temporary-name cleanup,
+bounds the package JSON paths before decoding, and makes malformed Unicode fail closed.
+Its controlled-root hook test uses a closed, allowlisted tool environment with journaled
+APT shims and failing dpkg-family traps. These are local durability plus closed
+environment/command-resolution properties only; the harness still uses explicitly
+admitted host utilities, while `capture_origin`, dpkg execution and filesystem
+causality remain unverified.
+
 ## Supported sources
 
 The bundled catalog in 0.3.5 includes Ubuntu 24.04 LTS, Ubuntu 25.10, Ubuntu

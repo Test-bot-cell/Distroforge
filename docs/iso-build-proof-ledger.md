@@ -665,3 +665,66 @@ ISO build.
   `origin/develop` remains `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`,
   `origin/main` remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`, and
   `debian/0.3.5-16` remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.
+
+### 2026-07-30 — M3.2a.1 local durability and harness hardening
+
+- Starting from signed local M3.2a commit
+  `8280e770b435167663d58a9b70a88b98b6778b85`, one explicitly approved external
+  review suggested durability, path-race and harness-isolation checks. The external
+  response was treated as hypotheses, not evidence: local inspection rejected its
+  C-specific parser advice because the bounded parser is Python, confirmed the existing
+  descriptor-held host collector, and retained the concrete writer, legacy JSON-reader
+  and test-environment debts below.
+- `write_immutable_text` now UTF-8-encodes before filesystem mutation, creates an
+  exclusive temporary below a held same-directory descriptor, writes and file-syncs the
+  complete content, publishes through an atomic hard link which refuses replacement,
+  syncs the parent, removes the temporary name and syncs the parent again. Existing
+  regular files, symlinks and dangling symlinks are refusals. Injected file-sync failure
+  publishes no target; injected directory-sync failure leaves at most the already
+  complete target. A crash may leave a partial or complete dot-temporary which is never
+  treated as the published target. Hard links and directory sync are POSIX/Linux
+  assumptions, newly created ancestors are not recursively synced, and publication
+  links the random temporary name rather than the held descriptor; a hostile writer
+  with same-directory mutation rights remains outside this contract. This is therefore
+  a measured append-only durability improvement, not a filesystem or power-loss
+  attestation.
+- The authoritative package-input validator now opens `PACKAGE-INPUTS.json` and every
+  referenced transaction through the confined run reader, applies the existing 128-MiB
+  per/aggregate contracts during every digest/read pass, verifies each transaction's
+  recorded size and SHA-256, and converts invalid Unicode, malformed/non-object JSON,
+  symlinks, oversize, post-`fstat` growth and drift into `ok: false`,
+  `release_ready: false`. The release gate opens one bounded provenance snapshot and
+  reuses it across package, rootfs, ISO, manifest and provenance checks, then rejects an
+  alias that differs at closure. Its direct JSON, command-log and manifest-sidecar
+  readers are non-blocking and bounded; the package preview applies explicit bounds to
+  `PACKAGE-INPUTS.json`, `PACKAGE-APT-ACTIONS.json` and
+  `PACKAGE-FILESYSTEM-CAUSALITY.json` and returns `blocked` for the same malformed-input
+  classes. This does not claim that every delegated rootfs, ISO or QEMU validator reader
+  has yet been migrated to the same descriptor contract.
+- The controlled-root shell harness no longer inherits `os.environ` or falls through to
+  the general host `PATH`. Its closed tool directory names the admitted Unix utilities,
+  journals the two expected `apt-config` and `apt-get` shims, and supplies failing,
+  journaled traps for `apt`, `dpkg`, `dpkg-deb`, `dpkg-query` and `sudo`. The asserted
+  call ledger contains exactly the two expected discovery calls. Supplying
+  `APT_HOOK_INFO_FD=0` still exercises only the hook guard: neither the variable nor the
+  closed harness authenticates the descriptor's producer.
+- The local receipts already obtained for this uncommitted hardening are:
+  - combined package-input/evidence-run pytest replay: `101 passed`;
+  - one sandboxed full replay exposed only its execution boundary: `1412 passed`,
+    `1 skipped`, one `sudo` failure under `no_new_privileges` and seven GPG-agent
+    startup errors; this non-green run was not accepted as a source verdict;
+  - the same gate then ran alone outside that restriction: `make check` passed with
+    Ruff, mypy over 257 source files, `1420 passed, 1 skipped`, ShellCheck over the
+    discovered Debian/tool scripts, and both embedded Python payloads compiled;
+  - `pre-commit run --all-files` passed every configured ratchet;
+  - Ruff over all five initially changed Python files and `git diff --check`: passed;
+  - direct cached CI-pinned mypy 2.3.0, offline and non-incremental: passed over 257
+    source files.
+  The signed commit's object ID and cryptographic verdict necessarily exist only after
+  this stanza is committed; that final post-write receipt is reported in the handoff
+  rather than self-referenced from the commit it authenticates.
+- No real APT stream or transaction, dpkg operation, package/rootfs/ISO build, boot,
+  push, tag, pull request or `main` movement occurred. `capture_origin` remains
+  `unverified-mutable-target-rootfs`, `filesystem_causality` remains `unverified`,
+  `release_ready` remains false, and the host-isolated one-shot ACK plus producer deltas
+  remain M3.2b.
