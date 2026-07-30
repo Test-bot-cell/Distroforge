@@ -196,10 +196,9 @@ def test_the_gui_boot_proof_runs_the_firmware_the_lab_selected(qt_app, tmp_path,
     assert asked[0].prebuild_vm.secure_boot is True
 
 
-def test_refresh_reads_the_finished_iso_at_most_once(qt_app, tmp_path) -> None:
-    """B8: the spine, the command center and the Start cards are three views of one
-    journey report. Computing it once -- and answering the publish-gate status from
-    the SHA256SUMS sidecar -- keeps a maintainer-level refresh off the ISO."""
+def test_refresh_rehashes_each_verdict_until_scoped_reuse_exists(qt_app, tmp_path) -> None:
+    """The cache-removal interlock makes both authoritative consumers hash their
+    own bytes until a descriptor-backed verification session can share them."""
     window, _project, iso = _window(tmp_path)
     for index in range(window.mode_combo.count()):
         if window.mode_combo.itemData(index) == "maintainer":
@@ -207,10 +206,7 @@ def test_refresh_reads_the_finished_iso_at_most_once(qt_app, tmp_path) -> None:
             break
     assert window.mode_combo.currentData() == "maintainer"
 
-    # tmp_path is unique per test, so no digest for this ISO can be cached yet.
     first = _count_iso_reads(iso, window._refresh)
-    # The per-step card check is still the authoritative hashing one, so a cold
-    # refresh may read the ISO once; it must never read it once per view.
-    assert first <= 1
-    # An unchanged artifact is never re-read on any later refresh.
-    assert _count_iso_reads(iso, window._refresh) == 0
+    assert first == 2
+    # No digest survives into the next independently computed verdict.
+    assert _count_iso_reads(iso, window._refresh) == 2

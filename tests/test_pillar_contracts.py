@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import threading
 import time
 from pathlib import Path
@@ -216,13 +217,12 @@ def test_journey_status_never_hashes_the_iso(tmp_path) -> None:
     assert count_iso_reads(iso, lambda: check_journey_step(project, options, "publish-gate")) >= 1
 
 
-def test_evidence_status_reads_the_iso_once(tmp_path) -> None:
-    """Pillar 4 teeth: readiness, the gate and the gate's own readiness pass used to
-    each re-read the same immutable ISO -- three full reads for one request."""
+def test_evidence_status_never_reuses_a_digest_across_verdicts(tmp_path) -> None:
+    """The security interlock recomputes every digest until a gate-scoped file
+    descriptor can provide safe reuse without trusting mutable path metadata."""
     from distroforge.core.build import BuildOptions
     from distroforge.core.evidence import EvidenceStatusService
 
-    # tmp_path is unique per test, so no digest for this ISO can be cached yet.
     project, iso = _iso_with_sidecar(tmp_path / "evidence")
     reads = count_iso_reads(
         iso,
@@ -230,20 +230,29 @@ def test_evidence_status_reads_the_iso_once(tmp_path) -> None:
             project, BuildOptions(), iso=iso, output_dir=iso.parent
         ),
     )
-    assert reads == 1
+    assert reads == 3
 
 
-def test_rewriting_the_iso_invalidates_its_memoised_digest(tmp_path) -> None:
-    """The memo must be identity-based, never trust-based: a rewritten artifact
-    reports its new digest even at the same path."""
+def test_same_size_same_mtime_replacement_cannot_reuse_a_digest(tmp_path) -> None:
+    """A path cache must not hide an atomic inode replacement whose cheap stat
+    metadata has deliberately been restored."""
     from distroforge.core.hashing import sha256_file
 
     iso = tmp_path / "artifact.iso"
-    iso.write_bytes(b"first")
+    iso.write_bytes(b"first-bytes")
+    original = iso.stat()
     first = sha256_file(iso)
-    assert first == sha256_file(iso)  # unchanged file, reused digest
-    iso.write_bytes(b"second-and-longer")
-    assert sha256_file(iso) == hashlib.sha256(b"second-and-longer").hexdigest() != first
+
+    replacement = tmp_path / "replacement.iso"
+    replacement.write_bytes(b"other-bytes")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    os.replace(replacement, iso)
+
+    current = iso.stat()
+    assert current.st_size == original.st_size
+    assert current.st_mtime_ns == original.st_mtime_ns
+    assert current.st_ino != original.st_ino
+    assert sha256_file(iso) == hashlib.sha256(b"other-bytes").hexdigest() != first
 
 
 # --- Pillar 3 lockstep: the contract docs ship -----------------------------
