@@ -12,9 +12,14 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     dict[str, object] closes the stated contract and makes that same command,
     local mypy, Ruff and all 50 focused M3.1 tests pass. The repaired complete
     gate passes 1,343 pytest cases with one skip, ShellCheck, both embedded
-    Python payloads and all eight pre-commit ratchets. No follow-up push,
-    package/ISO build, Golden-path run, tag, pull request or main movement
-    occurred.
+    Python payloads and all eight pre-commit ratchets. A later, separately
+    authorized develop-only fast-forward published signed repair commit
+    a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844. GitHub accepts its signature
+    as valid, and per-push run 30518874302 completed all ten jobs successfully:
+    packaging-static, distro-dependencies, and every Python 3.11--3.14 /
+    PySide6/PyQt6 leg, each of which completed both Typecheck and Test. This
+    closes the stated CI refusal only; no package/ISO build, Golden-path run,
+    tag, pull request or main movement occurred.
   * Repaired the test-environment debt exposed only after the commit-subject
     ratchet itself passed. GitHub Actions run 30485032512 was green in
     packaging-static, while all eight Python/Qt legs shared four CLI failures

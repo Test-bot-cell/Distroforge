@@ -24,8 +24,8 @@ bootloader, a kernel or a desktop session ran.
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
-| source checkout | observed | `origin/develop` is signed M3.1 commit `6017476ee081532507e6029be47ab86bd4f0a2ad`; GitHub reports `verified: true`, reason `valid`, and local GPG verification accepts primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized fast-forward advanced only `develop`; `main` and the existing release tag remained unchanged. A local, unpushed type-annotation repair for the CI refusal below is documented in the latest receipt. This is source identity, not build proof. |
-| CI action inputs | blocked | per-push GitHub Actions run `30517720041` targeted exact signed M3.1 commit `6017476e…`. `packaging-static` and `distro-dependencies` succeeded, but all eight Python 3.11--3.14 / Qt legs stopped at Typecheck before tests: CI resolved the admitted `mypy>=1.11` range to mypy 2.3.0, which rejected one inferred invariant dictionary at both `_report` call sites. The failure is reproduced and repaired locally, but no follow-up push or remote green verdict exists yet. The earlier M2.2 run `30488026011` remains its historical ten-job success, not evidence for M3.1. |
+| source checkout | observed | `origin/develop` is signed repair commit `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`; GitHub reports `verified: true`, reason `valid`, and local GPG verification accepts primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized fast-forward advanced only `develop`; `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
+| CI action inputs | observed | per-push GitHub Actions run `30518874302` targeted exact signed repair commit `a3f14bec…`, attempt 1, and completed success in all ten jobs. The eight Python 3.11--3.14 / PySide6/PyQt6 legs each completed both Typecheck and Test successfully; `packaging-static` and `distro-dependencies` also succeeded. This closes the mypy 2.3.0 refusal observed in run `30517720041`; it proves a source/test CI verdict, not an executing package, ISO, boot or release chain. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -518,3 +518,30 @@ ISO build.
   gate does not relabel the failed GitHub run as green.
 - This is a local repair receipt only. No follow-up push, package/ISO build,
   Golden-path run, tag, pull request or `main` movement is authorized or performed.
+
+### 2026-07-30 — M3.1 remote CI closure
+
+- A later, separately authorized fast-forward advanced only `origin/develop`, from
+  `6017476ee081532507e6029be47ab86bd4f0a2ad` to repair commit
+  `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`. GitHub verifies that commit's
+  signature (`verified: true`, reason `valid`, verified at
+  `2026-07-30T06:12:33Z`); local verification accepts primary fingerprint
+  `93D942241BECDD422606C36C4C0D75219B5506CF`.
+- Per-push [CI run 30518874302](https://github.com/Test-bot-cell/Distroforge/actions/runs/30518874302)
+  is bound to event `push`, branch `develop`, attempt 1 and that exact full SHA.
+  It ran from `2026-07-30T06:12:35Z` through `2026-07-30T06:15:16Z` and
+  completed `success`.
+- The terminal jobs API enumerated exactly ten jobs and reported every one
+  `completed`/`success`: `packaging-static`, `distro-dependencies`, and the eight
+  Python 3.11--3.14 / PySide6/PyQt6 matrix legs. In each matrix leg, both the
+  `Typecheck` and `Test` steps independently completed `success`; those are the
+  stages the preceding run never reached together. The public unauthenticated API
+  exposed the job and step verdicts but refused the raw log archive with HTTP 403,
+  so this receipt does not invent per-leg test counts or a package version not
+  visible in that evidence channel.
+- This remote verdict closes the reproduced mypy refusal for the signed repair
+  commit. It does not execute or promote the package, Golden path, ISO, firmware,
+  boot, desktop, release-signature or reproducibility milestones. `origin/main`
+  remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`; the existing
+  `debian/0.3.5-16` tag remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.
+  No pull request, tag, package/ISO build or `main` movement occurred.
