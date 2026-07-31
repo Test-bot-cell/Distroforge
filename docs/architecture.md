@@ -195,8 +195,15 @@ Related modules:
 - `core/bootstrap.py`
 - `data/vulndb.json`
 
-CVE scanning runs as the `VULN_SCAN` phase and fails closed under a blocking policy. SBOM
-export writes SPDX-2.3 or CycloneDX 1.5 next to the native provenance document.
+CVE scanning runs as the `VULN_SCAN` phase. Blocking policies fail closed for findings,
+unusable input, invalid database structure and empty/non-canonical package scope;
+non-blocking policies make those input failures explicit as `degraded`, never `clean`.
+Text fields, individual package names and package count are bounded before they can enter
+reports. The degraded state remains `review` through readiness and ISO acceptance and
+cannot authorize pipeline or direct signing. Readiness and its embedded dry-run reuse one
+scan report rather than reopening the database. The verdict binds the exact database
+SHA-256 but does not claim freshness, authenticity, completeness or version applicability.
+SBOM export writes SPDX-2.3 or CycloneDX 1.5 next to the native provenance document.
 Cross-architecture bootstrap requires `qemu-user-static` when the target arch differs from
 the host. See `docs/build-pipeline.md`.
 

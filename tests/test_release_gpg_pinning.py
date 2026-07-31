@@ -33,6 +33,7 @@ from distroforge.core.release_gate import (
 from distroforge.core.release_pipeline import run_release_pipeline
 from distroforge.core.release_signing import (
     OPERATIONAL_BUNDLE_FILES,
+    SIGN_TARGETS,
     SIGNING_KEYRING,
     full_fingerprint,
     sign_release_bundle,
@@ -615,6 +616,41 @@ def test_strict_blocked_gate_can_be_planned_but_never_executed(
     assert len(planned.planned) == 3
     assert executed.status == "blocked"
     assert any("BLOCKED" in item for item in executed.skipped)
+    assert not list(bundle.glob("*.asc"))
+
+
+def test_vuln_review_gate_can_be_planned_but_never_executed(
+    tmp_path: Path,
+) -> None:
+    project, bundle = _ready_bundle(tmp_path, "VulnReviewPlan")
+    gate_path = bundle / "RELEASE-GATE.json"
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    gate["status"] = "review"
+    vuln_item = next(
+        item for item in gate["items"] if item["code"] == "vuln-scan"
+    )
+    vuln_item.update(
+        status="review",
+        detail="CVE database evidence is degraded",
+    )
+    gate_path.write_text(json.dumps(gate) + "\n", encoding="utf-8")
+
+    planned = sign_release_bundle(project, bundle_dir=bundle)
+    executed = sign_release_bundle(
+        project,
+        bundle_dir=bundle,
+        execute=True,
+        gpg_key=FINGERPRINT,
+        gpg_keyring=tmp_path / "unused.gpg",
+    )
+
+    assert planned.status == "planned"
+    assert len(planned.planned) == len(SIGN_TARGETS)
+    assert executed.status == "blocked"
+    assert any(
+        "sole pre-signing publish-signing review" in item
+        for item in executed.skipped
+    )
     assert not list(bundle.glob("*.asc"))
 
 

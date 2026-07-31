@@ -12,7 +12,7 @@ from .policy import PolicyFinding, PolicyService
 from .transaction import BuildTransaction, plan_transaction
 from .trust import TrustReport, TrustService
 from .validate import validate_for_build
-from .vulnscan import VulnScanService
+from .vulnscan import VulnScanReport, VulnScanService
 from .workflows import (
     WorkflowFinding,
     WorkflowRecommendation,
@@ -113,6 +113,8 @@ class ReadinessReport:
 class ReadinessService:
     def check(self, project: Project, options: BuildOptions, include_dry_run: bool = True) -> ReadinessReport:
         checks: list[ReadinessCheck] = []
+        vuln_degraded = False
+        vuln_report: VulnScanReport | None = None
         validation = validate_for_build(project, CommandRunner(dry_run=True), execute=False)
         for issue in validation:
             checks.append(
@@ -157,7 +159,8 @@ class ReadinessService:
 
         if options.vuln_scan.enabled:
             packages = DiffPreviewService().preview(project, options).install
-            vuln = VulnScanService(options.vuln_scan).scan(packages)
+            vuln_report = VulnScanService(options.vuln_scan).scan(packages)
+            vuln_degraded = vuln_report.verdict == "degraded"
             checks.extend(
                 ReadinessCheck(
                     finding.level,
@@ -165,17 +168,31 @@ class ReadinessService:
                     f"{finding.severity.upper()} {finding.cve} in {finding.package}: {finding.message}",
                     finding.remediation,
                 )
-                for finding in vuln.findings
+                for finding in vuln_report.findings
                 if finding.level in {"error", "warning"}
             )
 
         policy = PolicyService().check(project, options, options.policy)
         workflow = list(evaluate_workflow_fit(project, options))
         recommendations = list(recommend_workflow_actions(project, options, tuple(workflow)))
-        dry_run = generate_dry_run_report(project, options, run_orchestrator=False) if include_dry_run else None
+        dry_run = (
+            generate_dry_run_report(
+                project,
+                options,
+                run_orchestrator=False,
+                vuln_report=vuln_report,
+            )
+            if include_dry_run
+            else None
+        )
         transaction = dry_run.transaction if dry_run else plan_transaction(project, options)
         score = _score(checks, policy, workflow)
-        status = "blocked" if _has_blockers(checks, policy, workflow) else "ready" if score >= 85 else "review"
+        if _has_blockers(checks, policy, workflow):
+            status = "blocked"
+        elif vuln_degraded or score < 85:
+            status = "review"
+        else:
+            status = "ready"
         return ReadinessReport(
             status,
             score,

@@ -246,9 +246,18 @@ the exact bundle inventory, current ISO, typed release-gate aggregate and items,
 snapshot, strict checksum file, pinned keyring and exactly three descriptor-bound
 signatures must agree and verify cryptographically. These are source and adversarial
 fixture properties only. `capture_origin` remains `unverified-mutable-target-rootfs`,
-`filesystem_causality` remains `unverified`, and `release_ready` remains false. The
-blocking policy for an unreadable CVE database is the separate M3.2a.3 item; the next
-producer-causality milestone is M3.2b.
+`filesystem_causality` remains `unverified`, and `release_ready` remains false. M3.2a.3
+closes the independent CVE database policy boundary: an unusable or structurally invalid
+database blocks `block-high` and `block-critical`, while `warn` and `off` remain
+non-authorizing `degraded`/`review` verdicts for those failures. Database text, package
+name length and package count are bounded. A valid no-match result binds the exact
+database SHA-256, schema, declared source/update strings and advisory count, and is
+computed only for non-empty canonical package input. Degraded evidence remains review in
+readiness and ISO acceptance, cannot mark the publish journey ready and cannot authorize
+pipeline or direct executable signing. Readiness and its embedded dry-run share that one
+scan report. It does not authenticate or establish freshness, completeness, version
+applicability or transitive rootfs coverage. The next producer-causality milestone is
+M3.2b.
 
 M3.1 adds the run-bound `PACKAGE-FILESYSTEM-CAUSALITY.json` artifact with schema
 `distroforge.package-filesystem-causality.v1`. For a fresh bootstrap, an authoritative
@@ -409,6 +418,12 @@ and terminal verification pin rather than emitting a predictably blocked invocat
 forged internally consistent JSON quartet cannot explain itself as ready. Terminal
 verification may resolve the sole pre-signing `publish-signing` review after the exact
 signatures and external fingerprint verify.
+
+Executable signing is authorized only when the bundle gate is already `ready`, or when
+that sole `publish-signing` review is the complete review set. Any other review — including
+a degraded CVE database verdict — remains plan-only and cannot be converted into a
+signature-bearing release by either `release-pipeline --execute-signing` or direct
+`sign-release --execute`.
 
 `publish-drill` runs the full safe maintainer rehearsal in one command: boot proof with
 `auto`, release pipeline, signing plan, verification, explanation, and

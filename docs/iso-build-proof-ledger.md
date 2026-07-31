@@ -20,7 +20,7 @@ The Debian changelog summarizes code changes. It is not the evidence ledger.
 A structural ISO scan is useful evidence, but it never proves that firmware, a
 bootloader, a kernel or a desktop session ran.
 
-## State on 2026-07-30
+## State on 2026-07-31
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
@@ -38,6 +38,7 @@ bootloader, a kernel or a desktop session ran.
 | executed tool entrypoints | planned | the command runner hashes and opens each recognized host/wrapper/target executable and dispatches through the held `/proc/<pid>/fd/<fd>` descriptor chain; unit tests cover atomic path replacement, but no new real build log has exercised the closure |
 | transitive ELF toolchain | planned | descriptor dispatch closes the selected executable file only; it does not by itself bind the ELF interpreter, dynamic libraries, loader configuration, scripts read after process start, kernel or firmware |
 | artifact-verdict integrity | planned | M3.2a.2 code and adversarial fixtures remove persistent pathname digest reuse, scope hash/parse/replay reuse to one descriptor-backed verdict, revalidate held inodes, paths and inventories at closure, durably copy binary/run-tree evidence and require strict checksum/signing snapshots. No product build, boot or signed release bundle has exercised this boundary |
+| CVE database verdict integrity | planned | M3.2a.3 code and adversarial fixtures make unusable or structurally invalid databases fail closed under blocking policies and explicitly degraded under non-blocking policies. A bounded descriptor-backed session records the exact database SHA-256, schema and declared metadata; bounded control-free text and empty/over-budget/non-canonical package scope cannot become clean. Degraded evidence remains review through the release consumers and cannot authorize signing. This is name-only source/test policy evidence, not database authenticity, freshness, completeness, version applicability or an executing product scan |
 | rootfs semantic manifest | planned | code and tests now cover the semantic manifest, host drift guard, descriptor-held SquashFS round-trip, exact embedded-member binding and authoritative replay from the final ISO; no new real build has emitted that evidence |
 | squashfs | observed | a real zstd `mksquashfs` completed and the staged and ISO-extracted squashfs digests match |
 | ISO assembly | observed | a real `xorriso` completed; `reference-derivative-26.04.iso` is 1,348,337,664 bytes with SHA-256 `2e421cde4d3e62014c1265ce903a821777fe22820ea9677d2ff1c7dbd0e49b2a` |
@@ -385,10 +386,11 @@ identity map in code and fixtures. M3.2a adds only a self-consistency receipt fo
 APT-format action bytes: their mutable target-rootfs origin remains explicitly unverified.
 M3.2a.2 closes stale digest reuse and the descriptor-backed integrity of local artifact
 readers, copies and publication snapshots in code and hostile fixtures only. It does not
-authenticate an APT producer or any filesystem transformation. The immediate small policy
-milestone is M3.2a.3: make an unreadable CVE database blocking without mixing that policy
-change into artifact I/O. None is product evidence. The next executing product-causality
-milestone remains M3.2b:
+authenticate an APT producer or any filesystem transformation. M3.2a.3 closes the small
+CVE fail-closed policy milestone at the source/test boundary by reusing, not changing, the
+descriptor-backed artifact session. It records the database snapshot that supported the
+local verdict but does not authenticate that database or turn a name-only match into
+product evidence. The next executing product-causality milestone remains M3.2b:
 
 1. implement and test M3.2b producer causality: give a host-isolated one-shot witness the
    first write of each `DPkg::Pre-Install-Pkgs` protocol-v3 stream and require its
@@ -881,3 +883,99 @@ ISO build.
   `origin/develop` remains `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`,
   `origin/main` remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`, and
   `debian/0.3.5-16` remains on `38217da4ecbd1076514c9c4e949100a18272ee8a`.
+
+### 2026-07-31 — M3.2a.3 CVE database fail-closed policy
+
+- Starting from signed local M3.2a.2 commit
+  `0ba45a1b29a707c4a705e4ff2238fb6f349e5c04`, the preflight traced all four CVE
+  consumers before modification. A missing or unreadable database produced only
+  `DB-UNAVAILABLE` at warning level, so `enforce()` recorded `vuln-report ok`, the
+  build continued and the release gate returned `review`. Worse, a non-object root,
+  absent/mistyped `advisories` or silently filtered entries could become an empty clean
+  scan and a locally ready CVE item. This policy debt was independent of the package
+  claims: `capture_origin`, `filesystem_causality` and `release_ready` were already
+  forced to their unverified/unverified/false values.
+- The scanner now accepts only a non-empty set of canonical Debian package names and a
+  non-empty `distroforge-vulndb/1` database with canonical typed advisory entries. It
+  reads at most 16 MiB through one descriptor-backed `ArtifactVerificationSession`,
+  refuses links and special files, applies strict UTF-8, unique-key bounded JSON and
+  structural node/depth budgets, retains the inode through parse/digest and revalidates
+  it at closure. Metadata/advisory text is NFC-normalized, control-free and individually
+  byte-bounded; package input is bounded by count and 255-byte canonical names. A
+  successful report records the exact SHA-256, schema, declared source/update strings and
+  advisory count. Physical, encoding, JSON, bound, path, stability and internal failures
+  have stable diagnostic classes; schema and input failures have stable semantic codes.
+  Rejected unexpected or duplicate JSON keys are counted/classified without echoing
+  attacker-controlled key text into diagnostics.
+- `block-high` and `block-critical` turn every unusable database, invalid schema,
+  unknown policy, empty, over-budget or non-canonical package scope into an error and
+  controlled build refusal. For those failures, `warn` and `off` keep their non-blocking
+  build contract but report `degraded`, and the release gate reports `review`, never
+  `ready`. That review remains review in readiness and ISO acceptance, cannot mark the
+  publish journey ready and cannot authorize executable signing through either the
+  release pipeline or direct `sign-release --execute`; only the sole pre-signing
+  `publish-signing` review retains its terminal-verification exception. Readiness and
+  its embedded dry-run share one `VulnScanReport`, so a second database read cannot
+  contradict or promote the same verdict.
+  `clean` means only that those exact structurally accepted database bytes contain no
+  name match for the exact non-empty planned package set.
+- Adversarial fixtures cover absence, injected permission refusal, invalid UTF-8,
+  truncated/duplicate/non-finite/deep JSON, non-object roots, wrong/empty schema,
+  malformed and duplicate entries, control/format characters, exact text/package/count
+  byte boundaries, symlink leaf and ancestor, FIFO, directory, device, same-mtime
+  mutation, injected parser/resource/path/iterator failures, empty scope and
+  non-canonical package names. Direct consumers prove controlled behavior in build,
+  readiness, dry-run, release-gate, journey, ISO-acceptance and signing-authorization
+  paths. The exact focused command was:
+
+      PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
+        tests/test_supply_chain_features.py tests/test_command_virtual.py \
+        tests/test_policy_compliance.py tests/test_release_gpg_pinning.py -k vuln
+
+  It reported `72 passed, 148 deselected`. The exact affected-consumer replay was:
+
+      PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
+        tests/test_iso_acceptance_run_selection.py tests/test_readiness_trust_ai.py \
+        tests/test_pillar_contracts.py tests/test_ui_reachability.py \
+        tests/test_maintainer_grade_features.py
+
+  It reported `151 passed`.
+- An initial confined full-suite replay was deliberately rejected as evidence:
+  `2021 passed, 4 skipped, 12 errors`. All twelve errors were `gpg-agent` startup
+  failures in the GPG-pinning fixtures, and three of the four skips were Unix-socket
+  binds denied by the same sandbox. The identical `make check` outside that confinement
+  completed with Ruff clean, mypy clean across 262 source files,
+  `2036 passed, 1 skipped`, ShellCheck clean and the maintainer-script payload gate
+  reporting no problem. That replay proved the environment and was not retained as the
+  final code verdict: the subsequent adversarial review found the control-field,
+  stable-error-detail and review-promotion gaps above, which were then corrected and
+  retested rather than waived.
+- After the first corrections, `make check` completed with Ruff clean, mypy clean over 262
+  source files, `2060 passed, 1 skipped`, ShellCheck clean and no maintainer-script
+  payload problem. The separately pinned
+  `uvx --offline --from mypy==2.3.0 mypy --no-incremental distroforge/` replay also
+  passed over the same 262 source files. The counter-review did not waive that green run:
+  it then found the independent readiness second-read and direct-signing review bypasses.
+  Both were closed and received their own causal falsifications.
+- After those final corrections, `make check` completed with Ruff clean, mypy clean over
+  262 source files, `2065 passed, 1 skipped`, ShellCheck clean and no maintainer-script
+  payload problem. The pinned mypy 2.3.0 command above also passed again over the final
+  262-file source state. This is the accepted M3.2a.3 source/test gate receipt; no
+  failing, pre-review or sandbox-truncated run is substituted for it.
+- The one full-suite environmental skip was identified before implementation as
+  `tests/test_chroot.py::test_two_real_phases_leave_the_target_able_to_resolve_names`.
+  It requires `unshare` with a user namespace able to mount `tmpfs`. It does not block
+  this CVE policy milestone, but remains an explicit M3.2b isolation/transaction proof
+  debt until executed on a runner with that capability.
+- This milestone does not authenticate the database, parse `meta.updated` as a date,
+  establish freshness/completeness, compare installed versions with `fixed_version`,
+  cover release/architecture applicability or scan the final transitive rootfs. It is
+  source, policy and hostile-fixture evidence only. The live report records package count,
+  not a persisted package-set digest, so it is not a replayable product package inventory.
+  No package transaction, ISO build, boot or release signing occurred; `capture_origin`
+  remains `unverified-mutable-target-rootfs`, `filesystem_causality` remains `unverified`,
+  and `release_ready` remains false. M3.2b remains the host-isolated witness, pre-dpkg
+  ACK, real transaction and producer-delta milestone.
+- The signed commit identity and cryptographic verdict necessarily exist only after this
+  stanza is committed. No push, tag, pull request or `main` movement is part of this
+  local milestone.

@@ -1,5 +1,28 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Closed the local M3.2a.3 CVE fail-closed policy boundary. CVE databases
+    are now read through a bounded descriptor-backed session which refuses
+    links, special files, invalid UTF-8/JSON, oversize and opening/closing
+    drift. Schema distroforge-vulndb/1, non-empty metadata/advisories, bounded
+    control-free text, typed entries and bounded canonical Debian package names
+    are mandatory; duplicate, over-budget or empty input cannot become clean.
+    Blocking policies turn every unusable input or unknown policy into a
+    controlled error before the build continues. For those input failures,
+    warn/off policies report degraded/review, never clean/ready.
+    Reports and release-gate details bind the exact database SHA-256, schema,
+    declared source/update strings, advisory count and stable error class.
+    Degraded evidence cannot promote readiness, the publish journey, ISO
+    acceptance, release-pipeline signing or direct sign-release execution; only
+    the sole pre-signing publish-signing review keeps its terminal-verification
+    exception. Readiness and its dry-run reuse one scan verdict, and rejected
+    JSON keys cannot forge diagnostics. Added hostile fixtures for absence,
+    permissions, malformed/duplicate/deep JSON, controls, bounds, symlinks,
+    FIFO/device/directory input, mutation, internal failures, empty scope and
+    non-canonical names, plus consumer coverage.
+    This remains a name-only planned-package scan: it does not authenticate the
+    database, prove freshness/completeness, compare package versions or promote
+    capture_origin, filesystem_causality or release_ready. M3.2b remains the
+    host-isolated producer/delta milestone.
   * Closed the local M3.2a.2 artifact-verdict integrity boundary without
     promoting product evidence. Removed the persistent path/size/mtime digest
     cache; low-level SHA-256 calls now recompute for every invocation. Added
@@ -55,8 +78,9 @@ distroforge (0.3.5-17) UNRELEASED; urgency=medium
     reader and publication integrity only:
     capture_origin remains unverified-mutable-target-rootfs,
     filesystem_causality remains unverified and release_ready remains false.
-    The unreadable-CVE-database blocking policy remains M3.2a.3, while the
-    host-isolated pre-dpkg acknowledgement and producer deltas remain M3.2b.
+    At that M3.2a.2 stage, the unreadable-CVE-database blocking policy remained
+    M3.2a.3, while the host-isolated pre-dpkg acknowledgement and producer
+    deltas remained M3.2b.
   * At the M3.2a.1 stage, before the M3.2a.2 anonymous-inode writer replaced
     this mechanism, hardened the local evidence plumbing without widening its
     proof. Immutable text evidence was encoded before mutation and written to an

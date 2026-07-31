@@ -210,7 +210,7 @@ JOURNEY_STEPS: tuple[BuildJourneyStep, ...] = (
         "maintainer",
         "Pass the maintainer publish gate",
         "Publishing requires the final ISO, SHA256SUMS verification, source trust, boot proof and policy evidence.",
-        "Release gate is not blocked.",
+        "Release gate is ready.",
         "Artifacts page",
         "distroforge release-gate PROJECT",
         "open-artifacts",
@@ -443,7 +443,11 @@ def _publish_gate_ready(project: Project, options: BuildOptions) -> bool:
     # evidence files exist instead of re-reading the ISO twice. The verifying gate
     # stays in _check_publish_gate, which the step panel and the Artifacts page
     # call on demand.
-    return not ReleaseGateService().check(project, options, verify_checksums=False).blocked
+    return ReleaseGateService().check(
+        project,
+        options,
+        verify_checksums=False,
+    ).status == "ready"
 
 
 def _extension_contract(project: Project, options: BuildOptions) -> bool:

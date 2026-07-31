@@ -24,7 +24,11 @@ from .release_run import (
     embedded_boot_run_id,
     select_executed_release_run,
 )
-from .release_signing import _manifest_content, sign_release_bundle
+from .release_signing import (
+    _manifest_content,
+    release_gate_authorizes_executed_signing,
+    sign_release_bundle,
+)
 from .release_verification import verify_release_bundle
 
 
@@ -393,7 +397,11 @@ def run_release_pipeline(
             build_run_id=selected_build_run_id,
             boot_run_id=selected_boot_run_id,
         )
-    safe_execute_signing = execute_signing and not bundle.blocked
+    signing_authorized = _release_signing_authorized(
+        bundle.gate,
+        bundle_status=bundle.status,
+    )
+    safe_execute_signing = execute_signing and signing_authorized
     first_sign = sign_release_bundle(
         project,
         bundle_dir=bundle.bundle_dir,
@@ -534,4 +542,25 @@ def _sole_publish_signing_review(gate: ReleaseGateReport) -> bool:
         gate.status == "review"
         and review_codes == {"publish-signing"}
         and not any(item.status == "blocked" for item in gate.items)
+    )
+
+
+def _release_signing_authorized(
+    gate: ReleaseGateReport,
+    *,
+    bundle_status: str,
+) -> bool:
+    review_codes = tuple(
+        sorted(
+            item.code
+            for item in gate.items
+            if item.status == "review"
+        )
+    )
+    return (
+        bundle_status == gate.status
+        and release_gate_authorizes_executed_signing(
+            gate.status,
+            review_codes,
+        )
     )

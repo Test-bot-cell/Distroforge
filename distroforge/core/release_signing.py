@@ -85,6 +85,7 @@ class _SigningInventory:
 class _SigningPreflight:
     anchor_identity: ArtifactIdentity
     gate_status: str
+    gate_review_codes: tuple[str, ...]
     iso_names: tuple[str, ...]
     existing_signatures: tuple[str, ...]
 
@@ -94,6 +95,7 @@ class _ManifestSnapshot:
     anchor_identity: ArtifactIdentity
     entries: tuple[ReleaseManifestEntry, ...]
     gate_status: str
+    gate_review_codes: tuple[str, ...]
     operational_names: tuple[str, ...]
     manifest_size: int | None = None
     manifest_sha256: str | None = None
@@ -354,17 +356,13 @@ def sign_release_bundle(
     if execute and preflight is not None and preflight.gate_status == "blocked":
         skipped.append("RELEASE-GATE.json is BLOCKED; signing was refused.")
         blocked = True
-    elif (
-        execute
-        and preflight is not None
-        and preflight.gate_status
-        not in {
-            "ready",
-            "review",
-        }
+    elif execute and preflight is not None and not release_gate_authorizes_executed_signing(
+        preflight.gate_status,
+        preflight.gate_review_codes,
     ):
         skipped.append(
-            "Executed signing requires a strict RELEASE-GATE.json status of ready or review."
+            "Executed signing requires a ready RELEASE-GATE.json or the sole "
+            "pre-signing publish-signing review."
         )
         blocked = True
     if gpg_key and signer_fingerprint is None:
@@ -449,6 +447,14 @@ def sign_release_bundle(
                     expected_product_output_dir=expected_product_output_dir,
                     expected_bundle_identity=preflight.anchor_identity,
                 )
+                if execute and not release_gate_authorizes_executed_signing(
+                    snapshot.gate_status,
+                    snapshot.gate_review_codes,
+                ):
+                    raise ArtifactVerificationError(
+                        "release gate no longer authorizes executed signing at "
+                        "the manifest snapshot"
+                    )
                 entries = snapshot.entries
                 if publish_artifacts:
                     manifest_content = _manifest_content(
@@ -674,7 +680,7 @@ def _signing_preflight(
         if gate_handle.identity != gate_identity:
             raise ArtifactVerificationError("RELEASE-GATE.json changed after signing inventory")
         gate = gate_handle.json_object()
-        gate_status = _strict_signing_gate_status(
+        gate_status, gate_review_codes = _strict_signing_gate_status(
             gate,
             expected_project=expected_project,
             expected_product_iso=expected_product_iso,
@@ -702,6 +708,7 @@ def _signing_preflight(
         return _SigningPreflight(
             session.anchor_identity,
             gate_status,
+            gate_review_codes,
             iso_names,
             existing_signatures,
         )
@@ -749,7 +756,7 @@ def _strict_signing_gate_status(
     session: ArtifactVerificationSession,
     inventory: _SigningInventory,
     iso_names: tuple[str, ...],
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     code_problem = release_gate_report_problem(
         gate,
         expected_project=expected_project,
@@ -862,7 +869,24 @@ def _strict_signing_gate_status(
     sums = parse_sha256_sums(sums_handle.read_bytes())
     if set(sums) != {iso_name} or sums[iso_name] != iso_digest:
         raise ArtifactVerificationError("SHA256SUMS does not bind exactly the unique bundled ISO")
-    return status
+    review_codes = tuple(
+        sorted(
+            code
+            for code, item in items.items()
+            if item["status"] == "review"
+        )
+    )
+    return status, review_codes
+
+
+def release_gate_authorizes_executed_signing(
+    status: str,
+    review_codes: tuple[str, ...],
+) -> bool:
+    return status == "ready" or (
+        status == "review"
+        and review_codes == ("publish-signing",)
+    )
 
 
 def _capture_manifest_snapshot(
@@ -922,7 +946,7 @@ def _capture_manifest_snapshot(
         if gate_handle.identity != gate_identity:
             raise ArtifactVerificationError("RELEASE-GATE.json changed after manifest inventory")
         gate = gate_handle.json_object()
-        gate_status = _strict_signing_gate_status(
+        gate_status, gate_review_codes = _strict_signing_gate_status(
             gate,
             expected_project=expected_project,
             expected_product_iso=expected_product_iso,
@@ -965,6 +989,7 @@ def _capture_manifest_snapshot(
             expected_bundle_identity,
             tuple(entries),
             gate_status,
+            gate_review_codes,
             tuple(
                 sorted(
                     {

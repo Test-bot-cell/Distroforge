@@ -273,6 +273,14 @@ def test_bundled_vuln_database_is_available_to_vuln_scan() -> None:
     cves = {finding.cve for finding in report.findings}
 
     assert "DB-UNAVAILABLE" not in cves
+    assert report.database_status == "valid"
+    assert report.database_error == ""
+    assert report.advisory_count > 0
+    assert len(report.database_sha256) == 64
+    assert report.database_schema == "distroforge-vulndb/1"
+    assert report.database_source
+    assert report.database_updated
+    assert report.verdict == "findings"
     assert {"CVE-2023-38545", "CVE-2023-4863"}.issubset(cves)
 
 

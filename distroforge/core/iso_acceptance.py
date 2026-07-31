@@ -151,17 +151,17 @@ def accept_iso(
             items.append(
                 IsoAcceptanceItem(
                     "release-gate",
-                    "blocked" if gate.blocked else "ready",
+                    gate.status,
                     f"Release gate is {gate.status} for immutable build run "
                     f"{selected.run_id}.",
                 )
             )
             for gate_item in gate.items:
-                if gate_item.status == "blocked":
+                if gate_item.status in {"blocked", "review"}:
                     items.append(
                         IsoAcceptanceItem(
                             f"gate-{gate_item.code}",
-                            "blocked",
+                            gate_item.status,
                             gate_item.detail,
                         )
                     )
@@ -181,7 +181,12 @@ def accept_iso(
                 )
             )
 
-    status = "blocked" if any(item.status == "blocked" for item in items) else "accepted"
+    if any(item.status == "blocked" for item in items):
+        status = "blocked"
+    elif any(item.status == "review" for item in items):
+        status = "review"
+    else:
+        status = "accepted"
     selected_run_id = selected.run_id if selected is not None else None
     selected_report = selected.iso_build_path if selected is not None else None
     acceptance = IsoAcceptanceReport(
@@ -244,7 +249,10 @@ def _next_command(
     boot_run_id: str | None,
     selection_error: str | None,
 ) -> str:
-    codes = {item.code for item in items if item.status == "blocked"}
+    blocked_codes = {item.code for item in items if item.status == "blocked"}
+    unresolved_codes = {
+        item.code for item in items if item.status in {"blocked", "review"}
+    }
     if build_run_id is None:
         if selection_error and "multiple immutable executed build runs" in selection_error:
             return shlex.join(
@@ -272,7 +280,7 @@ def _next_command(
                 "auto",
             ]
         )
-    if "gate-boot-proof" in codes:
+    if "gate-boot-proof" in blocked_codes:
         # Boot creation and consumption must share one process so the newly
         # generated boot_run_id cannot be replaced with a shell placeholder or
         # lost between two independent verdicts.
@@ -294,7 +302,7 @@ def _next_command(
                 "auto",
             ]
         )
-    if codes:
+    if unresolved_codes:
         command = [
             "distroforge",
             "release-gate",

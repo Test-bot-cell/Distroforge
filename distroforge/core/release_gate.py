@@ -1443,18 +1443,35 @@ def _iso_assembly_item(
     )
 
 
-def _check_vuln_policy(report: ReleaseGateReport, project: Project, options: BuildOptions) -> None:
+def _check_vuln_policy(
+    report: ReleaseGateReport,
+    project: Project,
+    options: BuildOptions,
+) -> None:
     if not options.vuln_scan.enabled:
         report.items.append(ReleaseGateItem("vuln-scan", "review", "CVE scanning is not enabled."))
         return
     packages = DiffPreviewService().preview(project, options).install
     scan = VulnScanService(options.vuln_scan).scan(packages)
     counts = scan.counts
-    summary = f"policy={scan.policy} db={scan.database} critical={counts['critical']} high={counts['high']}"
+    summary = (
+        f"policy={scan.policy} db={scan.database} "
+        f"database_status={scan.database_status} "
+        f"database_error={scan.database_error or 'none'} "
+        f"verdict={scan.verdict} "
+        f"db_sha256={scan.database_sha256 or 'unavailable'} "
+        f"schema={scan.database_schema or 'unavailable'} "
+        f"source={scan.database_source or 'unavailable'} "
+        f"updated={scan.database_updated or 'unavailable'} "
+        f"advisories={scan.advisory_count} scanned={scan.scanned} "
+        f"critical={counts['critical']} high={counts['high']} unknown={counts['unknown']}"
+    )
     if not scan.ok:
         report.items.append(
             ReleaseGateItem("vuln-scan", "blocked", f"CVE policy violated: {summary}")
         )
+    elif scan.verdict == "degraded":
+        report.items.append(ReleaseGateItem("vuln-scan", "review", f"CVE scan degraded: {summary}"))
     elif scan.findings:
         report.items.append(
             ReleaseGateItem(

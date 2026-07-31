@@ -34,19 +34,26 @@ distroforge hermetic-build-plan "$SOURCE_ROOT" --backend sbuild --suite resolute
 grep -q "Suite: resolute" "$WORK/hermetic-plan.txt"
 
 python3 - <<'PY'
-import json
 from importlib.resources import files
 from pathlib import Path
 
 from distroforge.core.definition import load_definition
 from distroforge.core.schema import validate_definition_data
+from distroforge.core.vulnscan import VulnScanOptions, VulnScanService
 
 data_root = files("distroforge.data")
 for name in ("releases.toml", "profiles.toml", "personas.toml"):
     assert data_root.joinpath(name).read_text(encoding="utf-8").strip()
 
-vulndb = json.loads(data_root.joinpath("vulndb.json").read_text(encoding="utf-8"))
-assert vulndb.get("advisories")
+assert data_root.joinpath("vulndb.json").is_file()
+vuln_report = VulnScanService(
+    VulnScanOptions(enabled=True, policy="warn")
+).scan(["curl"])
+assert vuln_report.database_status == "valid"
+assert vuln_report.database_schema == "distroforge-vulndb/1"
+assert vuln_report.database_sha256
+assert vuln_report.advisory_count > 0
+assert vuln_report.verdict == "findings"
 
 # This test runs against the installed package, so the packaged example is the only
 # acceptable answer. The former fallback to examples/minimal-bootstrap.yaml made the

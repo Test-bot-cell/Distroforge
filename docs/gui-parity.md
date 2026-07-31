@@ -186,7 +186,8 @@ does when the option is omitted — `logs/build.jsonl` under the project — so 
 command log at all.
 `iso-accept PROJECT` maps to **Accept ISO** on Build & Release. It checks the produced ISO
 against `ISO-BUILD.json`, boot proof evidence and the release gate, then writes
-`ISO-ACCEPTANCE.json`.
+`ISO-ACCEPTANCE.json`. A release-gate review remains review and is not displayed as an
+accepted ISO.
 `demo-iso PROJECT` maps to **Plan Demo ISO** on Build & Release. The label is explicit
 because the GUI action renders the non-executing demo report; CLI `--execute` is required
 to run the shortest demonstrable path toward a real ISO.
@@ -196,7 +197,10 @@ maintainer commands. The Artifacts GPG key/fingerprint field is passed as the ex
 trust anchor; CLI parity is `--gpg-fingerprint`.
 `publish-drill PROJECT` maps to **Publish Drill** on Artifacts. It rehearses boot proof,
 release pipeline, signing plan, verification and explanation, then writes
-`PUBLISH-DRILL.json` without signing unless explicitly requested.
+`PUBLISH-DRILL.json` without signing unless explicitly requested. Even when signing is
+requested, an unresolved review cannot execute it unless that review is solely the
+pre-signing `publish-signing` item which terminal verification can resolve. The direct
+`sign-release --execute` path applies the same rule.
 `publish-drill-diff OLD NEW` maps to **Compare Drill** on Artifacts. The GUI compares
 `PUBLISH-DRILL.previous.json` and `PUBLISH-DRILL.json` in the selected publish bundle.
 The result is structural-only and does not authenticate stored signatures or either

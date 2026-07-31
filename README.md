@@ -294,8 +294,17 @@ any optional bounded scrub. Detachment and scrub are separate verdicts, the quar
 is always physically retained, and some replay workspaces intentionally record residual
 bytes after detach-only retirement. These are code and adversarial-fixture guarantees,
 not a product run. They do not promote `capture_origin`, `filesystem_causality` or
-`release_ready`. The blocking policy for an unreadable CVE database remains the separate
-M3.2a.3 item; producer causality remains M3.2b.
+`release_ready`. M3.2a.3 closes the separate CVE-reader policy boundary: a blocking
+policy refuses an unusable database, invalid schema, empty or non-canonical package input,
+while `warn` and `off` report an explicit degraded verdict rather than `clean` for those
+input failures. Database text fields and package scope are individually bounded and
+control-free. The descriptor-backed scan records the exact database SHA-256 and declared
+schema, source and update string. A degraded scan remains non-authorizing through
+readiness and its shared dry-run verdict, the publish journey, ISO acceptance, pipeline
+signing and direct `sign-release --execute`; only the sole pre-signing `publish-signing`
+review retains its existing terminal-verification exception. This proves structural input
+handling, not database freshness, authenticity, completeness or version-aware
+vulnerability absence. Producer causality remains M3.2b.
 
 ## Supported sources
 

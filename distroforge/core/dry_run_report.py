@@ -16,7 +16,7 @@ from .reproducible import epoch_problem, snapshot_problem
 from .transaction import BuildTransaction, plan_transaction
 from .trust import TrustReport, TrustService
 from .validate import validate_bootstrap_host, validate_for_build
-from .vulnscan import VulnScanService
+from .vulnscan import VulnScanReport, VulnScanService
 
 if TYPE_CHECKING:
     from .build import BuildOptions, BuildStep
@@ -116,6 +116,8 @@ def generate_dry_run_report(
     project: Project,
     options: BuildOptions,
     run_orchestrator: bool = True,
+    *,
+    vuln_report: VulnScanReport | None = None,
 ) -> DryRunReport:
     from .build import BuildOrchestrator
 
@@ -139,7 +141,14 @@ def generate_dry_run_report(
         policy=policy,
         trust=trust,
     )
-    report.findings = _collect_findings(project, options, report.trust, report.policy, preview.install)
+    report.findings = _collect_findings(
+        project,
+        options,
+        report.trust,
+        report.policy,
+        preview.install,
+        vuln_report=vuln_report,
+    )
     if not run_orchestrator:
         return report
     try:
@@ -157,6 +166,8 @@ def _collect_findings(
     trust: TrustReport,
     policy: list[dict[str, object]],
     packages: list[str],
+    *,
+    vuln_report: VulnScanReport | None = None,
 ) -> list[DryRunFinding]:
     runner = CommandRunner(dry_run=True)
     findings: list[DryRunFinding] = []
@@ -198,7 +209,12 @@ def _collect_findings(
     _add_reproducible_findings(options, add)
     _add_artifact_findings(project, options, add)
     _add_trust_findings(trust, add)
-    _add_vuln_findings(options, packages, add)
+    _add_vuln_findings(
+        options,
+        packages,
+        add,
+        vuln_report=vuln_report,
+    )
     _add_policy_findings(policy, add)
     _add_privilege_finding(options, add)
     return findings
@@ -392,10 +408,16 @@ def _add_trust_findings(trust: TrustReport, add) -> None:
             add(check.level, f"trust-{check.code}", check.message, check.remediation)
 
 
-def _add_vuln_findings(options: BuildOptions, packages: list[str], add) -> None:
+def _add_vuln_findings(
+    options: BuildOptions,
+    packages: list[str],
+    add,
+    *,
+    vuln_report: VulnScanReport | None = None,
+) -> None:
     if not options.vuln_scan.enabled:
         return
-    report = VulnScanService(options.vuln_scan).scan(packages)
+    report = vuln_report or VulnScanService(options.vuln_scan).scan(packages)
     for finding in report.findings:
         if finding.level in {"error", "warning"}:
             add(

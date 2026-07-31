@@ -16,7 +16,8 @@ artifact stays `blocked`; dry-runs stay `planned`.
 Use `distroforge iso-accept PROJECT --iso dist/NAME-VERSION.iso` after a real build to get the
 publication verdict. It accepts only an ISO that matches the digest-linked executed
 `ISO-BUILD.json`, has exact-ISO QEMU runtime proof through `login_prompt`, and passes the
-release gate; otherwise it writes `ISO-ACCEPTANCE.json` with the next command to run.
+release gate at `ready`. A gate at `review` remains review rather than being rewritten as
+accepted; otherwise it writes `ISO-ACCEPTANCE.json` with the next command to run.
 
 Use `distroforge demo-iso PROJECT --execute` to create or reuse a minimal skeleton
 project and try the shortest local ISO path on the current host. Without `--execute`, it
@@ -853,11 +854,27 @@ selects the posture:
 - `block-high` promotes high and critical findings to errors;
 - `block-critical` blocks only critical findings and leaves high as a warning.
 
-The scanner matches the planned package set by name against a bundled advisory database and
-records a `vuln-report` virtual command event carrying the status and finding count, so
-dry-runs stay inspectable and real builds never try to exec a `vuln-report` binary. The build fails closed: a blocking finding raises before any ISO is
-produced. `--vuln-db PATH` points at a custom advisory JSON; a database that cannot be read
-is surfaced as a `DB-UNAVAILABLE` warning, never a silent pass to clean.
+The scanner matches a non-empty set of canonical Debian package names against a bundled
+advisory database and records a `vuln-report` virtual command event, so dry-runs stay
+inspectable and real builds never try to exec a `vuln-report` binary. The database must be
+a regular no-follow/non-blocking input of at most 16 MiB, strict UTF-8 and bounded JSON,
+with unique keys, schema `distroforge-vulndb/1`, non-empty `meta.source`,
+`meta.updated` and `advisories`, canonical package names and typed advisory fields. One
+descriptor-backed session binds and revalidates the inode and records its exact SHA-256,
+schema, declared source/update strings and advisory count. Metadata and advisory text is
+NFC-normalized, control-free and individually bounded; the package input is capped at
+65,536 entries and each canonical package name at 255 bytes.
+
+`block-high` and `block-critical` turn database I/O, encoding, JSON, schema, bounds,
+mutation, empty scope and non-canonical package failures into a controlled blocked verdict
+before any ISO is produced. `warn` and `off` retain their non-blocking posture but emit
+`degraded` rather than `ok` for those failures; the release gate reports `review`, never
+`ready`. That review remains non-authorizing in readiness, the publish journey, ISO
+acceptance, pipeline signing and direct `sign-release --execute`. Readiness reuses the
+same scan report in its embedded dry-run instead of reopening the database. Only a
+structurally valid database and non-empty canonical package scope with no name match can
+report `clean`. That means no known name match in those exact database bytes, not an
+authenticated, fresh, complete or version-aware absence of vulnerabilities.
 
 ### Standard SBOM export
 

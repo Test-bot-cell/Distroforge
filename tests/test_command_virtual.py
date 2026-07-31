@@ -51,7 +51,7 @@ def test_vuln_scan_enforce_does_not_exec_report_marker() -> None:
     # Locks the reported crash: a real-mode CVE scan emits ("vuln-report", ...);
     # before the fix this aborted the build with [Errno 2] ... 'vuln-report'.
     runner = CommandRunner(dry_run=False)
-    report = VulnScanService(VulnScanOptions(enabled=True)).enforce([], runner)
+    report = VulnScanService(VulnScanOptions(enabled=True)).enforce(["vim"], runner)
     assert report.ok
     assert any(spec.argv[0] == "vuln-report" for spec in runner.history)
 
