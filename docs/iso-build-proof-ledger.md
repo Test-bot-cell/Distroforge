@@ -24,8 +24,8 @@ bootloader, a kernel or a desktop session ran.
 
 | Milestone | State | Evidence and limit |
 | --- | --- | --- |
-| source checkout | observed | `origin/develop` is signed repair commit `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844`; GitHub reports `verified: true`, reason `valid`, and local GPG verification accepts primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized fast-forward advanced only `develop`; `main` and the existing release tag remained unchanged. This is source identity, not build proof. |
-| CI action inputs | observed | per-push GitHub Actions run `30518874302` targeted exact signed repair commit `a3f14bec…`, attempt 1, and completed success in all ten jobs. Every Python 3.11--3.14 / PySide6/PyQt6 leg installed mypy 2.3.0, typechecked all 256 source files and reported 1,306 passed / 38 skipped tests; `packaging-static` and `distro-dependencies` also succeeded, the latter with 1,336 passed / eight skipped tests from distribution packages only. This closes the mypy refusal observed in run `30517720041`; it proves a source/test CI verdict, not an executing package, ISO, boot or release chain. |
+| source checkout | observed | `origin/develop` is signed commit `fd8eaa96d073a96404af6d4a10cb8995434cbe69`; local GPG verification accepts primary fingerprint `93D942241BECDD422606C36C4C0D75219B5506CF`. The authorized fast-forward advanced only `develop`; `origin/main` remains `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57` and annotated release tag `debian/0.3.5-16` remains object `b7e5f3b3504a793a457954f12301c37ab1b17e92`, peeled to `38217da4ecbd1076514c9c4e949100a18272ee8a`. This is source identity, not build proof. |
+| CI action inputs | blocked | per-push GitHub Actions run [`30618110717`](https://github.com/Test-bot-cell/Distroforge/actions/runs/30618110717) targeted exact signed commit `fd8eaa96…`, attempt 1, and completed with nine successful jobs and one failed `distro-dependencies` job. Its distribution-only suite reported 2,057 passed, eight skipped and one failed GPG keyring test after the public key had imported but a disposable inspection home could not connect to `gpg-agent`. Run `30518874302` remains the last ten-job success but targets the older `a3f14bec…` tree; the local oracle repair below has no remote verdict yet. This is a source/test CI refusal, not an executing package, ISO, boot or release chain. |
 | Golden builder commit | planned | the workflow pins a public-key file by SHA-256 and primary fingerprint, imports it into an ephemeral `GNUPGHOME`, requires `git verify-commit HEAD`, suppresses Python bytecode and removes editable-install caches before measuring the builder worktree; no post-change run has exercised that refusal rule |
 | minbase bootstrap | observed | the local golden-path log contains an executing `mmdebstrap --variant=minbase --include=apt,ca-certificates` with exit 0 |
 | source-ISO authentication | planned | executing remasters now require stable regular source/signature inputs, external SHA-256 and one exclusive full `VALIDSIG` signer, then extract through the witnessed source descriptor; the publication item remains `review` because signature/status/keyring evidence cannot yet be replayed offline |
@@ -979,3 +979,57 @@ ISO build.
 - The signed commit identity and cryptographic verdict necessarily exist only after this
   stanza is committed. No push, tag, pull request or `main` movement is part of this
   local milestone.
+
+### 2026-07-31 — M3.2a.3 remote CI falsification and local GPG-oracle repair
+
+- The explicitly authorized staging push fast-forwarded only `origin/develop`, from
+  `a3f14becc0bd2d67d5cadf6c2a10e47b5a0df844` to signed commit
+  `fd8eaa96d073a96404af6d4a10cb8995434cbe69`. `origin/main` remained
+  `4b80b8ca5dbb3c08fe5b68c368b0b1420c256d57`; annotated tag
+  `debian/0.3.5-16` remained object `b7e5f3b3504a793a457954f12301c37ab1b17e92`,
+  peeled to `38217da4ecbd1076514c9c4e949100a18272ee8a`. No tag, pull request or
+  `main` fast-forward was created.
+- Per-push GitHub Actions run
+  [`30618110717`](https://github.com/Test-bot-cell/Distroforge/actions/runs/30618110717)
+  targeted that exact `fd8eaa96…` source and reached a terminal nine successes out of
+  ten. The sole failed job, `distro-dependencies` (`91115944836`), installed the target
+  Ubuntu 26.04 distribution packages successfully, then reported `2057 passed, 8 skipped,
+  1 failed`. The failing
+  `test_secret_keyring_input_is_reexported_as_minimal_public_material` had already
+  received `report.status == "signed"` and GPG reported one public key imported into the
+  test's fresh inspection home. GnuPG 2.4.8 then returned 2 after
+  `can't connect to the gpg-agent: General error`. This run remains failed evidence; the
+  successful export is not used to relabel it green.
+- The local repair changes only the test oracle. It removes the second stateful import
+  and inspects the exact files with GPG's non-mutating
+  `--import-options show-only --dry-run --import` colon output. The same oracle is first
+  calibrated against the real secret source and must recover exactly the pinned `sec`
+  primary fingerprint. The published keyring must then contain exactly the pinned `pub`
+  primary fingerprint and no `sec` or `ssb` record. A second real two-key public source
+  proves that publication retains only the explicitly pinned signer. Public subkeys
+  remain allowed. No return-code exception, localized stderr parsing, product-code
+  change or `gpg-agent` kill weakens or broadens the signing contract.
+- The target environment was reproduced directly on Ubuntu 26.04 Resolute with GnuPG
+  `2.4.8-4ubuntu3`, Python 3.14.4, pytest `9.0.2`, Pydantic `2.12.5-2` and PyQt
+  `6.10.2-2build5`, matching the failed distribution job. The exact repaired scenarios:
+
+      PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
+        tests/test_release_gpg_pinning.py::test_secret_keyring_input_is_reexported_as_minimal_public_material \
+        tests/test_release_gpg_pinning.py::test_multi_keyring_input_is_reexported_as_only_the_pinned_public_key
+
+  reported `2 passed`. The complete `tests/test_release_gpg_pinning.py` replay reported
+  `74 passed`.
+- On that final local source and documentation state, `make check` completed with Ruff
+  clean, mypy clean over 262 source files, `2066 passed, 1 skipped`, ShellCheck clean and
+  no maintainer-script payload problem. The sole skip remains the previously identified
+  user-namespace/tmpfs chroot test; no GPG test was skipped or waived.
+- The separately pinned
+  `uvx --offline --from mypy==2.3.0 mypy --no-incremental distroforge/` replay passed over
+  the same 262 source files. All eight `pre-commit run --all-files` hooks passed and
+  `git diff --check` reported no whitespace error.
+- This repair proves only that the test's public-only oracle is agent-independent and
+  detects the real secret and multi-key controls. It does not add a product signing,
+  package, ISO, boot, release or reproducibility receipt, and it does not promote any
+  ledger state. A new remote run is required before the current source may claim ten
+  successful CI jobs. No push, tag, pull request or `main` movement is part of this local
+  repair.

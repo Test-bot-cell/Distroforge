@@ -1,5 +1,13 @@
 distroforge (0.3.5-17) UNRELEASED; urgency=medium
 
+  * Replaced the release-keyring test's stateful GPG import with the same
+    show-only/dry-run packet inspection used by the product. The real secret
+    source must expose the pinned private primary key, while the published
+    keyring must expose only the pinned public primary key and no secret
+    records. A second real fixture proves that a two-key public input is
+    filtered to the one explicitly pinned signer. This closes the Ubuntu 26.04
+    GnuPG 2.4.8 gpg-agent false negative without accepting exit status 2,
+    parsing localized stderr or changing the product signing contract.
   * Closed the local M3.2a.3 CVE fail-closed policy boundary. CVE databases
     are now read through a bounded descriptor-backed session which refuses
     links, special files, invalid UTF-8/JSON, oversize and opening/closing

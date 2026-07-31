@@ -1820,6 +1820,26 @@ def test_release_verification_rejects_a_forged_partial_signed_report(
 gpg_binary = pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg is not installed")
 
 
+def _inspect_key_material(path: Path) -> str:
+    return subprocess.run(
+        (
+            "gpg",
+            "--batch",
+            "--no-options",
+            "--with-colons",
+            "--fingerprint",
+            "--import-options",
+            "show-only",
+            "--dry-run",
+            "--import",
+            str(path),
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
 @pytest.fixture
 def release_signers(
     tmp_path: Path,
@@ -2192,53 +2212,52 @@ def test_secret_keyring_input_is_reexported_as_minimal_public_material(
     assert report.status == "signed"
     published = bundle / SIGNING_KEYRING
     assert published.read_bytes() != secret_source.read_bytes()
-    inspection_home = tmp_path / "inspect-published-keyring"
-    inspection_home.mkdir(mode=0o700)
-    subprocess.run(
-        (
-            "gpg",
-            "--batch",
-            "--homedir",
-            str(inspection_home),
-            "--import",
-            str(published),
-        ),
-        check=True,
-        capture_output=True,
-    )
-    public_listing = subprocess.run(
-        (
-            "gpg",
-            "--batch",
-            "--homedir",
-            str(inspection_home),
-            "--with-colons",
-            "--fingerprint",
-            "--list-keys",
-        ),
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    secret_listing = subprocess.run(
-        (
-            "gpg",
-            "--batch",
-            "--homedir",
-            str(inspection_home),
-            "--with-colons",
-            "--list-secret-keys",
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-    ).stdout
 
+    source_listing = _inspect_key_material(secret_source)
+    assert release_signing_module._primary_fingerprints(
+        source_listing,
+        "sec",
+    ) == (signer,)
+    public_listing = _inspect_key_material(published)
     assert release_signing_module._primary_fingerprints(
         public_listing,
         "pub",
     ) == (signer,)
-    assert not any(line.startswith(("sec:", "ssb:")) for line in secret_listing.splitlines())
+    assert not any(line.startswith(("sec:", "ssb:")) for line in public_listing.splitlines())
+
+
+@gpg_binary
+def test_multi_keyring_input_is_reexported_as_only_the_pinned_public_key(
+    tmp_path: Path,
+    release_signers: tuple[str, str, Path, Path],
+) -> None:
+    signer, other_signer, signer_keyring, other_keyring = release_signers
+    combined_source = tmp_path / "source-multiple-keyring.gpg"
+    combined_source.write_bytes(signer_keyring.read_bytes() + other_keyring.read_bytes())
+    source_listing = _inspect_key_material(combined_source)
+    assert release_signing_module._primary_fingerprints(
+        source_listing,
+        "pub",
+    ) == (signer, other_signer)
+    project, bundle = _ready_bundle(tmp_path, "MultipleKeyringSanitization")
+
+    report = sign_release_bundle(
+        project,
+        bundle_dir=bundle,
+        execute=True,
+        gpg_key=signer,
+        gpg_keyring=combined_source,
+    )
+
+    assert report.status == "signed"
+    published_listing = _inspect_key_material(bundle / SIGNING_KEYRING)
+    assert release_signing_module._primary_fingerprints(
+        published_listing,
+        "pub",
+    ) == (signer,)
+    assert not any(
+        line.startswith(("sec:", "ssb:")) for line in published_listing.splitlines()
+    )
 
 
 @gpg_binary
